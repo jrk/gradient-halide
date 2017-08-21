@@ -30,14 +30,14 @@ endif
 BAZEL ?= $(shell which bazel)
 
 SHELL = bash
-CXX ?= g++
+CXX ?= clang-3.9
 PREFIX ?= /usr/local
 LLVM_CONFIG ?= llvm-config
 LLVM_COMPONENTS= $(shell $(LLVM_CONFIG) --components)
 LLVM_VERSION = $(shell $(LLVM_CONFIG) --version | cut -b 1-3)
 
 LLVM_FULL_VERSION = $(shell $(LLVM_CONFIG) --version)
-CLANG ?= clang
+CLANG ?= clang-3.9
 CLANG_VERSION = $(shell $(CLANG) --version)
 LLVM_BINDIR = $(shell $(LLVM_CONFIG) --bindir | sed -e 's/\\/\//g' -e 's/\([a-zA-Z]\):/\/\1/g')
 LLVM_LIBDIR = $(shell $(LLVM_CONFIG) --libdir | sed -e 's/\\/\//g' -e 's/\([a-zA-Z]\):/\/\1/g')
@@ -310,6 +310,7 @@ SOURCE_FILES = \
   FastIntegerDivide.cpp \
   FindCalls.cpp \
   Float16.cpp \
+  ForwardAD.cpp \
   Func.cpp \
   Function.cpp \
   FuseGPUThreadLoops.cpp \
@@ -440,6 +441,7 @@ HEADER_FILES = \
   Extern.h \
   FastIntegerDivide.h \
   FindCalls.h \
+  ForwardAD.h \
   Float16.h \
   Func.h \
   Function.h \
