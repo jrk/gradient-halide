@@ -10,23 +10,23 @@ namespace Internal {
  */
 class ForwardADMutator : public IRMutator {
 public:
-	ForwardADMutator(const Expr &wrtExpr);
-	Expr mutate(const Expr &e);
+    ForwardADMutator(const Expr &wrtExpr);
+    Expr mutate(const Expr &e);
 protected:
-	void visit(const Add *op);
-	void visit(const Mul *op);
-	void visit(const Variable *op);
+    void visit(const Add *op);
+    void visit(const Mul *op);
+    void visit(const Variable *op);
 private:
-	const Variable *wrt;
+    const Variable *wrt;
 };
 
 static int debug_indent = 0;
 
 ForwardADMutator::ForwardADMutator(const Expr &wrtExpr) {
-	wrt = wrtExpr.as<Variable>();
-	if (wrt == nullptr) {
-		throw CompileError("[ForwardADMutator] wrt needs to be a Variable");
-	}
+    wrt = wrtExpr.as<Variable>();
+    if (wrt == nullptr) {
+        throw CompileError("[ForwardADMutator] wrt needs to be a Variable");
+    }
 }
 
 Expr ForwardADMutator::mutate(const Expr &e) {
@@ -59,17 +59,17 @@ void ForwardADMutator::visit(const Mul *op) {
 
 void ForwardADMutator::visit(const Variable *op) {
     if (op->name == wrt->name) {
-    	expr = 1;
-	} else {
-		expr = 0;
-	}
+        expr = 1;
+    } else {
+        expr = 0;
+    }
 }
 
 } // namespace Internal
 
 Expr forward_ad(Expr output, Expr wrt) {
-	Internal::ForwardADMutator forward_ad_mutator(wrt);
-	return forward_ad_mutator.mutate(output);
+    Internal::ForwardADMutator forward_ad_mutator(wrt);
+    return forward_ad_mutator.mutate(output);
 }
 
 }
