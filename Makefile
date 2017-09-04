@@ -301,6 +301,7 @@ SOURCE_FILES = \
   DebugToFile.cpp \
   Definition.cpp \
   Deinterleave.cpp \
+  Derivative.cpp \
   DeviceArgument.cpp \
   DeviceInterface.cpp \
   EarlyFree.cpp \
@@ -310,7 +311,6 @@ SOURCE_FILES = \
   FastIntegerDivide.cpp \
   FindCalls.cpp \
   Float16.cpp \
-  ForwardAD.cpp \
   Func.cpp \
   Function.cpp \
   FuseGPUThreadLoops.cpp \
@@ -430,6 +430,7 @@ HEADER_FILES = \
   DebugToFile.h \
   Definition.h \
   Deinterleave.h \
+  Derivative.h \
   DeviceArgument.h \
   DeviceInterface.h \
   EarlyFree.h \
@@ -441,7 +442,6 @@ HEADER_FILES = \
   Extern.h \
   FastIntegerDivide.h \
   FindCalls.h \
-  ForwardAD.h \
   Float16.h \
   Func.h \
   Function.h \

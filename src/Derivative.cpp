@@ -1,4 +1,5 @@
-#include "ForwardAD.h"
+#include "Derivative.h"
+#include "IRMutator.h"
 #include "IROperator.h"
 #include "Error.h"
 #include <iostream>
@@ -6,11 +7,11 @@
 namespace Halide {
 namespace Internal {
 
-/** A mutator that mutates expression using forward automatic differentiation
+/** An IR mutator that mutates expression to obtain the derivatives
  */
-class ForwardADMutator : public IRMutator {
+class DerivativeMutator : public IRMutator {
 public:
-    ForwardADMutator(const Expr &wrtExpr);
+    DerivativeMutator(const Expr &wrtExpr);
     Expr mutate(const Expr &e);
 protected:
     void visit(const Add *op);
@@ -22,14 +23,14 @@ private:
 
 static int debug_indent = 0;
 
-ForwardADMutator::ForwardADMutator(const Expr &wrtExpr) {
+DerivativeMutator::DerivativeMutator(const Expr &wrtExpr) {
     wrt = wrtExpr.as<Variable>();
     if (wrt == nullptr) {
-        throw CompileError("[ForwardADMutator] wrt needs to be a Variable");
+        throw CompileError("[DerivativeMutator] wrt needs to be a Variable");
     }
 }
 
-Expr ForwardADMutator::mutate(const Expr &e) {
+Expr DerivativeMutator::mutate(const Expr &e) {
     const std::string spaces(debug_indent, ' ');
     std::cerr << spaces << "Transforming Expr: " << e << "\n";
     debug_indent++;
@@ -43,21 +44,21 @@ Expr ForwardADMutator::mutate(const Expr &e) {
     return new_e;
 }
 
-void ForwardADMutator::visit(const Add *op) {
+void DerivativeMutator::visit(const Add *op) {
     Expr da = mutate(op->a);
     Expr db = mutate(op->b);
     // d/dx a + b = da/dx + db/dx
     expr = da + db;
 }
 
-void ForwardADMutator::visit(const Mul *op) {
+void DerivativeMutator::visit(const Mul *op) {
     Expr da = mutate(op->a);
     Expr db = mutate(op->b);
     // d/dx a * b = da/dx * b + a * db/dx
     expr = da * op->b + op->a * db;
 }
 
-void ForwardADMutator::visit(const Variable *op) {
+void DerivativeMutator::visit(const Variable *op) {
     if (op->name == wrt->name) {
         expr = 1;
     } else {
@@ -67,9 +68,9 @@ void ForwardADMutator::visit(const Variable *op) {
 
 } // namespace Internal
 
-Expr forward_ad(Expr output, Expr wrt) {
-    Internal::ForwardADMutator forward_ad_mutator(wrt);
-    return forward_ad_mutator.mutate(output);
+Expr derivative(Expr output, Expr wrt) {
+    Internal::DerivativeMutator derivative_mutator(wrt);
+    return derivative_mutator.mutate(output);
 }
 
 }
