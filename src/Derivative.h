@@ -11,7 +11,7 @@
 
 namespace Halide {
 
-Expr derivative(Expr output, Expr wrt);
+std::vector<Expr> derivative(Expr output, const std::vector<Expr> &arg_list);
 
 }
 

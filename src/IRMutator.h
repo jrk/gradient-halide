@@ -95,8 +95,8 @@ protected:
     std::map<Stmt, Stmt, Stmt::Compare> stmt_replacements;
 
 public:
-    EXPORT Stmt mutate(const Stmt &s);
-    EXPORT Expr mutate(const Expr &e);
+    EXPORT virtual Stmt mutate(const Stmt &s);
+    EXPORT virtual Expr mutate(const Expr &e);
 };
 
 

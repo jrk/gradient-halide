@@ -11,8 +11,8 @@ int main(int argc, char **argv) {
     Halide::Param<float> factor(1.333);
     Halide::Func gradient;
     Halide::Var x, y;
-    Halide::Expr e = Halide::derivative(factor * (x + y), factor);
-    gradient(x, y) = e;
+    std::vector<Halide::Expr> e = Halide::derivative(factor * (x + y), {factor});
+    gradient(x, y) = e[0];
     Halide::Buffer<float> output = gradient.realize(800, 600);
     for (int j = 0; j < output.height(); j++) {
         for (int i = 0; i < output.width(); i++) {
