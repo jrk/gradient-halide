@@ -7,98 +7,132 @@
 namespace Halide {
 namespace Internal {
 
-/** An IR mutator that mutates expression to obtain the derivatives
+/** An IR graph visitor that gather the expression DAG and sort them in topological order
  */
-class DerivativeMutator : public IRGraphMutator {
+class ExpressionSorter : public IRGraphVisitor {
 public:
-    Expr derivative(const Expr &e, const std::string &arg_name);
-    Expr mutate(const Expr &e);
+    void sort(const Expr &expr);
+
+    std::vector<Expr> get_expr_list() const {
+        return expr_list;
+    }
+
+protected:
+    void include(const Expr &e);
+private:
+    std::vector<Expr> expr_list;
+};
+
+void ExpressionSorter::include(const Expr &e) {
+    if (visited.count(e.get())) {
+        return;
+    } else {
+        visited.insert(e.get());
+        e.accept(this);
+        expr_list.push_back(e);
+        return;
+    }
+}
+
+void ExpressionSorter::sort(const Expr &e) {
+    expr_list.clear();
+    e.accept(this);
+    expr_list.push_back(e);
+}
+
+/** An IR visitor that computes the derivatives through reverse accumulation
+ */
+class ReverseAccumulationVisitor : public IRVisitor {
+public:
+    std::vector<Expr> derivative(const Expr &e, const std::vector<Expr> &arg_list);
 protected:
     void visit(const Add *op);
     void visit(const Mul *op);
     void visit(const Variable *op);
+    void visit(const Cast *op);
 private:
-    std::string current_arg_name;
-    std::vector<std::string> arg_name_list;
+    void accumulate(const Expr &stub, const Expr &adjoint);
+
+    std::vector<Expr> results;
+    std::map<std::string, size_t> arg_map;
+    std::map<const BaseExprNode *, Expr> accumulated_adjoints;
 };
 
-static int debug_indent = 0;
-
-Expr DerivativeMutator::derivative(const Expr &e, const std::string &arg_name) {
-    current_arg_name = arg_name;
-    return mutate(e);
-}
-
-Expr DerivativeMutator::mutate(const Expr &e) {
-    const std::string spaces(debug_indent, ' ');
-    std::cerr << spaces << "Transforming Expr: " << e << "\n";
-
-    auto iter = expr_replacements.find(e);
-    if (iter != expr_replacements.end()) {
-        Expr new_e = iter->second;
-        if (!new_e.same_as(e)) {
-            std::cerr
-                << spaces << "Old Expr" << "\n"
-                << spaces << "Before: " << e << "\n"
-                << spaces << "After:  " << new_e << "\n";
+std::vector<Expr> ReverseAccumulationVisitor::derivative(const Expr &e, const std::vector<Expr> &arg_list) {
+    // Preallocate the results and argument maps
+    for (size_t arg_id = 0; arg_id < arg_list.size(); arg_id++) {
+        results.push_back(0);
+        // TODO: support non-variable expressions
+        const Variable *var = arg_list[arg_id].as<Variable>();
+        if (var == nullptr) {
+            throw CompileError("[ReverseAccumulationVisitor] argument needs to be a Variable");
         }
-
-        return new_e;
-    }
-    debug_indent++;
-    Expr new_e = IRMutator::mutate(e);
-    debug_indent--;
-
-    if (!new_e.same_as(e)) {
-        std::cerr
-            << spaces << "New Expr" << "\n"
-            << spaces << "Before: " << e << "\n"
-            << spaces << "After:  " << new_e << "\n";
+        arg_map[var->name] = arg_id;
     }
 
-    if (e.as<Variable>() == nullptr) { // Never cache variable transform
-        expr_replacements[e] = new_e;
+    // Topologically sort the expressions
+    ExpressionSorter sorter;
+    sorter.sort(e);
+    std::vector<Expr> expr_list = sorter.get_expr_list();
+    accumulated_adjoints[(const BaseExprNode *)expr_list.back().get()] = Expr(1.f);
+    // Traverse the expressions in reverse order
+    for (auto it = expr_list.rbegin(); it != expr_list.rend(); it++) {
+        // Propagate adjoints
+        it->accept(this);
     }
-    return new_e;
+
+    return results;
 }
 
-void DerivativeMutator::visit(const Add *op) {
-    Expr da = mutate(op->a);
-    Expr db = mutate(op->b);
-    // d/dx a + b = da/dx + db/dx
-    expr = da + db;
-}
-
-void DerivativeMutator::visit(const Mul *op) {
-    Expr da = mutate(op->a);
-    Expr db = mutate(op->b);
-    // d/dx a * b = da/dx * b + a * db/dx
-    expr = da * op->b + op->a * db;
-}
-
-void DerivativeMutator::visit(const Variable *op) {
-    if (op->name == current_arg_name) {
-        expr = 1;
+void ReverseAccumulationVisitor::accumulate(const Expr &stub, const Expr &adjoint) {
+    const BaseExprNode *stub_ptr = (const BaseExprNode *)stub.get();
+    if (accumulated_adjoints.find(stub_ptr) == accumulated_adjoints.end()) {
+        accumulated_adjoints[stub_ptr] = adjoint;
     } else {
-        expr = 0;
+        accumulated_adjoints[stub_ptr] += adjoint;
+    }    
+}
+
+void ReverseAccumulationVisitor::visit(const Add *op) {
+    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
+    Expr adjoint = accumulated_adjoints[op];
+
+    // d/da a + b = 1
+    accumulate(op->a, adjoint);
+    // d/db a + b = 1
+    accumulate(op->b, adjoint);
+}
+
+void ReverseAccumulationVisitor::visit(const Mul *op) {
+    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
+    Expr adjoint = accumulated_adjoints[op];
+
+    // d/da a * b = b
+    accumulate(op->a, adjoint * op->b);
+    // d/db a * b = a
+    accumulate(op->b, adjoint * op->a);
+}
+
+void ReverseAccumulationVisitor::visit(const Cast *op) {
+    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
+    Expr adjoint = accumulated_adjoints[op];
+
+    // d/dx cast(x) = 1
+    accumulate(op->value, adjoint);
+}
+
+void ReverseAccumulationVisitor::visit(const Variable *op) {
+    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
+    if (arg_map.find(op->name) != arg_map.end()) {
+        results[arg_map[op->name]] = accumulated_adjoints[op];
     }
 }
 
 } // namespace Internal
 
 std::vector<Expr> derivative(Expr output, const std::vector<Expr> &arg_list) {
-    Internal::DerivativeMutator derivative_mutator;
-    std::vector<Expr> derivative_list;
-    for (const auto &arg : arg_list) {
-        // TODO: support non-variable expressions
-        const Internal::Variable *var = arg.as<Internal::Variable>();
-        if (var == nullptr) {
-            throw CompileError("[derivative] argument needs to be a Variable");
-        }
-
-        derivative_list.push_back(derivative_mutator.derivative(output, var->name));
-    }
-    return derivative_list;
+    Internal::ReverseAccumulationVisitor visitor;
+    return visitor.derivative(output, arg_list);
 }
 
 }
