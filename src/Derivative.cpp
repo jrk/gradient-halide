@@ -46,10 +46,15 @@ class ReverseAccumulationVisitor : public IRVisitor {
 public:
     std::vector<Expr> derivative(const Expr &e, const std::vector<Expr> &arg_list);
 protected:
-    void visit(const Add *op);
-    void visit(const Mul *op);
-    void visit(const Variable *op);
     void visit(const Cast *op);
+    void visit(const Variable *op);
+    void visit(const Add *op);
+    void visit(const Sub *op);
+    void visit(const Mul *op);
+    void visit(const Div *op);
+    void visit(const Min *op);
+    void visit(const Max *op);
+    void visit(const Call *op);
 private:
     void accumulate(const Expr &stub, const Expr &adjoint);
 
@@ -93,26 +98,6 @@ void ReverseAccumulationVisitor::accumulate(const Expr &stub, const Expr &adjoin
     }    
 }
 
-void ReverseAccumulationVisitor::visit(const Add *op) {
-    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
-    Expr adjoint = accumulated_adjoints[op];
-
-    // d/da a + b = 1
-    accumulate(op->a, adjoint);
-    // d/db a + b = 1
-    accumulate(op->b, adjoint);
-}
-
-void ReverseAccumulationVisitor::visit(const Mul *op) {
-    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
-    Expr adjoint = accumulated_adjoints[op];
-
-    // d/da a * b = b
-    accumulate(op->a, adjoint * op->b);
-    // d/db a * b = a
-    accumulate(op->b, adjoint * op->a);
-}
-
 void ReverseAccumulationVisitor::visit(const Cast *op) {
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
@@ -128,6 +113,86 @@ void ReverseAccumulationVisitor::visit(const Variable *op) {
     }
 }
 
+void ReverseAccumulationVisitor::visit(const Add *op) {
+    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
+    Expr adjoint = accumulated_adjoints[op];
+
+    // d/da a + b = 1
+    accumulate(op->a, adjoint);
+    // d/db a + b = 1
+    accumulate(op->b, adjoint);
+}
+
+void ReverseAccumulationVisitor::visit(const Sub *op) {
+    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
+    Expr adjoint = accumulated_adjoints[op];
+
+    // d/da a - b = 1
+    accumulate(op->a, adjoint);
+    // d/db a - b = -1
+    accumulate(op->b, -adjoint);
+}
+
+void ReverseAccumulationVisitor::visit(const Mul *op) {
+    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
+    Expr adjoint = accumulated_adjoints[op];
+
+    // d/da a * b = b
+    accumulate(op->a, adjoint * op->b);
+    // d/db a * b = a
+    accumulate(op->b, adjoint * op->a);
+}
+
+void ReverseAccumulationVisitor::visit(const Div *op) {
+    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
+    Expr adjoint = accumulated_adjoints[op];
+
+    // d/da a / b = 1 / b
+    accumulate(op->a, adjoint / op->b);
+    // d/db a / b = - a / b^2
+    accumulate(op->b, - adjoint * op->a / (op->b * op->b));
+}
+
+void ReverseAccumulationVisitor::visit(const Min *op) {
+    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
+    Expr adjoint = accumulated_adjoints[op];
+
+    // d/da min(a, b) = 1
+    accumulate(op->a, adjoint);
+    // d/db min(a, b) = 1
+    accumulate(op->b, adjoint);
+}
+
+void ReverseAccumulationVisitor::visit(const Max *op) {
+    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
+    Expr adjoint = accumulated_adjoints[op];
+
+    // d/da max(a, b) = 1
+    accumulate(op->a, adjoint);
+    // d/db max(a, b) = 1
+    accumulate(op->b, adjoint);
+}
+
+void ReverseAccumulationVisitor::visit(const Call *op) {
+    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
+    Expr adjoint = accumulated_adjoints[op];
+    if (op->name == "exp_f32") {
+        // d/dx exp(x) = exp(x)
+        for (size_t i = 0; i < op->args.size(); i++) {
+            accumulate(op->args[i], adjoint * exp(op->args[i]));
+        }
+    }
+    
+    if (op->func.defined()) {
+        // TODO: propagate through Functions
+        for (size_t i = 0; i < op->args.size(); i++) {
+            accumulate(op->args[i], adjoint);
+        }
+    } else if (op->image.defined()) {
+
+    }
+}
+
 } // namespace Internal
 
 std::vector<Expr> derivative(Expr output, const std::vector<Expr> &arg_list) {
@@ -135,4 +200,4 @@ std::vector<Expr> derivative(Expr output, const std::vector<Expr> &arg_list) {
     return visitor.derivative(output, arg_list);
 }
 
-}
+} // namespace Halide

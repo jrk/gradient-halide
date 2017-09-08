@@ -5,7 +5,7 @@
  *  Given an Halide expression, compute the derivatives w.r.t. other Halide expressions.
  */
 
-#include <ostream>
+#include <vector>
 
 #include "Module.h"
 
