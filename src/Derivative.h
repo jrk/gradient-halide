@@ -5,9 +5,10 @@
  *  Given an Halide expression, compute the derivatives w.r.t. other Halide expressions.
  */
 
-#include <vector>
-
 #include "Module.h"
+#include "Expr.h"
+
+#include <vector>
 
 namespace Halide {
 

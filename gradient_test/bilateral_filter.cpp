@@ -1,4 +1,4 @@
-// g++ bilateral_filter.cpp -g -O3 -I/usr/local/Cellar/libpng/1.6.32/include/ -I/usr/local/Cellar/jpeg/9b/include/ -I../tools -I ../include -L ../bin -lHalide -L/usr/local/Cellar/jpeg/9b/lib/ -ljpeg -L/usr/local/Cellar/libpng/1.6.32/lib/ -lpng -o bilateral_filter -std=c++11
+// g++ bilateral_filter.cpp -g -I/usr/local/Cellar/libpng/1.6.32/include/ -I/usr/local/Cellar/jpeg/9b/include/ -I../tools -I ../include -L ../lib -lHalide -L/usr/local/Cellar/jpeg/9b/lib/ -ljpeg -L/usr/local/Cellar/libpng/1.6.32/lib/ -lcurses -lz -lpng -o bilateral_filter -std=c++11
 // DYLD_LIBRARY_PATH=../bin ./bilateral_filter
 
 #include "Halide.h"

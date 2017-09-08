@@ -1,4 +1,4 @@
-// g++ basic.cpp -g -I ../include -L ../bin -lHalide -o basic -std=c++11
+// g++ basic.cpp -g -I../include -L../lib -lcurses -lz -lHalide -o basic -std=c++11
 // DYLD_LIBRARY_PATH=../bin ./basic
 
 #include "Halide.h"
