@@ -2,17 +2,18 @@
 #define HALIDE_DERIVATIVE_H
 
 /** \file
- *  Given an Halide expression, compute the derivatives w.r.t. other Halide expressions.
+ *  Propagate the adjoints of a Halide function
  */
 
 #include "Module.h"
 #include "Expr.h"
+#include "Func.h"
 
 #include <vector>
 
 namespace Halide {
 
-std::vector<Expr> derivative(Expr output, const std::vector<Expr> &arg_list);
+std::vector<Func> propagate_adjoints(const Func &output);
 
 }
 
