@@ -7,39 +7,43 @@
 namespace Halide {
 namespace Internal {
 
-Expr inverse(const Expr &expr) {
+Expr inverse(const Var &var, const Expr &expr) {
     // TODO: replace with a full visitor
     if (expr.get()->node_type == IRNodeType::Add) {
         const Add *op = expr.as<Add>();
-        if (op->a.get()->node_type == IRNodeType::Variable) {
+        if (op->a.get()->node_type == IRNodeType::Variable &&
+            op->a.as<Variable>()->name == var.name()) {
             return op->a - op->b; 
         } else {
-            assert(op->b.get()->node_type == IRNodeType::Variable);
+            assert(op->b.get()->node_type == IRNodeType::Variable &&
+                   op->b.as<Variable>()->name == var.name());
             return op->a - op->b; 
         }
     } else if (expr.get()->node_type == IRNodeType::Sub) {
         const Sub *op = expr.as<Sub>();
-        if (op->a.get()->node_type == IRNodeType::Variable) {
+        if (op->a.get()->node_type == IRNodeType::Variable &&
+            op->a.as<Variable>()->name == var.name()) {
             return op->a + op->b; 
         } else {
-            assert(op->b.get()->node_type == IRNodeType::Variable);
+            assert(op->b.get()->node_type == IRNodeType::Variable &&
+                   op->b.as<Variable>()->name == var.name());
             return op->b - op->a; 
         }
     } else if (expr.get()->node_type == IRNodeType::Max) {
         const Max *op = expr.as<Max>();
         if (op->a.get()->node_type == IRNodeType::IntImm) {
-            return max(inverse(op->b), op->a); 
+            return max(inverse(var, op->b), op->a); 
         } else {
             assert(op->b.get()->node_type == IRNodeType::IntImm);
-            return max(inverse(op->a), op->b); 
+            return max(inverse(var, op->a), op->b); 
         }
     } else if (expr.get()->node_type == IRNodeType::Min) {
         const Min *op = expr.as<Min>();
         if (op->a.get()->node_type == IRNodeType::IntImm) {
-            return min(inverse(op->b), op->a); 
+            return min(inverse(var, op->b), op->a); 
         } else {
             assert(op->b.get()->node_type == IRNodeType::IntImm);
-            return min(inverse(op->a), op->b); 
+            return min(inverse(var, op->a), op->b); 
         }
     } else if (expr.get()->node_type == IRNodeType::Variable) {
         return expr;
@@ -282,9 +286,10 @@ void ReverseAccumulationVisitor::visit(const Min *op) {
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
-    // d/da min(a, b) = 1
+    // TODO: fix this
+    // d/da min(a, b) = a <= b ? 1 : 0
     accumulate(op->a, adjoint);
-    // d/db min(a, b) = 1
+    // d/db min(a, b) = b <= a ? 1 : 0
     accumulate(op->b, adjoint);
 }
 
@@ -292,9 +297,10 @@ void ReverseAccumulationVisitor::visit(const Max *op) {
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
-    // d/da max(a, b) = 1
+    // TODO: fix this
+    // d/da max(a, b) = a >= b ? 1 : 0
     accumulate(op->a, adjoint);
-    // d/db max(a, b) = 1
+    // d/db max(a, b) = b >= a ? 1 : 0
     accumulate(op->b, adjoint);
 }
 
@@ -312,18 +318,25 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         Function func(op->func);
         std::vector<std::string> func_args = func.args();
         std::vector<Var> args;
-        std::for_each(func_args.begin(), func_args.end(), [&args](const std::string &name){ args.push_back(Var(name)); });
+        std::for_each(func_args.begin(), func_args.end(),
+                      [&args](const std::string &name){ args.push_back(Var(name)); });
         Func& func_to_update = adjoint_funcs[func_mapping[func.name()]];
         Func adjoint_func;
         adjoint_func(args) = adjoint;
-        std::cerr << "[Call] adjoint:" << adjoint << std::endl;
+        // std::cerr << "[Call] adjoint:" << adjoint << std::endl;
         std::vector<Expr> inverse_args = op->args;
-        std::for_each(inverse_args.begin(), inverse_args.end(), [](Expr &e){ e = inverse(e); });
+        assert(args.size() == inverse_args.size());
+        for (int i = 0; i < (int)args.size(); i++) {
+            inverse_args[i] = inverse(args[i], inverse_args[i]);
+            // std::cerr << "inverse_args[" << i << "]:" << inverse_args[i] << std::endl;
+        }
         Func new_func(func_to_update.name());
         if (func_to_update.defined()) {
-            new_func(args) = func_to_update.value() + adjoint_func(inverse_args);
+            new_func(args) = 0.f;
+            new_func(args) += func_to_update.value() + adjoint_func(inverse_args);
         } else {
-            new_func(args) = adjoint_func(inverse_args);
+            new_func(args) = 0.f;
+            new_func(args) += adjoint_func(inverse_args);
         }
         adjoint_funcs[func_mapping[func.name()]] = new_func;
     }
