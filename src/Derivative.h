@@ -14,6 +14,7 @@
 namespace Halide {
 
 std::vector<Func> propagate_adjoints(const Func &output);
+void print_func(const Func &func);
 
 }
 

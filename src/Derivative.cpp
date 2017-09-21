@@ -2,10 +2,52 @@
 #include "IRMutator.h"
 #include "IROperator.h"
 #include "Error.h"
+#include "runtime/printer.h"
 #include <iostream>
 
 namespace Halide {
 namespace Internal {
+
+class VariableFinder : public IRGraphVisitor {
+public:
+    bool find(const Expr &expr, const Var &var) {
+        var_name = var.name();
+        found = false;
+        expr.accept(this);
+        return found;
+    }
+
+    void visit(const Variable *op) {
+        if (op->name == var_name) {
+            found = true;
+        }
+    }
+
+private:
+    std::string var_name;
+    bool found;
+};
+
+class VariableReplacer : public IRMutator {
+public:
+     Expr replace(const Expr &expr, const std::string &replaced_var_name_, const Expr &replace_expr_) {
+        replced_var_name = replaced_var_name_;
+        replace_expr = replace_expr_;
+        return mutate(expr);
+    }
+
+    void visit(const Variable *op) {
+        if (op->name == replced_var_name) {
+            expr = replace_expr;
+        } else {
+            expr = op;
+        }
+    }
+
+private:
+    std::string replced_var_name;
+    Expr replace_expr;
+};
 
 Expr inverse(const Var &var, const Expr &expr) {
     // TODO: replace with a full visitor
@@ -169,6 +211,8 @@ private:
     std::map<std::string, int> func_mapping;
     std::vector<Func> adjoint_funcs;
     std::map<std::string, Expr> let_var_mapping;
+    std::vector<Var> current_args;
+    OutputImageParam current_param;
 };
 
 void ReverseAccumulationVisitor::propagate_adjoints(const std::vector<Func> &funcs) {
@@ -185,6 +229,11 @@ void ReverseAccumulationVisitor::propagate_adjoints(const std::vector<Func> &fun
     // Traverse functions
     for (int i = 0; i < (int)funcs.size(); i++) {
         const Func &func = funcs[i];
+        current_args = func.args();
+        // --- THIS DOES NOT WORK!!! --- //
+        current_param = adjoint_funcs[i].output_buffer();
+        ///////////////////////////////////
+
         // Traverse from the last update to first
         for (int update_id = func.num_update_definitions() - 1; update_id >= -1; update_id--) {
             // Topologically sort the expressions
@@ -315,21 +364,52 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
     }
 
     if (op->func.defined()) {
+        // This is a Halide function call
         Function func(op->func);
+        // Gather the domain variables of the function
         std::vector<std::string> func_args = func.args();
         std::vector<Var> args;
         std::for_each(func_args.begin(), func_args.end(),
                       [&args](const std::string &name){ args.push_back(Var(name)); });
+        // We are scattering to this function
         Func& func_to_update = adjoint_funcs[func_mapping[func.name()]];
-        Func adjoint_func;
-        adjoint_func(args) = adjoint;
-        // std::cerr << "[Call] adjoint:" << adjoint << std::endl;
+        // Try to transform the scattering operation into gathering operation
         std::vector<Expr> inverse_args = op->args;
         assert(args.size() == inverse_args.size());
+        VariableFinder var_finder;
+        bool has_arg = true;
         for (int i = 0; i < (int)args.size(); i++) {
-            inverse_args[i] = inverse(args[i], inverse_args[i]);
-            // std::cerr << "inverse_args[" << i << "]:" << inverse_args[i] << std::endl;
+            if (var_finder.find(inverse_args[i], args[i])) {
+                inverse_args[i] = inverse(args[i], inverse_args[i]);
+            } else {
+                has_arg = false;
+            }
         }
+
+        Func adjoint_func;
+        adjoint_func(current_args) = 0.f;
+
+        if (!has_arg) {
+            std::vector<std::pair<Expr, Expr>> ranges;
+            for (int i = 0; i < current_param.dimensions(); i++) {
+                const Dimension &dim = current_param.dim(i);
+                ranges.push_back(std::make_pair(dim.min(), dim.extent()));
+            }
+            RDom r(ranges);
+            VariableReplacer var_replacer;
+            for (int i = 0; i < (int)current_args.size(); i++) {
+                adjoint = var_replacer.replace(adjoint, current_args[i].name(), r[i]);
+            }
+            for (int i = 0; i < (int)inverse_args.size(); i++) {
+                if (inverse_args[i].as<Variable>() != nullptr) {
+                    adjoint = var_replacer.replace(adjoint, inverse_args[i].as<Variable>()->name, args[i]);
+                }
+            }
+        }
+        debug(0) << "func.name():" << func.name() << "\n";
+        debug(0) << "adjoint:" << adjoint << "\n";
+
+        adjoint_func(current_args) += adjoint;
         Func new_func(func_to_update.name());
         if (func_to_update.defined()) {
             new_func(args) = 0.f;
@@ -353,15 +433,36 @@ void ReverseAccumulationVisitor::visit(const Let *op) {
 } // namespace Internal
 
 std::vector<Func> propagate_adjoints(const Func &output) {
+    Internal::debug(0) << "propagate_adjoints begins" << "\n";
     Internal::FunctionSorter sorter;
+    Internal::debug(0) << "sorting functions" << "\n";
     sorter.sort(output);
     std::vector<Func> funcs = sorter.get_functions();
-    for (int i = 0; i < (int)funcs.size(); i++) {
-        std::cerr << "func.name():" << funcs[i].name() << std::endl;
+    Internal::debug(0) << "func list:" << "\n";
+    for (const auto &func : funcs) {
+        Internal::debug(0) << func.name() << "\n";
     }
     Internal::ReverseAccumulationVisitor visitor;
     visitor.propagate_adjoints(funcs);
     return visitor.get_adjoint_funcs();
+}
+
+void print_func(const Func &func) {
+    Internal::debug(0) << "printing function:" << func.name() << "\n";
+    Internal::FunctionSorter sorter;
+    sorter.sort(func);
+    std::vector<Func> funcs = sorter.get_functions();
+    for (int i = (int)funcs.size() - 1; i >= 0; i--) {
+        Func &func = funcs[i];
+        Internal::debug(0) << "funcs[" << i << "]:" << func.name() << "\n";
+        for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
+            if (update_id >= 0) {
+                Internal::debug(0) << "update:" << func.update_value(update_id) << "\n";
+            } else {
+                Internal::debug(0) << "init:" << func.value() << "\n";
+            }
+        }
+    }
 }
 
 } // namespace Halide
