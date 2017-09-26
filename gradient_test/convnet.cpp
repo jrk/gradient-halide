@@ -21,21 +21,22 @@ int main(int argc, char **argv) {
                                0.f, 1.f, 0.f,
                                0.f, 0.f, 0.f};
     Halide::Buffer<float> filter =
-        Halide::Buffer<float>::make_interleaved(initial_weights, 5, 5, 1);
+        Halide::Buffer<float>::make_interleaved(initial_weights, 3, 3, 1);
     Halide::Func filter_func("filter_func");
     filter_func(x, y) = filter(x, y);
     Halide::RDom r(0, 3, 0, 3);
     Halide::Func output("output");
     output(x, y) = 0.f;
     output(x, y) += clamped(x + r.x, y + r.y) * filter_func(r.x, r.y);
-    output.infer_input_bounds(input.width(), input.height());
-    print_func(output);
+    Halide::RDom r_target(input);
+    Halide::Expr diff = output(r_target.x, r_target.y) - input(r_target.x, r_target.y);
+    Halide::Expr loss = diff * diff;
 
-    std::vector<Halide::Func> funcs = Halide::propagate_adjoints(output);
+    std::vector<Halide::Func> funcs = Halide::propagate_adjoints(loss);
     // funcs[3] = d output / d filter_func
     print_func(funcs[3]);
-    funcs[3].compile_to_lowered_stmt("df.html", {}, Halide::HTML);
-    //Halide::Buffer<float> df = funcs[funcs.size() - 1].realize(5, 5);
+    // funcs[3].compile_to_lowered_stmt("df.html", {}, Halide::HTML);
+    Halide::Buffer<float> df = funcs[funcs.size() - 1].realize(3, 3);
 
     return 0;
 }
