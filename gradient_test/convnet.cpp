@@ -17,9 +17,9 @@ int main(int argc, char **argv) {
 
     Halide::Func conv_layer("conv_layer");
 
-    float initial_weights[] = {0.f, 0.f, 0.f,
+    float initial_weights[] = {1.f, 0.f, 0.f,
                                0.f, 1.f, 0.f,
-                               0.f, 0.f, 0.f};
+                               0.f, 0.f, 1.f};
     Halide::Buffer<float> filter =
         Halide::Buffer<float>::make_interleaved(initial_weights, 3, 3, 1);
     Halide::Func filter_func("filter_func");
@@ -37,6 +37,7 @@ int main(int argc, char **argv) {
     print_func(funcs[3]);
     // funcs[3].compile_to_lowered_stmt("df.html", {}, Halide::HTML);
     Halide::Buffer<float> df = funcs[funcs.size() - 1].realize(3, 3);
+    std::cerr << "df(0, 0):" << df(0, 0) << std::endl;
 
     return 0;
 }

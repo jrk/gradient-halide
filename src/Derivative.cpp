@@ -401,7 +401,9 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
                 // Propagate adjoints
                 it->accept(this);
             }
-            // Replace the Func
+            // Add back the Func
+            Func &adjoint_func = adjoint_funcs[func_mapping[func.name()]];
+            tmp_adjoint_func(adjoint_func.args()) += adjoint_func(adjoint_func.args());
             adjoint_funcs[func_mapping[func.name()]] = tmp_adjoint_func;
         }
     }
@@ -554,8 +556,10 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
         }
 
-        std::cerr << "adjoint after canonicalization:" << adjoint << "\n";
+        debug(0) << "adjoint after canonicalization:" << adjoint << "\n";
         func_to_update(args) += adjoint;
+        std::cerr << "print(func_to_update)" << std::endl;
+        print_func(func_to_update);
     }
 }
 
