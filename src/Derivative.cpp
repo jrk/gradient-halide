@@ -131,7 +131,8 @@ std::pair<Expr, Expr> get_bounds(const Expr &expr, const std::vector<Var> &curre
     } else if (expr.get()->node_type == IRNodeType::IntImm) {
         return {expr, expr};
     }
-    throw std::runtime_error("Can't inference bounds");
+    // throw std::runtime_error("Can't inference bounds");
+    internal_error << "Can't infer bounds";
     return std::pair<Expr, Expr>();
 }
 
