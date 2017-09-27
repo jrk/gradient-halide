@@ -70,7 +70,7 @@ class WrapExternStages : public IRMutator {
         for (Argument a : args) {
             if (a.kind == Argument::InputBuffer ||
                 a.kind == Argument::OutputBuffer) {
-                Expr new_buffer_var = Variable::make(a.type, a.name + ".buffer");
+                Expr new_buffer_var = Variable::make(type_of<struct halide_buffer_t *>(), a.name + ".buffer");
 
                 // Allocate some stack space for the old buffer
                 string old_buffer_name = a.name + ".old_buffer_t";
@@ -119,9 +119,7 @@ class WrapExternStages : public IRMutator {
     }
 
     void visit(const Call *op) {
-        if ((op->call_type == Call::Extern ||
-             op->call_type == Call::ExternCPlusPlus) &&
-            op->func.defined()) {
+        if (op->is_extern() && op->func.defined()) {
             Function f(op->func);
             internal_assert(f.has_extern_definition());
             if (f.extern_definition_uses_old_buffer_t()) {

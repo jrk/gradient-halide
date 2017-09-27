@@ -138,6 +138,7 @@ llvm::Type *llvm_type_of(LLVMContext *c, Halide::Type t) {
 // functions that takes a user_context pointer as its first parameter.
 bool function_takes_user_context(const std::string &name) {
     static const char *user_context_runtime_funcs[] = {
+        "halide_buffer_copy",
         "halide_copy_to_host",
         "halide_copy_to_device",
         "halide_current_time_ns",
@@ -197,6 +198,9 @@ bool function_takes_user_context(const std::string &name) {
         "halide_upgrade_buffer_t",
         "halide_downgrade_buffer_t",
         "halide_downgrade_buffer_t_device_fields",
+        "_halide_buffer_crop",
+        "_halide_buffer_retire_crop_after_extern_stage",
+        "_halide_buffer_retire_crops_after_extern_stage",
     };
     const int num_funcs = sizeof(user_context_runtime_funcs) /
         sizeof(user_context_runtime_funcs[0]);
@@ -413,10 +417,7 @@ void get_target_options(const llvm::Module &module, llvm::TargetOptions &options
     options.UseInitArray = false;
     options.FloatABIType =
         use_soft_float_abi ? llvm::FloatABI::Soft : llvm::FloatABI::Hard;
-    #if LLVM_VERSION >= 39
-    // Not supported by older linkers
     options.RelaxELFRelocations = false;
-    #endif
 }
 
 
@@ -447,7 +448,7 @@ std::unique_ptr<llvm::TargetMachine> make_target_machine(const llvm::Module &mod
     const llvm::Target *target = llvm::TargetRegistry::lookupTarget(module.getTargetTriple(), error_string);
     if (!target) {
         std::cout << error_string << std::endl;
-#if LLVM_VERSION < 50
+#if LLVM_VERSION < 60
         llvm::TargetRegistry::printRegisteredTargetsForVersion();
 #else
         llvm::TargetRegistry::printRegisteredTargetsForVersion(llvm::outs());
