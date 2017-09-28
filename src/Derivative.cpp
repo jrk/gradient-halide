@@ -28,6 +28,7 @@ private:
     bool found;
 };
 
+
 class VariableReplacer : public IRMutator {
 public:
      Expr replace(const Expr &expr, const std::string &replaced_var_name_, const Expr &replace_expr_) {
@@ -48,6 +49,7 @@ private:
     std::string replced_var_name;
     Expr replace_expr;
 };
+
 
 Expr inverse(const Var &var, const Expr &expr) {
     // TODO: replace with a full visitor
@@ -94,6 +96,7 @@ Expr inverse(const Var &var, const Expr &expr) {
     return expr;
 }
 
+
 std::pair<Expr, Expr> get_bounds(const Expr &expr, const std::vector<Var> &current_args,
                                  const RDom &current_bounds, const int index) {
     if (expr.get()->node_type == IRNodeType::Add) {
@@ -105,7 +108,7 @@ std::pair<Expr, Expr> get_bounds(const Expr &expr, const std::vector<Var> &curre
         const Sub *op = expr.as<Sub>();
         const std::pair<Expr, Expr> a_bounds = get_bounds(op->a, current_args, current_bounds, index);
         const std::pair<Expr, Expr> b_bounds = get_bounds(op->b, current_args, current_bounds, index);
-        return {a_bounds.first - b_bounds.first, a_bounds.second - b_bounds.second};
+        return {a_bounds.first - b_bounds.second, a_bounds.second - b_bounds.first};
     } else if (expr.get()->node_type == IRNodeType::Variable) {
         const Variable *var = expr.as<Variable>();
         if (var->reduction_domain.defined()) {
@@ -131,10 +134,10 @@ std::pair<Expr, Expr> get_bounds(const Expr &expr, const std::vector<Var> &curre
     } else if (expr.get()->node_type == IRNodeType::IntImm) {
         return {expr, expr};
     }
-    // throw std::runtime_error("Can't inference bounds");
-    internal_error << "Can't infer bounds";
+    internal_error << "Can't infer bounds, Expr type not handled " << expr.get()->node_type;
     return std::pair<Expr, Expr>();
 }
+
 
 /** An IR graph visitor that gather the function DAG and sort them in reverse topological order
  */
@@ -155,17 +158,21 @@ private:
 };
 
 void FunctionSorter::sort(const Expr &expr) {
+    // debug(0) << "FuncSorter: sorting Expr\n";
     expr.accept(this);
 }
 
 void FunctionSorter::sort(const Func &func) {
+    // debug(0) << "FuncSorter: sorting Func " << func.name() << "\n";
     traversed_functions.insert(func.name());
     functions.push_back(Func(func));
     // Traverse from the last update to first
     for (int update_id = func.num_update_definitions() - 1; update_id >= -1; update_id--) {
         if (update_id >= 0) {
+            // debug(0) << "  Recurse to update #" << update_id << "\n";
             func.update_value(update_id).accept(this);
         } else {
+            // debug(0) << " Recurse to pure definition" << "\n";
             func.value().accept(this);
         }
     }
@@ -174,17 +181,28 @@ void FunctionSorter::sort(const Func &func) {
 void FunctionSorter::visit(const Call *op) {
     if (op->call_type == Call::Halide) {
         Func func(Function(op->func));
+        // debug(0) << "Visiting Call::Halide " << func.name() << "\n";
+
+        // debug(0) << "  Traversed functions = { ";
+        // for(auto f : traversed_functions) {
+          // debug(0) << f << " ";
+        // }
+        // debug(0) << "}\n";
+
         if (traversed_functions.find(func.name()) != traversed_functions.end()) {
+            // debug(0) << "  already traversed, not recursing." << "\n";
             return;
         }
         sort(func);
         return;
     }
 
+    // debug(0) << "Visiting other Call" << "\n";
     for (size_t i = 0; i < op->args.size(); i++) {
         include(op->args[i]);
     }
 }
+
 
 /** An IR graph visitor that gather the expression DAG and sort them in topological order
  */
@@ -273,11 +291,12 @@ void BoundsInferencer::inference(const Func &func) {
 void BoundsInferencer::visit(const Call *op) {
     if (op->call_type == Call::Halide) {
         Func func(Function(op->func));
+
         // Update function bounds
         if (func_bounds.find(func.name()) == func_bounds.end()) {
+            // no bounds stored yet
             std::vector<std::pair<Expr, Expr>> arg_bounds;
             arg_bounds.reserve(op->args.size());
-            std::cerr << "func.name():" << func.name() << std::endl;
             for (int i = 0; i < (int)op->args.size(); i++) {
                 arg_bounds.push_back(get_bounds(op->args[i], current_args, current_bounds, i));
             }
@@ -285,15 +304,20 @@ void BoundsInferencer::visit(const Call *op) {
         }
 
         if (traversed_functions.find(func.name()) != traversed_functions.end()) {
+            // already traversed
             return;
         }
+
         RDom previous_bounds = current_bounds;
         std::vector<Var> previous_args = current_args;
+
         current_bounds = func_bounds[func.name()];
         current_args = func.args();
         inference(func);
+
         current_args = previous_args;
         current_bounds = previous_bounds;
+
         return;
     }
 
@@ -302,14 +326,14 @@ void BoundsInferencer::visit(const Call *op) {
     }
 }
 
+
 /** An IR visitor that computes the derivatives through reverse accumulation
  */
 class ReverseAccumulationVisitor : public IRVisitor {
 public:
     void propagate_adjoints(const Expr &output, const std::vector<Func> &funcs);
-    std::vector<Func> get_adjoint_funcs() const {
-        return adjoint_funcs;
-    }
+    std::vector<Func> get_adjoint_funcs() const { return adjoint_funcs; }
+
 protected:
     void visit(const Cast *op);
     void visit(const Variable *op);
@@ -321,6 +345,7 @@ protected:
     void visit(const Max *op);
     void visit(const Call *op);
     void visit(const Let *op);
+
 private:
     void accumulate(const Expr &stub, const Expr &adjoint);
 
@@ -335,12 +360,15 @@ private:
     std::string current_func_name;
 };
 
+
 void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const std::vector<Func> &funcs) {
     if (funcs.size() == 0) {
+        debug(0) << "ReverseAccumulationVisitor: no functions to backpropagate to.\n";
         return;
     }
 
     BoundsInferencer bounds_inferencer;
+    debug(0) << "ReverseAccumulationVisitor: infering bounds.\n";
     bounds_inferencer.inference(output);
     func_bounds = bounds_inferencer.get_func_bounds();
 
@@ -356,6 +384,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
     sorter.sort(output);
     std::vector<Expr> expr_list = sorter.get_expr_list();
     accumulate(output, 1.f);
+
     // Traverse the expressions in reverse order
     for (auto it = expr_list.rbegin(); it != expr_list.rend(); it++) {
         // Propagate adjoints
@@ -397,11 +426,13 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
             // Propagate to this temporary Func if we use the same function during update
             tmp_adjoint_func = Func(func.name() + "_d__");
             tmp_adjoint_func(func.args()) = 0.f;
+
             // Traverse the expressions in reverse order
             for (auto it = expr_list.rbegin(); it != expr_list.rend(); it++) {
                 // Propagate adjoints
                 it->accept(this);
             }
+
             // Add back the Func
             Func &adjoint_func = adjoint_funcs[func_mapping[func.name()]];
             tmp_adjoint_func(adjoint_func.args()) += adjoint_func(adjoint_func.args());
@@ -575,14 +606,13 @@ void ReverseAccumulationVisitor::visit(const Let *op) {
 } // namespace Internal
 
 std::vector<Func> propagate_adjoints(const Expr &output) {
-    Internal::debug(0) << "propagate_adjoints begins" << "\n";
     Internal::FunctionSorter sorter;
-    Internal::debug(0) << "sorting functions" << "\n";
+    Internal::debug(0) << "Propagate: Sorting functions" << "\n";
     sorter.sort(output);
     std::vector<Func> funcs = sorter.get_functions();
-    Internal::debug(0) << "func list:" << "\n";
+    Internal::debug(0) << "Propagate: Sorted Func list:" << "\n";
     for (const auto &func : funcs) {
-        Internal::debug(0) << func.name() << "\n";
+        Internal::debug(0) << "  . " << func.name() << "\n";
     }
     Internal::ReverseAccumulationVisitor visitor;
     visitor.propagate_adjoints(output, funcs);
@@ -590,18 +620,18 @@ std::vector<Func> propagate_adjoints(const Expr &output) {
 }
 
 void print_func(const Func &func) {
-    Internal::debug(0) << "printing function:" << func.name() << "\n";
+    Internal::debug(0) << "Printing function:" << func.name() << "\n";
     Internal::FunctionSorter sorter;
     sorter.sort(func);
     std::vector<Func> funcs = sorter.get_functions();
     for (int i = (int)funcs.size() - 1; i >= 0; i--) {
         Func &func = funcs[i];
-        Internal::debug(0) << "funcs[" << i << "]:" << func.name() << "\n";
+        Internal::debug(0) << "  funcs[" << i << "]: " << func.name() << "\n";
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
             if (update_id >= 0) {
-                Internal::debug(0) << "update:" << func.update_value(update_id) << "\n";
+                Internal::debug(0) << "    update:" << func.update_value(update_id) << "\n";
             } else {
-                Internal::debug(0) << "init:" << func.value() << "\n";
+                Internal::debug(0) << "    init:" << func.value() << "\n";
             }
         }
     }
