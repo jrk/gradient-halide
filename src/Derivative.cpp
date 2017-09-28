@@ -134,7 +134,7 @@ std::pair<Expr, Expr> get_bounds(const Expr &expr, const std::vector<Var> &curre
     } else if (expr.get()->node_type == IRNodeType::IntImm) {
         return {expr, expr};
     }
-    internal_error << "Can't infer bounds, Expr type not handled " << expr.get()->node_type;
+    internal_error << "Can't infer bounds, Expr type not handled\n";
     return std::pair<Expr, Expr>();
 }
 
@@ -298,7 +298,8 @@ void BoundsInferencer::visit(const Call *op) {
             std::vector<std::pair<Expr, Expr>> arg_bounds;
             arg_bounds.reserve(op->args.size());
             for (int i = 0; i < (int)op->args.size(); i++) {
-                arg_bounds.push_back(get_bounds(op->args[i], current_args, current_bounds, i));
+                arg_bounds.push_back(get_bounds(op->args[i], 
+                      current_args, current_bounds, i));
             }
             func_bounds[func.name()] = RDom(arg_bounds);
         }
