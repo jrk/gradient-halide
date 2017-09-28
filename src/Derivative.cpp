@@ -113,7 +113,7 @@ std::pair<Expr, Expr> get_bounds(const Expr &expr, const std::vector<Var> &curre
         const Variable *var = expr.as<Variable>();
         if (var->reduction_domain.defined()) {
             ReductionVariable rvar = var->reduction_domain.domain()[index];
-            return {rvar.min, rvar.extent};
+            return {rvar.min, rvar.min + rvar.extent};
         } else {
             for (int i = 0; i < (int)current_args.size(); i++) {
                 if (current_args[i].name() == var->name) {
