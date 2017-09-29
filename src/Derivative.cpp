@@ -520,22 +520,20 @@ void ReverseAccumulationVisitor::visit(const Min *op) {
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
-    // TODO: fix this
     // d/da min(a, b) = a <= b ? 1 : 0
-    accumulate(op->a, adjoint);
+    accumulate(op->a, select(op->a <= op->b, adjoint, 0.f));
     // d/db min(a, b) = b <= a ? 1 : 0
-    accumulate(op->b, adjoint);
+    accumulate(op->b, select(op->b <= op->a, adjoint, 0.f));
 }
 
 void ReverseAccumulationVisitor::visit(const Max *op) {
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
-    // TODO: fix this
     // d/da max(a, b) = a >= b ? 1 : 0
-    accumulate(op->a, adjoint);
+    accumulate(op->a, select(op->a >= op->b, adjoint, 0.f));
     // d/db max(a, b) = b >= a ? 1 : 0
-    accumulate(op->b, adjoint);
+    accumulate(op->b, select(op->b >= op->a, adjoint, 0.f));
 }
 
 void ReverseAccumulationVisitor::visit(const Call *op) {
