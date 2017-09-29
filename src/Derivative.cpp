@@ -258,7 +258,7 @@ typedef std::vector<std::pair<Expr, Expr>> FuncBounds;
  *  Visit function calls and determine their bounds.
  *  So when we do f(x, y) = ... we know what the loop bounds are
  */
-class BoundsInferencer : public IRGraphVisitor {
+class BoundsInferencer : public IRVisitor {
 public:
     void inference(const Expr &expr);
     void inference(const Func &func);
@@ -294,7 +294,7 @@ private:
 };
 
 void BoundsInferencer::inference(const Expr &expr) {
-    visited.clear();
+    // visited.clear();
     expr.accept(this);
 }
 
@@ -346,21 +346,21 @@ void BoundsInferencer::visit(const Call *op) {
 
         func_bounds[func.name()] = arg_bounds;
 
-        if (traversed_functions.find(func.name()) != traversed_functions.end()) {
-            // already traversed
-            debug(0) << "  already traversed.\n";
-            return;
-        }
+        // if (traversed_functions.find(func.name()) != traversed_functions.end()) {
+        //     // already traversed
+        //     debug(0) << "  already traversed.\n";
+        //     return;
+        // }
 
         recursion_depth += 1;
         inference(func);
         recursion_depth -= 1;
         return;
     }
-    debug(0) << recursion_depth << " Visiting non-halide call\n";
 
     for (size_t i = 0; i < op->args.size(); i++) {
-        include(op->args[i]);
+        // include(op->args[i]);
+        op->args[i].accept(this);
     }
 }
 
