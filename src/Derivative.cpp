@@ -3,6 +3,7 @@
 #include "Simplify.h"
 #include "IRMutator.h"
 #include "IROperator.h"
+#include "IREquality.h"
 #include "Error.h"
 #include "runtime/printer.h"
 #include <iostream>
@@ -268,19 +269,18 @@ public:
     std::map<std::string, RDom> get_func_bounds() const {
         // TODO(mgharbi): don't recompute that all the time..
         std::map<std::string, RDom> ret;
-        FuncBounds min_extent_bounds;
-        min_extent_bounds.reserve(func_bounds.size());
-
         // Convert to an Rdom
         for(auto b: func_bounds) { 
           debug(0) << "Computed bounds for " << b.first << ":\n";
+          FuncBounds min_extent_bounds;
+          min_extent_bounds.reserve(b.second.size());
           for (int i = 0; i < (int)b.second.size(); ++i) {
             Expr lower_bound = simplify(b.second[i].first);
             Expr extent = simplify(b.second[i].second - lower_bound+1);
             min_extent_bounds.push_back(std::make_pair(lower_bound, extent));
             debug(0) << "  arg" << i << " ("  << lower_bound << ", " << extent << ")\n";
           }
-          ret[b.first] = RDom(b.second);
+          ret[b.first] = RDom(min_extent_bounds);
         }
         return ret;
     }
@@ -637,7 +637,60 @@ void ReverseAccumulationVisitor::visit(const Let *op) {
     let_var_mapping[op->name] = op->value;
 }
 
+void test_simple_bounds_inference() {
+    Var x("x"), y("y");
+    int height = 32;
+    int width = 16;
+
+    Func input("input");
+    input(x, y) = 0.0f;
+    Func blur_x("blur_x");
+    blur_x(x, y) = input(x, y) + input(x+1, y) + input(x+2, y);
+    Func blur_y("blur_y");
+    blur_y(x, y) = blur_x(x, y) + blur_x(x, y+1) + blur_x(x, y+2);
+
+    RDom r(0, width-2, 0, height-2);
+    Expr loss = blur_y(r.x, r.y);
+
+    BoundsInferencer bounds_inferencer;
+    bounds_inferencer.inference(loss);
+    std::map<std::string, RDom> bounds = bounds_inferencer.get_func_bounds();
+
+    internal_assert(equal(bounds["blur_y"][0].min(), 0)) 
+      << "Expected 0 instead of " << bounds["blur_y"][0].min() << "\n" ;
+    internal_assert(equal(bounds["blur_y"][0].extent(), width-2)) 
+      << "Expected " << width-2  << " instead of " << bounds["blur_y"][0].extent() << "\n" ;
+    internal_assert(equal(bounds["blur_y"][1].min(), 0)) 
+      << "Expected 0 instead of " << bounds["blur_y"][1].min() << "\n" ;
+    internal_assert(equal(bounds["blur_y"][1].extent(), height-2)) 
+      << "Expected " << height-2  << " instead of " << bounds["blur_y"][1].extent() << "\n" ;
+
+    internal_assert(equal(bounds["blur_x"][0].min(), 0)) 
+      << "Expected 0 instead of " << bounds["blur_x"][0].min() << "\n" ;
+    internal_assert(equal(bounds["blur_x"][0].extent(), width-2)) 
+      << "Expected " << width-2  << " instead of " << bounds["blur_x"][0].extent() << "\n" ;
+    internal_assert(equal(bounds["blur_x"][1].min(), 0)) 
+      << "Expected 0 instead of " << bounds["blur_x"][1].min() << "\n" ;
+    internal_assert(equal(bounds["blur_x"][1].extent(), height)) 
+      << "Expected " << height  << " instead of " << bounds["blur_x"][1].extent() << "\n" ;
+
+    internal_assert(equal(bounds["input"][0].min(), 0)) 
+      << "Expected 0 instead of " << bounds["input"][0].min() << "\n" ;
+    internal_assert(equal(bounds["input"][0].extent(), width)) 
+      << "Expected " << width  << " instead of " << bounds["input"][0].extent() << "\n" ;
+    internal_assert(equal(bounds["input"][1].min(), 0)) 
+      << "Expected 0 instead of " << bounds["input"][1].min() << "\n" ;
+    internal_assert(equal(bounds["input"][1].extent(), height)) 
+      << "Expected " << height  << " instead of " << bounds["input"][1].extent() << "\n" ;
+}
+
+void derivative_test() {
+  test_simple_bounds_inference();
+  debug(0) << "Derivative test passed\n";
+}
+
 } // namespace Internal
+
 
 std::map<std::string, Func> propagate_adjoints(const Expr &output) {
     Internal::FunctionSorter sorter;

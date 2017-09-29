@@ -16,6 +16,12 @@ namespace Halide {
 std::map<std::string, Func> propagate_adjoints(const Expr &output);
 void print_func(const Func &func);
 
+namespace Internal {
+
+EXPORT void derivative_test();
+
+}
+
 }
 
 #endif
