@@ -96,20 +96,17 @@ Expr inverse(const Var &var, const Expr &expr) {
     return expr;
 }
 
-/**
- * get (min, max) bounds
- */
-std::pair<Expr, Expr> get_bounds(const Expr &expr, const std::vector<Var> &current_args,
-                                 const RDom &current_bounds, const int index) {
+std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr, const std::vector<Var> &current_args,
+                                         const RDom &current_bounds, const int index) {
     if (expr.get()->node_type == IRNodeType::Add) {
         const Add *op = expr.as<Add>();
-        const std::pair<Expr, Expr> a_bounds = get_bounds(op->a, current_args, current_bounds, index);
-        const std::pair<Expr, Expr> b_bounds = get_bounds(op->b, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
         return {a_bounds.first + b_bounds.first, a_bounds.second + b_bounds.second};
     } else if (expr.get()->node_type == IRNodeType::Sub) {
         const Sub *op = expr.as<Sub>();
-        const std::pair<Expr, Expr> a_bounds = get_bounds(op->a, current_args, current_bounds, index);
-        const std::pair<Expr, Expr> b_bounds = get_bounds(op->b, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
         return {a_bounds.first - b_bounds.second, a_bounds.second - b_bounds.first};
     } else if (expr.get()->node_type == IRNodeType::Variable) {
         const Variable *var = expr.as<Variable>();
@@ -125,13 +122,13 @@ std::pair<Expr, Expr> get_bounds(const Expr &expr, const std::vector<Var> &curre
         }
     } else if (expr.get()->node_type == IRNodeType::Max) {
         const Max *op = expr.as<Max>();
-        const std::pair<Expr, Expr> a_bounds = get_bounds(op->a, current_args, current_bounds, index);
-        const std::pair<Expr, Expr> b_bounds = get_bounds(op->b, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
         return {max(a_bounds.first, b_bounds.first), max(a_bounds.second, b_bounds.second)};
     } else if (expr.get()->node_type == IRNodeType::Min) {
         const Min *op = expr.as<Min>();
-        const std::pair<Expr, Expr> a_bounds = get_bounds(op->a, current_args, current_bounds, index);
-        const std::pair<Expr, Expr> b_bounds = get_bounds(op->b, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
         return {min(a_bounds.first, b_bounds.first), min(a_bounds.second, b_bounds.second)};
     } else if (expr.get()->node_type == IRNodeType::IntImm) {
         return {expr, expr};
@@ -140,6 +137,10 @@ std::pair<Expr, Expr> get_bounds(const Expr &expr, const std::vector<Var> &curre
     internal_error << "Can't infer bounds, Expr type not handled\n";
     return std::pair<Expr, Expr>();
 }
+
+std::pair<Expr, Expr> merge_bounds(const std::pair<Expr, Expr> &bounds0, const std::pair<Expr, Expr> &bounds1) {
+    return {min(bounds0.first, bounds1.first), max(bounds0.second, bounds1.second)};
+};
 
 /** An IR graph visitor that gather the function DAG and sort them in reverse topological order
  */
@@ -294,17 +295,24 @@ void BoundsInferencer::visit(const Call *op) {
     if (op->call_type == Call::Halide) {
         Func func(Function(op->func));
 
-        // Update function bounds
-        if (func_bounds.find(func.name()) == func_bounds.end()) {
-            // no bounds stored yet
-            std::vector<std::pair<Expr, Expr>> arg_bounds;
-            arg_bounds.reserve(op->args.size());
-            for (int i = 0; i < (int)op->args.size(); i++) {
-                arg_bounds.push_back(get_bounds(op->args[i], 
-                      current_args, current_bounds, i));
-            }
-            func_bounds[func.name()] = RDom(arg_bounds);
+        std::vector<std::pair<Expr, Expr>> arg_bounds;
+        arg_bounds.reserve(op->args.size());
+        for (int i = 0; i < (int)op->args.size(); i++) {
+            std::pair<Expr, Expr> min_max_bounds = get_min_max_bounds(op->args[i], current_args, current_bounds, i);
+            // RDom accepts min/extent instead of min max
+            arg_bounds.push_back({min_max_bounds.first, min_max_bounds.second - min_max_bounds.first});
         }
+        // Update function bounds
+        if (func_bounds.find(func.name()) != func_bounds.end()) {
+            RDom prev_rdom = func_bounds[func.name()];
+            std::vector<ReductionVariable> domain = prev_rdom.domain().domain();
+            assert(arg_bounds.size() == domain.size());
+            for (int i = 0; i < (int)arg_bounds.size(); i++) {
+                std::pair<Expr, Expr> prev_bounds = {domain[i].min, domain[i].min + domain[i].extent};
+                arg_bounds[i] = merge_bounds(prev_bounds, arg_bounds[i]);
+            }
+        }
+        func_bounds[func.name()] = RDom(arg_bounds);
 
         if (traversed_functions.find(func.name()) != traversed_functions.end()) {
             // already traversed
@@ -317,7 +325,6 @@ void BoundsInferencer::visit(const Call *op) {
         current_bounds = func_bounds[func.name()];
         current_args = func.args();
         inference(func);
-
         current_args = previous_args;
         current_bounds = previous_bounds;
 
