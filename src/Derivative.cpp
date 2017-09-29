@@ -637,6 +637,43 @@ void ReverseAccumulationVisitor::visit(const Let *op) {
     let_var_mapping[op->name] = op->value;
 }
 
+} // namespace Internal
+
+
+std::map<std::string, Func> propagate_adjoints(const Expr &output) {
+    Internal::FunctionSorter sorter;
+    Internal::debug(0) << "Propagate: Sorting functions" << "\n";
+    sorter.sort(output);
+    std::vector<Func> funcs = sorter.get_functions();
+    Internal::debug(0) << "Propagate: Sorted Func list:" << "\n";
+    for (const auto &func : funcs) {
+        Internal::debug(0) << "  . " << func.name() << "\n";
+    }
+    Internal::ReverseAccumulationVisitor visitor;
+    visitor.propagate_adjoints(output, funcs);
+    return visitor.get_adjoint_funcs();
+}
+
+void print_func(const Func &func) {
+    Internal::debug(0) << "Printing function:" << func.name() << "\n";
+    Internal::FunctionSorter sorter;
+    sorter.sort(func);
+    std::vector<Func> funcs = sorter.get_functions();
+    for (int i = (int)funcs.size() - 1; i >= 0; i--) {
+        Func &func = funcs[i];
+        Internal::debug(0) << "  funcs[" << i << "]: " << func.name() << "\n";
+        for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
+            if (update_id >= 0) {
+                Internal::debug(0) << "    update:" << func.update_value(update_id) << "\n";
+            } else {
+                Internal::debug(0) << "    init:" << func.value() << "\n";
+            }
+        }
+    }
+}
+
+// Testing code
+namespace Internal {
 void test_simple_bounds_inference() {
     Var x("x"), y("y");
     int height = 32;
@@ -688,40 +725,7 @@ void derivative_test() {
   test_simple_bounds_inference();
   debug(0) << "Derivative test passed\n";
 }
-
 } // namespace Internal
 
-
-std::map<std::string, Func> propagate_adjoints(const Expr &output) {
-    Internal::FunctionSorter sorter;
-    Internal::debug(0) << "Propagate: Sorting functions" << "\n";
-    sorter.sort(output);
-    std::vector<Func> funcs = sorter.get_functions();
-    Internal::debug(0) << "Propagate: Sorted Func list:" << "\n";
-    for (const auto &func : funcs) {
-        Internal::debug(0) << "  . " << func.name() << "\n";
-    }
-    Internal::ReverseAccumulationVisitor visitor;
-    visitor.propagate_adjoints(output, funcs);
-    return visitor.get_adjoint_funcs();
-}
-
-void print_func(const Func &func) {
-    Internal::debug(0) << "Printing function:" << func.name() << "\n";
-    Internal::FunctionSorter sorter;
-    sorter.sort(func);
-    std::vector<Func> funcs = sorter.get_functions();
-    for (int i = (int)funcs.size() - 1; i >= 0; i--) {
-        Func &func = funcs[i];
-        Internal::debug(0) << "  funcs[" << i << "]: " << func.name() << "\n";
-        for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
-            if (update_id >= 0) {
-                Internal::debug(0) << "    update:" << func.update_value(update_id) << "\n";
-            } else {
-                Internal::debug(0) << "    init:" << func.value() << "\n";
-            }
-        }
-    }
-}
 
 } // namespace Halide
