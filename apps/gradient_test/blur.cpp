@@ -26,7 +26,7 @@ int main(int argc, char **argv) {
     blur_x(x, y) = (input_float(x, y) + input_float(x+1, y) + input_float(x+2, y))/3.0f;
 
     Func blur_y("blur_y");
-    blur_y(x, y) = (blur_x(x, y) + blur_x(x, y+1) + blur_x(x, y+1))/3.0f;
+    blur_y(x, y) = (blur_x(x, y) + blur_x(x, y+1) + blur_x(x, y+2))/3.0f;
 
     // // Simple updates
     // blur_y(0, 0) += 1.0f;
