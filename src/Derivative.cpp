@@ -96,7 +96,9 @@ Expr inverse(const Var &var, const Expr &expr) {
     return expr;
 }
 
-
+/**
+ * get (min, max) bounds
+ */
 std::pair<Expr, Expr> get_bounds(const Expr &expr, const std::vector<Var> &current_args,
                                  const RDom &current_bounds, const int index) {
     if (expr.get()->node_type == IRNodeType::Add) {
@@ -134,10 +136,10 @@ std::pair<Expr, Expr> get_bounds(const Expr &expr, const std::vector<Var> &curre
     } else if (expr.get()->node_type == IRNodeType::IntImm) {
         return {expr, expr};
     }
+
     internal_error << "Can't infer bounds, Expr type not handled\n";
     return std::pair<Expr, Expr>();
 }
-
 
 /** An IR graph visitor that gather the function DAG and sort them in reverse topological order
  */

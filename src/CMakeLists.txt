@@ -276,6 +276,7 @@ set(HEADER_FILES
   DebugToFile.h
   Definition.h
   Deinterleave.h
+  Derivative.h
   DeviceArgument.h
   DeviceInterface.h
   EarlyFree.h
@@ -432,6 +433,7 @@ add_library(Halide ${HALIDE_LIBRARY_TYPE}
   DebugToFile.cpp
   Definition.cpp
   Deinterleave.cpp
+  Derivative.cpp
   DeviceArgument.cpp
   DeviceInterface.cpp
   EarlyFree.cpp
