@@ -342,7 +342,7 @@ void BoundsInferencer::visit(const Call *op) {
 class ReverseAccumulationVisitor : public IRVisitor {
 public:
     void propagate_adjoints(const Expr &output, const std::vector<Func> &funcs);
-    std::vector<Func> get_adjoint_funcs() const { return adjoint_funcs; }
+    std::map<std::string, Func> get_adjoint_funcs() const { return adjoint_funcs; }
 
 protected:
     void visit(const Cast *op);
@@ -360,8 +360,7 @@ private:
     void accumulate(const Expr &stub, const Expr &adjoint);
 
     std::map<const BaseExprNode *, Expr> accumulated_adjoints;
-    std::map<std::string, int> func_mapping;
-    std::vector<Func> adjoint_funcs;
+    std::map<std::string, Func> adjoint_funcs;
     Func tmp_adjoint_func;
     std::map<std::string, Expr> let_var_mapping;
     std::map<std::string, RDom> func_bounds;
@@ -384,9 +383,9 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
 
     // Create a stub for each function to accumulate adjoints
     for (int i = 0; i < (int)funcs.size(); i++) {
-        func_mapping[funcs[i].name()] = i;
-        adjoint_funcs.push_back(Func(funcs[i].name() + "_d__"));
-        adjoint_funcs.back()(funcs[i].args()) = 0.f;
+        Func adjoint_func(funcs[i].name() + "_d__");
+        adjoint_func(funcs[i].args()) = 0.f;
+        adjoint_funcs[funcs[i].name()] = adjoint_func;
     }
 
     // Propagate output
@@ -404,7 +403,6 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
     // Traverse functions
     for (int i = 0; i < (int)funcs.size(); i++) {
         const Func &func = funcs[i];
-        std::cerr << "funcs[" << i << "]:" << func.name() << std::endl;
         current_func_name = func.name();
 
         // Traverse from the last update to first
@@ -430,7 +428,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
                     args.push_back(arg);
                 }
                 accumulated_adjoints[(const BaseExprNode *)expr_list.back().get()] =
-                    Call::make(adjoint_funcs[i].function(), args);
+                    Call::make(adjoint_funcs[func.name()].function(), args);
             }
 
             // Propagate to this temporary Func if we use the same function during update
@@ -444,9 +442,9 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
             }
 
             // Add back the Func
-            Func &adjoint_func = adjoint_funcs[func_mapping[func.name()]];
+            Func &adjoint_func = adjoint_funcs[func.name()];
             tmp_adjoint_func(adjoint_func.args()) += adjoint_func(adjoint_func.args());
-            adjoint_funcs[func_mapping[func.name()]] = tmp_adjoint_func;
+            adjoint_funcs[func.name()] = tmp_adjoint_func;
         }
     }
 }
@@ -566,7 +564,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
         debug(0) << "adjoint is:" << adjoint << "\n";
         Func& func_to_update = func.name() != current_func_name ?
-            adjoint_funcs[func_mapping[func.name()]] : tmp_adjoint_func;
+            adjoint_funcs[func.name()] : tmp_adjoint_func;
         // We want to do this:
         // func_to_update(op->args) += adjoint;
         // But op->args can be invalid lhs, need to canonicalize
@@ -615,7 +613,7 @@ void ReverseAccumulationVisitor::visit(const Let *op) {
 
 } // namespace Internal
 
-std::vector<Func> propagate_adjoints(const Expr &output) {
+std::map<std::string, Func> propagate_adjoints(const Expr &output) {
     Internal::FunctionSorter sorter;
     Internal::debug(0) << "Propagate: Sorting functions" << "\n";
     sorter.sort(output);

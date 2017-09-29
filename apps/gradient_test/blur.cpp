@@ -45,7 +45,7 @@ int main(int argc, char **argv) {
 
     std::cout << "loss = " << loss_val(0) << std::endl;
 
-    std::vector<Func> funcs = Halide::propagate_adjoints(loss);
+    std::map<std::string, Func> funcs = Halide::propagate_adjoints(loss);
 
     // funcs[3] = d output / d filter_func
     // print_func(funcs[3]);

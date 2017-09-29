@@ -32,11 +32,10 @@ int main(int argc, char **argv) {
     Halide::Expr diff = output(r_target.x, r_target.y) - input(r_target.x, r_target.y);
     Halide::Expr loss = diff * diff;
 
-    std::vector<Halide::Func> funcs = Halide::propagate_adjoints(loss);
-    // funcs[3] = d output / d filter_func
-    print_func(funcs[3]);
+    std::map<std::string, Halide::Func> funcs = Halide::propagate_adjoints(loss);
+    print_func(funcs["filter_func"]);
     // funcs[3].compile_to_lowered_stmt("df.html", {}, Halide::HTML);
-    Halide::Buffer<float> df = funcs[funcs.size() - 1].realize(3, 3);
+    Halide::Buffer<float> df = funcs["filter_func"].realize(3, 3);
     std::cerr << "df(0, 0):" << df(0, 0) << std::endl;
 
     return 0;
