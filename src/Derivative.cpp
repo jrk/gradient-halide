@@ -13,6 +13,7 @@ namespace Internal {
 class VariableFinder : public IRGraphVisitor {
 public:
     bool find(const Expr &expr, const Var &var) {
+        visited.clear();
         var_name = var.name();
         found = false;
         expr.accept(this);
@@ -34,13 +35,13 @@ private:
 class VariableReplacer : public IRMutator {
 public:
      Expr replace(const Expr &expr, const std::string &replaced_var_name_, const Expr &replace_expr_) {
-        replced_var_name = replaced_var_name_;
+        replaced_var_name = replaced_var_name_;
         replace_expr = replace_expr_;
         return mutate(expr);
     }
 
     void visit(const Variable *op) {
-        if (op->name == replced_var_name) {
+        if (op->name == replaced_var_name) {
             expr = replace_expr;
         } else {
             expr = op;
@@ -48,7 +49,7 @@ public:
     }
 
 private:
-    std::string replced_var_name;
+    std::string replaced_var_name;
     Expr replace_expr;
 };
 
@@ -171,6 +172,7 @@ private:
 };
 
 void FunctionSorter::sort(const Expr &expr) {
+    visited.clear();
     expr.accept(this);
 }
 
@@ -221,6 +223,7 @@ private:
 };
 
 void ExpressionSorter::sort(const Expr &e) {
+    visited.clear();
     expr_list.clear();
     e.accept(this);
     expr_list.push_back(e);
@@ -291,6 +294,7 @@ private:
 };
 
 void BoundsInferencer::inference(const Expr &expr) {
+    visited.clear();
     expr.accept(this);
 }
 
@@ -620,7 +624,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
         debug(0) << "adjoint after canonicalization:" << adjoint << "\n";
         func_to_update(args) += adjoint;
-        std::cerr << "print(func_to_update)" << std::endl;
+        debug(0) << "print(func_to_update)" << "\n";
         print_func(func_to_update);
     }
 }
