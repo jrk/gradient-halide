@@ -53,41 +53,42 @@ private:
 
 Expr inverse(const Var &var, const Expr &expr) {
     // TODO: replace with a full visitor
+    VariableFinder finder;
     if (expr.get()->node_type == IRNodeType::Add) {
         const Add *op = expr.as<Add>();
-        if (op->a.get()->node_type == IRNodeType::Variable &&
-            op->a.as<Variable>()->name == var.name()) {
-            return op->a - op->b; 
-        } else {
-            assert(op->b.get()->node_type == IRNodeType::Variable &&
-                   op->b.as<Variable>()->name == var.name());
-            return op->a - op->b; 
+        bool in_a = finder.find(op->a, var);
+        bool in_b = finder.find(op->b, var);
+        if (in_a && !in_b) {
+            return inverse(var, op->a) - op->b;
+        } else if (in_b && !in_a) {
+            return inverse(var, op->b) - op->a;
         }
     } else if (expr.get()->node_type == IRNodeType::Sub) {
         const Sub *op = expr.as<Sub>();
-        if (op->a.get()->node_type == IRNodeType::Variable &&
-            op->a.as<Variable>()->name == var.name()) {
-            return op->a + op->b; 
-        } else {
-            assert(op->b.get()->node_type == IRNodeType::Variable &&
-                   op->b.as<Variable>()->name == var.name());
-            return op->b - op->a; 
+        bool in_a = finder.find(op->a, var);
+        bool in_b = finder.find(op->b, var);
+        if (in_a && !in_b) {
+            return inverse(var, op->a) + op->b;
+        } else if (in_b && !in_a) {
+            return inverse(var, op->b) - op->a;
         }
     } else if (expr.get()->node_type == IRNodeType::Max) {
         const Max *op = expr.as<Max>();
-        if (op->a.get()->node_type == IRNodeType::IntImm) {
-            return max(inverse(var, op->b), op->a); 
-        } else {
-            assert(op->b.get()->node_type == IRNodeType::IntImm);
-            return max(inverse(var, op->a), op->b); 
+        bool in_a = finder.find(op->a, var);
+        bool in_b = finder.find(op->b, var);
+        if (in_a && !in_b) {
+            return max(inverse(var, op->a), op->b);
+        } else if (in_b && !in_a) {
+            return max(op->a, inverse(var, op->b));
         }
     } else if (expr.get()->node_type == IRNodeType::Min) {
         const Min *op = expr.as<Min>();
-        if (op->a.get()->node_type == IRNodeType::IntImm) {
-            return min(inverse(var, op->b), op->a); 
-        } else {
-            assert(op->b.get()->node_type == IRNodeType::IntImm);
-            return min(inverse(var, op->a), op->b); 
+        bool in_a = finder.find(op->a, var);
+        bool in_b = finder.find(op->b, var);
+        if (in_a && !in_b) {
+            return min(inverse(var, op->a), op->b);
+        } else if (in_b && !in_a) {
+            return min(op->a, inverse(var, op->b));
         }
     } else if (expr.get()->node_type == IRNodeType::Variable) {
         return expr;
