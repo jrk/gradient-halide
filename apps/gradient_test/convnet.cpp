@@ -4,6 +4,44 @@
 #include "Halide.h"
 #include "halide_image_io.h"
 
+#include <random>
+
+Halide::Buffer<float> initialize_filter_weights(const int kernel_width, const int kernel_height, std::mt19937 &rng) {
+    const int kernel_center_x = kernel_width / 2;
+    const int kernel_center_y = kernel_height / 2;
+    std::vector<float> weights;
+    weights.reserve(kernel_width * kernel_height);
+    for (int y = 0; y < kernel_height; y++) {
+        for (int x = 0; x < kernel_width; x++) {
+            float w = x == kernel_width / 2 && y == kernel_height / 2 ? 1.f : 0.f;
+            std::normal_distribution<float> dist(0.f, 0.1f);
+            w += dist(rng);
+            weights.push_back(w);
+        }
+    }
+    return Halide::Buffer<float>::make_interleaved(&weights[0], kernel_width, kernel_height, 1);
+}
+
+std::pair<Halide::Func, Halide::Func> conv_layer(const Halide::Func &input,
+                                                 const Halide::Buffer<float> &filter) {
+    Halide::Var x("x"), y("y");
+    const int kernel_center_x = filter.width() / 2;
+    const int kernel_center_y = filter.height() / 2;
+    Halide::Func filter_func("filter_func");
+    filter_func(x, y) = filter(x, y);
+    Halide::RDom r(0, filter.width(), 0, filter.height());
+    Halide::Func convolved("convolved");
+    convolved(x, y) = 0.f;
+    convolved(x, y) += input(x + r.x - kernel_center_x, y + r.y - kernel_center_y) * filter_func(r.x, r.y);
+    return {convolved, filter_func};
+}
+
+Halide::Func relu_layer(const Halide::Func &input) {
+    Halide::Func relu("relu");
+    relu(input.args()) = max(input(input.args()), 0.f);
+    return relu;
+}
+
 int main(int argc, char **argv) {
     Halide::Var x("x"), y("y");
     Halide::Buffer<uint8_t> input = Halide::Tools::load_image("images/gray.png");
@@ -15,28 +53,27 @@ int main(int argc, char **argv) {
     Halide::Func clamped("clamped");
     clamped(x, y) = input_float(clamped_x, clamped_y);
 
-    Halide::Func conv_layer("conv_layer");
+    std::mt19937 rng;
+    Halide::Buffer<float> weights0 = initialize_filter_weights(5, 5, rng);
+    Halide::Buffer<float> weights1 = initialize_filter_weights(5, 5, rng);
+    Halide::Buffer<float> weights2 = initialize_filter_weights(5, 5, rng);
 
-    float initial_weights[] = {1.f, 0.f, 0.f,
-                               0.f, 1.f, 0.f,
-                               0.f, 0.f, 1.f};
-    Halide::Buffer<float> filter =
-        Halide::Buffer<float>::make_interleaved(initial_weights, 3, 3, 1);
-    Halide::Func filter_func("filter_func");
-    filter_func(x, y) = filter(x, y);
-    Halide::RDom r(0, 3, 0, 3);
-    Halide::Func output("output");
-    output(x, y) = 0.f;
-    output(x, y) += clamped(x + r.x, y + r.y) * filter_func(r.x, r.y);
+    Halide::Func convolved0, filter0;
+    std::tie(convolved0, filter0) = conv_layer(clamped, weights0);
+    Halide::Func relu0            = relu_layer(convolved0);
+    Halide::Func convolved1, filter1;
+    std::tie(convolved1, filter1) = conv_layer(relu0, weights1);
+    Halide::Func relu1            = relu_layer(convolved1);
+    Halide::Func convolved2, filter2;
+    std::tie(convolved2, filter2) = conv_layer(relu1, weights2);
+    Halide::Func relu2            = relu_layer(convolved2);
+
     Halide::RDom r_target(input);
-    Halide::Expr diff = output(r_target.x, r_target.y) - input(r_target.x, r_target.y);
+    Halide::Expr diff = relu2(r_target.x, r_target.y) - input(r_target.x, r_target.y);
     Halide::Expr loss = diff * diff;
 
     std::map<std::string, Halide::Func> funcs = Halide::propagate_adjoints(loss);
-    print_func(funcs["filter_func"]);
-    // funcs[3].compile_to_lowered_stmt("df.html", {}, Halide::HTML);
-    Halide::Buffer<float> df = funcs["filter_func"].realize(3, 3);
-    std::cerr << "df(0, 0):" << df(0, 0) << std::endl;
+    print_func(funcs[filter0.name()]);
 
     return 0;
 }
