@@ -1,4 +1,6 @@
 #include "Derivative.h"
+
+#include "Simplify.h"
 #include "IRMutator.h"
 #include "IROperator.h"
 #include "Error.h"
@@ -104,18 +106,22 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr, const std::vector<Var
         const Add *op = expr.as<Add>();
         const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
         const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
+        debug(0) << "  " << index << " bounds for Add\n";
         return {a_bounds.first + b_bounds.first, a_bounds.second + b_bounds.second};
     } else if (expr.get()->node_type == IRNodeType::Sub) {
         const Sub *op = expr.as<Sub>();
         const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
         const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
+        debug(0) << "  " << index << " bounds for Sub\n";
         return {a_bounds.first - b_bounds.second, a_bounds.second - b_bounds.first};
     } else if (expr.get()->node_type == IRNodeType::Variable) {
         const Variable *var = expr.as<Variable>();
         if (var->reduction_domain.defined()) {
             ReductionVariable rvar = var->reduction_domain.domain()[index];
-            return {rvar.min, rvar.min + rvar.extent};
+            debug(0) << "  " << index << " bounds for Rvar\n";
+            return {rvar.min, rvar.min + rvar.extent - 1};
         } else {
+            debug(0) << "  " << index << " bounds for Var\n";
             for (int i = 0; i < (int)current_args.size(); i++) {
                 if (current_args[i].name() == var->name) {
                     return {current_bounds[i].min(), current_bounds[i].extent()};
@@ -126,13 +132,16 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr, const std::vector<Var
         const Max *op = expr.as<Max>();
         const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
         const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
+        debug(0) << "  " << index << " bounds for Max\n";
         return {max(a_bounds.first, b_bounds.first), max(a_bounds.second, b_bounds.second)};
     } else if (expr.get()->node_type == IRNodeType::Min) {
         const Min *op = expr.as<Min>();
         const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
         const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
+        debug(0) << "  " << index << " bounds for Min\n";
         return {min(a_bounds.first, b_bounds.first), min(a_bounds.second, b_bounds.second)};
     } else if (expr.get()->node_type == IRNodeType::IntImm) {
+        debug(0) << "  " << index << " bounds for IntImm\n";
         return {expr, expr};
     }
 
@@ -141,7 +150,7 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr, const std::vector<Var
 }
 
 std::pair<Expr, Expr> merge_bounds(const std::pair<Expr, Expr> &bounds0, const std::pair<Expr, Expr> &bounds1) {
-    return {min(bounds0.first, bounds1.first), max(bounds0.second, bounds1.second)};
+    return {simplify(min(bounds0.first, bounds1.first)), simplify(max(bounds0.second, bounds1.second))};
 };
 
 /** An IR graph visitor that gather the function DAG and sort them in reverse topological order
@@ -163,22 +172,18 @@ private:
 };
 
 void FunctionSorter::sort(const Expr &expr) {
-    // debug(0) << "FuncSorter: sorting Expr\n";
     visited.clear();
     expr.accept(this);
 }
 
 void FunctionSorter::sort(const Func &func) {
-    // debug(0) << "FuncSorter: sorting Func " << func.name() << "\n";
     traversed_functions.insert(func.name());
     functions.push_back(Func(func));
     // Traverse from the last update to first
     for (int update_id = func.num_update_definitions() - 1; update_id >= -1; update_id--) {
         if (update_id >= 0) {
-            // debug(0) << "  Recurse to update #" << update_id << "\n";
             func.update_value(update_id).accept(this);
         } else {
-            // debug(0) << " Recurse to pure definition" << "\n";
             func.value().accept(this);
         }
     }
@@ -187,23 +192,13 @@ void FunctionSorter::sort(const Func &func) {
 void FunctionSorter::visit(const Call *op) {
     if (op->call_type == Call::Halide) {
         Func func(Function(op->func));
-        // debug(0) << "Visiting Call::Halide " << func.name() << "\n";
-
-        // debug(0) << "  Traversed functions = { ";
-        // for(auto f : traversed_functions) {
-          // debug(0) << f << " ";
-        // }
-        // debug(0) << "}\n";
-
         if (traversed_functions.find(func.name()) != traversed_functions.end()) {
-            // debug(0) << "  already traversed, not recursing." << "\n";
             return;
         }
         sort(func);
         return;
     }
 
-    // debug(0) << "Visiting other Call" << "\n";
     for (size_t i = 0; i < op->args.size(); i++) {
         include(op->args[i]);
     }
@@ -257,6 +252,8 @@ void ExpressionSorter::include(const Expr &e) {
     }
 }
 
+typedef std::vector<std::pair<Expr, Expr>> FuncBounds;
+
 /**
  *  Visit function calls and determine their bounds.
  *  So when we do f(x, y) = ... we know what the loop bounds are
@@ -269,11 +266,28 @@ public:
     void visit(const Call *op);
 
     std::map<std::string, RDom> get_func_bounds() const {
-        return func_bounds;
+        // TODO(mgharbi): don't recompute that all the time..
+        std::map<std::string, RDom> ret;
+        FuncBounds min_extent_bounds;
+        min_extent_bounds.reserve(func_bounds.size());
+
+        // Convert to an Rdom
+        for(auto b: func_bounds) { 
+          debug(0) << "Computed bounds for " << b.first << ":\n";
+          for (int i = 0; i < (int)b.second.size(); ++i) {
+            Expr lower_bound = simplify(b.second[i].first);
+            Expr extent = simplify(b.second[i].second - lower_bound+1);
+            min_extent_bounds.push_back(std::make_pair(lower_bound, extent));
+            debug(0) << "  arg" << i << " ("  << lower_bound << ", " << extent << ")\n";
+          }
+          ret[b.first] = RDom(b.second);
+        }
+        return ret;
     }
 
 private:
-    std::map<std::string, RDom> func_bounds;
+    int recursion_depth = 0;
+    std::map<std::string, FuncBounds> func_bounds;
     std::set<std::string> traversed_functions;
     std::vector<Var> current_args;
     RDom current_bounds;
@@ -285,8 +299,13 @@ void BoundsInferencer::inference(const Expr &expr) {
 }
 
 void BoundsInferencer::inference(const Func &func) {
-    traversed_functions.insert(func.name());
+    RDom previous_bounds = current_bounds;
+    std::vector<Var> previous_args = current_args;
+    current_bounds = RDom(func_bounds[func.name()]);
+    current_args = func.args();
+    
     // Traverse from the last update to first
+    traversed_functions.insert(func.name());
     for (int update_id = func.num_update_definitions() - 1; update_id >= -1; update_id--) {
         if (update_id >= 0) {
             func.update_value(update_id).accept(this);
@@ -294,47 +313,51 @@ void BoundsInferencer::inference(const Func &func) {
             func.value().accept(this);
         }
     }
+    current_args = previous_args;
+    current_bounds = previous_bounds;
 }
 
 void BoundsInferencer::visit(const Call *op) {
     if (op->call_type == Call::Halide) {
         Func func(Function(op->func));
+        debug(0) << recursion_depth << " Visiting " << func.name() << "\n";
 
-        std::vector<std::pair<Expr, Expr>> arg_bounds;
+        FuncBounds arg_bounds;
         arg_bounds.reserve(op->args.size());
         for (int i = 0; i < (int)op->args.size(); i++) {
             std::pair<Expr, Expr> min_max_bounds = get_min_max_bounds(op->args[i], current_args, current_bounds, i);
-            // RDom accepts min/extent instead of min max
-            arg_bounds.push_back({min_max_bounds.first, min_max_bounds.second - min_max_bounds.first});
+            arg_bounds.push_back(min_max_bounds);
         }
+
         // Update function bounds
         if (func_bounds.find(func.name()) != func_bounds.end()) {
-            RDom prev_rdom = func_bounds[func.name()];
-            std::vector<ReductionVariable> domain = prev_rdom.domain().domain();
-            assert(arg_bounds.size() == domain.size());
+            FuncBounds prev_bounds = func_bounds[func.name()];
+            assert(arg_bounds.size() == prev_bounds.size());
             for (int i = 0; i < (int)arg_bounds.size(); i++) {
-                std::pair<Expr, Expr> prev_bounds = {domain[i].min, domain[i].min + domain[i].extent};
-                arg_bounds[i] = merge_bounds(prev_bounds, arg_bounds[i]);
+                arg_bounds[i] = merge_bounds(prev_bounds[i], arg_bounds[i]);
             }
+            debug(0) << "  Updated function bounds:\n";
         }
-        func_bounds[func.name()] = RDom(arg_bounds);
+        for (int i = 0; i < (int)arg_bounds.size(); i++) {
+          debug(0) << "    arg" << i << " (" 
+                   << arg_bounds[i].first << ", "
+                   << arg_bounds[i].second << ")\n";
+        }
+
+        func_bounds[func.name()] = arg_bounds;
 
         if (traversed_functions.find(func.name()) != traversed_functions.end()) {
             // already traversed
+            debug(0) << "  already traversed.\n";
             return;
         }
 
-        RDom previous_bounds = current_bounds;
-        std::vector<Var> previous_args = current_args;
-
-        current_bounds = func_bounds[func.name()];
-        current_args = func.args();
+        recursion_depth += 1;
         inference(func);
-        current_args = previous_args;
-        current_bounds = previous_bounds;
-
+        recursion_depth -= 1;
         return;
     }
+    debug(0) << recursion_depth << " Visiting non-halide call\n";
 
     for (size_t i = 0; i < op->args.size(); i++) {
         include(op->args[i]);
