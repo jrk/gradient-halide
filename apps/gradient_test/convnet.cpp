@@ -60,9 +60,15 @@ int main(int argc, char **argv) {
     Halide::Func convolved0, filter0;
     std::tie(convolved0, filter0) = conv_layer(clamped, weights0);
     Halide::Func relu0            = relu_layer(convolved0);
+    relu0.compute_root();
     Halide::Func convolved1, filter1;
     std::tie(convolved1, filter1) = conv_layer(relu0, weights1);
     Halide::Func relu1            = relu_layer(convolved1);
+    relu1.compute_root();
+    Halide::Func convolved2, filter2;
+    std::tie(convolved2, filter2) = conv_layer(relu1, weights2);
+    Halide::Func relu2            = relu_layer(convolved2);
+    relu2.compute_root();
 
     Halide::RDom r_target(input);
     Halide::Expr diff = relu1(r_target.x, r_target.y) - clamped(r_target.x, r_target.y);
@@ -75,6 +81,10 @@ int main(int argc, char **argv) {
     std::cerr << "loss:" << loss_buf(0) << std::endl;
 
     std::map<std::string, Halide::Func> funcs = Halide::propagate_adjoints(loss);
+    funcs["relu2"].compute_root();
+    funcs["relu1"].compute_root();
+    funcs["relu0"].compute_root();
+
     print_func(funcs[filter0.name()]);
     Halide::Buffer<float> df = funcs[filter0.name()].realize(5, 5);
     std::cerr << "df(0, 0):" << df(0, 0) << std::endl;
