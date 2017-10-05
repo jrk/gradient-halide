@@ -1,6 +1,8 @@
 #include "Derivative.h"
 
 #include "Simplify.h"
+#include "Solve.h"
+#include "Substitute.h"
 #include "IRMutator.h"
 #include "IROperator.h"
 #include "IREquality.h"
@@ -31,75 +33,6 @@ private:
     std::string var_name;
     bool found;
 };
-
-
-class VariableReplacer : public IRMutator {
-public:
-     Expr replace(const Expr &expr, const std::string &replaced_var_name_, const Expr &replace_expr_) {
-        replaced_var_name = replaced_var_name_;
-        replace_expr = replace_expr_;
-        return mutate(expr);
-    }
-
-    void visit(const Variable *op) {
-        if (op->name == replaced_var_name) {
-            expr = replace_expr;
-        } else {
-            expr = op;
-        }
-    }
-
-private:
-    std::string replaced_var_name;
-    Expr replace_expr;
-};
-
-
-Expr inverse(const Var &var, const Expr &expr) {
-    // TODO: replace with a full visitor
-    VariableFinder finder;
-    if (expr.get()->node_type == IRNodeType::Add) {
-        const Add *op = expr.as<Add>();
-        bool in_a = finder.find(op->a, var);
-        bool in_b = finder.find(op->b, var);
-        if (in_a && !in_b) {
-            return inverse(var, op->a) - op->b;
-        } else if (in_b && !in_a) {
-            return inverse(var, op->b) - op->a;
-        }
-    } else if (expr.get()->node_type == IRNodeType::Sub) {
-        const Sub *op = expr.as<Sub>();
-        bool in_a = finder.find(op->a, var);
-        bool in_b = finder.find(op->b, var);
-        if (in_a && !in_b) {
-            return inverse(var, op->a) + op->b;
-        } else if (in_b && !in_a) {
-            return inverse(var, op->b) - op->a;
-        }
-    } else if (expr.get()->node_type == IRNodeType::Max) {
-        const Max *op = expr.as<Max>();
-        bool in_a = finder.find(op->a, var);
-        bool in_b = finder.find(op->b, var);
-        if (in_a && !in_b) {
-            return max(inverse(var, op->a), op->b);
-        } else if (in_b && !in_a) {
-            return max(op->a, inverse(var, op->b));
-        }
-    } else if (expr.get()->node_type == IRNodeType::Min) {
-        const Min *op = expr.as<Min>();
-        bool in_a = finder.find(op->a, var);
-        bool in_b = finder.find(op->b, var);
-        if (in_a && !in_b) {
-            return min(inverse(var, op->a), op->b);
-        } else if (in_b && !in_a) {
-            return min(op->a, inverse(var, op->b));
-        }
-    } else if (expr.get()->node_type == IRNodeType::Variable) {
-        return expr;
-    }
-    assert(false);
-    return expr;
-}
 
 std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr, const std::vector<Var> &current_args,
                                          const RDom &current_bounds, const int index) {
@@ -390,7 +323,7 @@ private:
     std::map<const BaseExprNode *, Expr> accumulated_adjoints;
     std::map<std::string, Func> adjoint_funcs;
     Func tmp_adjoint_func;
-    std::map<std::string, Expr> let_var_mapping;
+    std::map<std::string, Expr> let_var_mapping; // TODO: replace this with Scope
     std::map<std::string, RDom> func_bounds;
     RDom current_bounds;
     std::vector<Var> current_args;
@@ -596,7 +529,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // But op->args can be invalid lhs, need to canonicalize
 
         VariableFinder finder;
-        VariableReplacer replacer;
         assert(func_bounds.find(func.name()) != func_bounds.end());
 
         // We canonicalize the left hand side arguments (op->args) so that it's always x, y, z, ...
@@ -606,19 +538,29 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 // all x in adjoint needs to be replaced by a RDom looping through the bounds
                 // of the current function
                 if (finder.find(adjoint, args[i])) {
-                    adjoint = replacer.replace(adjoint, args[i].name(), current_bounds[i]);
+                    adjoint = substitute(args[i].name(), current_bounds, adjoint);
                 }
                 // If it's a RVar, we need to replace it with the non-reduction argument
                 if (op->args[i].get()->node_type == IRNodeType::Variable) {
                     const Variable *var = op->args[i].as<Variable>();
                     if (var->reduction_domain.defined()) {
-                        adjoint = replacer.replace(adjoint, var->name, args[i]);
+                        adjoint = substitute(var->name, args[i], adjoint);
                     }
                 }
             } else {
                 // Apply the inverse to rhs
-                Expr inverse_arg = inverse(args[i], op->args[i]);
-                adjoint = replacer.replace(adjoint, args[i].name(), inverse_arg);
+                Var tmp("tmp");
+                SolverResult result = solve_expression(tmp == op->args[i], args[i].name());
+                if (!result.fully_solved) {
+                    internal_error << "Can't solve the inverse";
+                }
+                assert(result.result.as<EQ>() != nullptr);
+                Expr result_rhs = result.result.as<EQ>()->b;
+                Expr inv = substitute(tmp.name(), args[i], result_rhs);
+                // tmp = f(x)
+                // x = f^{-1}(tmp)
+                // substitute(f^{-1}, tmp, x)
+                adjoint = substitute(args[i].name(), inv, adjoint);
             }
         }
 
@@ -722,8 +664,8 @@ void test_simple_bounds_inference() {
 }
 
 void derivative_test() {
-  test_simple_bounds_inference();
-  debug(0) << "Derivative test passed\n";
+    test_simple_bounds_inference();
+    debug(0) << "Derivative test passed\n";
 }
 } // namespace Internal
 
