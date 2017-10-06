@@ -1,5 +1,6 @@
 #include "Derivative.h"
 
+#include "BoundaryConditions.h"
 #include "Simplify.h"
 #include "Solve.h"
 #include "Substitute.h"
@@ -8,7 +9,9 @@
 #include "IREquality.h"
 #include "Error.h"
 #include "runtime/printer.h"
+
 #include <iostream>
+#include <cmath>
 
 namespace Halide {
 namespace Internal {
@@ -330,6 +333,14 @@ private:
     std::string current_func_name;
 };
 
+std::vector<std::pair<Expr, Expr>> rdom_to_vector(const RDom &bounds) {
+    std::vector<std::pair<Expr, Expr>> ret;
+    ret.reserve(bounds.domain().domain().size());
+    for (const auto &rvar : bounds.domain().domain()) {
+        ret.push_back({rvar.min, rvar.extent});
+    }
+    return ret;
+};
 
 void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const std::vector<Func> &funcs) {
     if (funcs.size() == 0) {
@@ -343,6 +354,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
     func_bounds = bounds_inferencer.get_func_bounds();
 
     // Create a stub for each function to accumulate adjoints
+    // Meanwhile set up boundary condition
     for (int i = 0; i < (int)funcs.size(); i++) {
         Func adjoint_func(funcs[i].name() + "_d__");
         adjoint_func(funcs[i].args()) = 0.f;
@@ -363,8 +375,13 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
 
     // Traverse functions
     for (int i = 0; i < (int)funcs.size(); i++) {
+        std::cerr << "i:" << i << std::endl;
+        std::cerr << "func.name():" << funcs[i].name() << std::endl;
         const Func &func = funcs[i];
         current_func_name = func.name();
+
+        adjoint_funcs[func.name()] = BoundaryConditions::constant_exterior(
+                adjoint_funcs[func.name()], 0.f, rdom_to_vector(func_bounds[func.name()]));
 
         // Traverse from the last update to first
         for (int update_id = func.num_update_definitions() - 1; update_id >= -1; update_id--) {
@@ -566,7 +583,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
         debug(0) << "adjoint after canonicalization:" << adjoint << "\n";
         func_to_update(args) += adjoint;
-        debug(0) << "print(func_to_update)" << "\n";
         print_func(func_to_update);
     }
 }
@@ -616,6 +632,7 @@ void print_func(const Func &func) {
 
 // Testing code
 namespace Internal {
+
 void test_simple_bounds_inference() {
     Var x("x"), y("y");
     int height = 32;
@@ -636,37 +653,146 @@ void test_simple_bounds_inference() {
     std::map<std::string, RDom> bounds = bounds_inferencer.get_func_bounds();
 
     internal_assert(equal(bounds["blur_y"][0].min(), 0)) 
-      << "Expected 0 instead of " << bounds["blur_y"][0].min() << "\n" ;
+        << "Expected 0 instead of " << bounds["blur_y"][0].min() << "\n" ;
     internal_assert(equal(bounds["blur_y"][0].extent(), width-2)) 
-      << "Expected " << width-2  << " instead of " << bounds["blur_y"][0].extent() << "\n" ;
+        << "Expected " << width-2  << " instead of " << bounds["blur_y"][0].extent() << "\n" ;
     internal_assert(equal(bounds["blur_y"][1].min(), 0)) 
-      << "Expected 0 instead of " << bounds["blur_y"][1].min() << "\n" ;
+        << "Expected 0 instead of " << bounds["blur_y"][1].min() << "\n" ;
     internal_assert(equal(bounds["blur_y"][1].extent(), height-2)) 
-      << "Expected " << height-2  << " instead of " << bounds["blur_y"][1].extent() << "\n" ;
+        << "Expected " << height-2  << " instead of " << bounds["blur_y"][1].extent() << "\n" ;
 
     internal_assert(equal(bounds["blur_x"][0].min(), 0)) 
-      << "Expected 0 instead of " << bounds["blur_x"][0].min() << "\n" ;
+        << "Expected 0 instead of " << bounds["blur_x"][0].min() << "\n" ;
     internal_assert(equal(bounds["blur_x"][0].extent(), width-2)) 
-      << "Expected " << width-2  << " instead of " << bounds["blur_x"][0].extent() << "\n" ;
+        << "Expected " << width-2  << " instead of " << bounds["blur_x"][0].extent() << "\n" ;
     internal_assert(equal(bounds["blur_x"][1].min(), 0)) 
-      << "Expected 0 instead of " << bounds["blur_x"][1].min() << "\n" ;
+        << "Expected 0 instead of " << bounds["blur_x"][1].min() << "\n" ;
     internal_assert(equal(bounds["blur_x"][1].extent(), height)) 
-      << "Expected " << height  << " instead of " << bounds["blur_x"][1].extent() << "\n" ;
+        << "Expected " << height  << " instead of " << bounds["blur_x"][1].extent() << "\n" ;
 
     internal_assert(equal(bounds["input"][0].min(), 0)) 
-      << "Expected 0 instead of " << bounds["input"][0].min() << "\n" ;
+        << "Expected 0 instead of " << bounds["input"][0].min() << "\n" ;
     internal_assert(equal(bounds["input"][0].extent(), width)) 
-      << "Expected " << width  << " instead of " << bounds["input"][0].extent() << "\n" ;
-    internal_assert(equal(bounds["input"][1].min(), 0)) 
-      << "Expected 0 instead of " << bounds["input"][1].min() << "\n" ;
-    internal_assert(equal(bounds["input"][1].extent(), height)) 
-      << "Expected " << height  << " instead of " << bounds["input"][1].extent() << "\n" ;
+        << "Expected " << width  << " instead of " << bounds["input"][0].extent() << "\n" ;
+    internal_assert(equal(bounds["input"][1].min(), 0))
+        << "Expected 0 instead of " << bounds["input"][1].min() << "\n" ;
+    internal_assert(equal(bounds["input"][1].extent(), height))
+        << "Expected " << height  << " instead of " << bounds["input"][1].extent() << "\n" ;
+}
+
+
+void test_simple_1d_blur() {
+    Var x("x");
+    float input_data[] = {1.f, 2.f};
+    Buffer<float> input(input_data, 2, "input");
+    Func clamped("clamped");
+    Expr clamped_x = Halide::clamp(x, 0, input.width() - 1);
+    clamped(x) = input(clamped_x);
+    Func blur("blur");
+    blur(x) = clamped(x) + clamped(x + 1);
+    RDom r(0, 2);
+    Expr loss = blur(r.x) * blur(r.x);
+
+    std::map<std::string, Func> adjoints = propagate_adjoints(loss);
+    Buffer<float> blur_buf = blur.realize(2);
+    // d loss / d blur = 2 * blur(x)
+    Buffer<float> d_blur_buf = adjoints[blur.name()].realize(2);
+    const float eps = 1e-6;
+#define CMP(x, target) \
+    internal_assert(fabs((x) - (target)) < eps) << \
+    "Expected " << (target) << " instead of " << (x) << "\n";
+
+    CMP(d_blur_buf(0), 2 * blur_buf(0));
+    CMP(d_blur_buf(1), 2 * blur_buf(1));
+    std::cerr << "d_blur_buf(0):" << d_blur_buf(0) << std::endl;
+    std::cerr << "d_blur_buf(1):" << d_blur_buf(1) << std::endl;
+    Buffer<float> d_clamped_buf = adjoints[clamped.name()].realize(2);
+    CMP(d_clamped_buf(0), d_blur_buf(0));
+    CMP(d_clamped_buf(1), d_blur_buf(0) + d_blur_buf(1));
+
+#undef CMP
+}
+
+void test_simple_2d_blur() {
+    Var x("x"), y("y");
+    float input_data[] = {
+        0.f, 1.f, 0.f, 0.f, 0.f,
+        1.f, 1.f, 1.f, 0.f, 0.f,
+        0.f, 1.f, 0.f, 0.f, 0.f,
+        0.f, 0.f, 0.f, 0.f, 0.f,
+        0.f, 0.f, 0.f, 0.f, 0.f
+    };
+    Buffer<float> input(input_data, 5, 5, "input");
+    Func clamped("clamped");
+    Expr clamped_x = Halide::clamp(x, 0, input.width()-1);
+    Expr clamped_y = Halide::clamp(y, 0, input.height()-1);
+    clamped(x, y) = input(clamped_x, clamped_y);
+    Func blur_x("blur_x");
+    blur_x(x, y) = clamped(x, y) + clamped(x + 1, y) + clamped(x + 2, y);
+    Func blur_y("blur_y");
+    blur_y(x, y) = blur_x(x, y) + blur_x(x, y + 1) + blur_x(x, y + 2);
+
+    RDom r(0, 5, 0, 5);
+    Expr loss = blur_y(r.x, r.y) * blur_y(r.x, r.y);
+
+    std::map<std::string, Func> adjoints = propagate_adjoints(loss);
+    Buffer<float> blur_y_buf = blur_y.realize(5, 5);
+    // d loss / d blur_y = 2 * blur_y(x, y)
+    Buffer<float> d_blur_y_buf = adjoints[blur_y.name()].realize(5, 5);
+    const float eps = 1e-6;
+    for (int y = 0; y < 5; y++) {
+        for (int x = 0; x < 5; x++) {
+            float target = 2 * blur_y_buf(x, y);
+            float diff = fabs(d_blur_y_buf(x, y) - target);
+            internal_assert(diff < eps)
+                << "Expected d_blur_y(" << x << ", " << y << ") to be " <<
+                    target << " instead of " << d_blur_y_buf(x, y) << "\n" ;
+        }
+    }
+    // d loss / d blur_x = d blur_y(x, y) + d blur_y(x, y - 1) + d blur_y(x, y - 2)
+    print_func(adjoints[blur_x.name()]);
+    Buffer<float> d_blur_x_buf = adjoints[blur_x.name()].realize(5, 5);
+    for (int y = 0; y < 5; y++) {
+        for (int x = 0; x < 5; x++) {
+            float target = d_blur_y_buf(x, y);
+            if (y >= 1) {
+                target += d_blur_y_buf(x, y - 1);
+            }
+            if (y >= 2) {
+                target += d_blur_y_buf(x, y - 2);
+            }
+            float diff = fabs(d_blur_x_buf(x, y) - target);
+            internal_assert(diff < eps)
+                << "Expected d_blur_x(" << x << ", " << y << ") to be " <<
+                target << " instead of " << d_blur_x_buf(x, y) << "\n" ;
+        }
+    }
+    Buffer<float> d_clamped = adjoints[clamped.name()].realize(5, 5);
+    // d loss / d clamped = d blur_x(x, y) + d blur_x(x - 1, y) + d blur_x(x - 2, y)
+    for (int y = 0; y < 5; y++) {
+        for (int x = 0; x < 5; x++) {
+            float target = d_blur_x_buf(x, y);
+            if (x >= 1) {
+                target += d_blur_x_buf(x - 1, y);
+            }
+            if (x >= 2) {
+                target += d_blur_x_buf(x - 2, y);
+            }
+            float diff = fabs(d_clamped(x, y) - target);
+            internal_assert(diff < eps)
+                << "Expected d_clamped(" << x << ", " << y << ") to be " <<
+                target << " instead of " << d_clamped(x, y) << "\n" ;
+        }
+    }
 }
 
 void derivative_test() {
     test_simple_bounds_inference();
+    test_simple_1d_blur();
+    test_simple_2d_blur();
     debug(0) << "Derivative test passed\n";
 }
+
 } // namespace Internal
 
 
