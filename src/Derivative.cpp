@@ -318,7 +318,16 @@ void BoundsInferencer::visit(const Call *op) {
 class ReverseAccumulationVisitor : public IRVisitor {
 public:
     void propagate_adjoints(const Expr &output, const std::vector<Func> &funcs);
-    std::map<std::string, Func> get_adjoint_funcs() const { return adjoint_funcs; }
+    std::map<std::string, Func> get_adjoint_funcs() const {
+        // TOOD: avoid recomputation
+        std::map<std::string, Func> ret;
+        for (const auto &it : adjoint_funcs) {
+            if (it.first.second == -1) { // XXX: is this correct?
+                ret.insert(std::make_pair(it.first.first, it.second));
+            }
+        }
+        return ret;
+    }
 
 protected:
     void visit(const Cast *op);
@@ -336,13 +345,11 @@ private:
     void accumulate(const Expr &stub, const Expr &adjoint);
 
     std::map<const BaseExprNode *, Expr> accumulated_adjoints;
-    std::map<std::string, Func> adjoint_funcs;
-    Func tmp_adjoint_func;
+    std::map<FuncKey, Func> adjoint_funcs;
     std::map<std::string, Expr> let_var_mapping; // TODO: replace this with Scope
-    std::map<std::string, RDom> func_bounds;
+    std::map<FuncKey, RDom> func_bounds;
+    FuncKey current_func_key;
     RDom current_bounds;
-    std::vector<Var> current_args;
-    std::string current_func_name;
 };
 
 std::vector<std::pair<Expr, Expr>> rdom_to_vector(const RDom &bounds) {
@@ -363,18 +370,17 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
     BoundsInferencer bounds_inferencer;
     debug(0) << "ReverseAccumulationVisitor: infering bounds.\n";
     bounds_inferencer.inference(output);
-    std::map<FuncKey, RDom> bounds = bounds_inferencer.get_func_bounds();
-    for (const auto &it : bounds) {
-        func_bounds.insert(std::make_pair(it.first.first, it.second));
-    }
-    //func_bounds = bounds_inferencer.get_func_bounds();
+    func_bounds = bounds_inferencer.get_func_bounds();
 
     // Create a stub for each function to accumulate adjoints
     // Meanwhile set up boundary condition
-    for (int i = 0; i < (int)funcs.size(); i++) {
-        Func adjoint_func(funcs[i].name() + "_d__");
-        adjoint_func(funcs[i].args()) = 0.f;
-        adjoint_funcs[funcs[i].name()] = adjoint_func;
+    for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
+        const Func &func = funcs[func_id];
+        for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
+            Func adjoint_func(func.name() + "_" + std::to_string(update_id + 1) + "_d__");
+            adjoint_func(func.args()) = 0.f;
+            adjoint_funcs[FuncKey{func.name(), update_id}] = adjoint_func;
+        }
     }
 
     // Propagate output
@@ -390,15 +396,8 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
     }
 
     // Traverse functions
-    for (int i = 0; i < (int)funcs.size(); i++) {
-        std::cerr << "i:" << i << std::endl;
-        std::cerr << "func.name():" << funcs[i].name() << std::endl;
-        const Func &func = funcs[i];
-        current_func_name = func.name();
-
-        adjoint_funcs[func.name()] = BoundaryConditions::constant_exterior(
-                adjoint_funcs[func.name()], 0.f, rdom_to_vector(func_bounds[func.name()]));
-
+    for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
+        const Func &func = funcs[func_id];
         // Traverse from the last update to first
         for (int update_id = func.num_update_definitions() - 1; update_id >= -1; update_id--) {
             // Topologically sort the expressions
@@ -409,36 +408,30 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
                 sorter.sort(func.value());
             }
 
+            FuncKey func_key{func.name(), update_id};
             // TODO: take lhs other than (x, y, z) into account
-            assert(func_bounds.find(func.name()) != func_bounds.end());
-            current_bounds = func_bounds[func.name()];
-            current_args = func.args();
+            assert(func_bounds.find(func_key) != func_bounds.end());
+            current_func_key = func_key;
+            current_bounds = func_bounds[func_key];
+
+            // Set up boundary condition
+            adjoint_funcs[func_key] = BoundaryConditions::constant_exterior(
+                adjoint_funcs[func_key], 0.f, rdom_to_vector(func_bounds[func_key]));
 
             std::vector<Expr> expr_list = sorter.get_expr_list();
             // Retrieve previously propagated adjoint
-            if (update_id == func.num_update_definitions() - 1) {
-                std::vector<Expr> args;
-                for (const auto &arg : func.args()) {
-                    args.push_back(arg);
-                }
-                accumulated_adjoints[(const BaseExprNode *)expr_list.back().get()] =
-                    Call::make(adjoint_funcs[func.name()].function(), args);
+            std::vector<Expr> args;
+            for (const auto &arg : func.args()) {
+                args.push_back(arg);
             }
-
-            // Propagate to this temporary Func if we use the same function during update
-            tmp_adjoint_func = Func(func.name() + "_d__");
-            tmp_adjoint_func(func.args()) = 0.f;
+            accumulated_adjoints[(const BaseExprNode *)expr_list.back().get()] =
+                Call::make(adjoint_funcs[func_key].function(), args);
 
             // Traverse the expressions in reverse order
             for (auto it = expr_list.rbegin(); it != expr_list.rend(); it++) {
                 // Propagate adjoints
                 it->accept(this);
             }
-
-            // Add back the Func
-            Func &adjoint_func = adjoint_funcs[func.name()];
-            tmp_adjoint_func(adjoint_func.args()) += adjoint_func(adjoint_func.args());
-            adjoint_funcs[func.name()] = tmp_adjoint_func;
         }
     }
 }
@@ -555,15 +548,15 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             debug(0) << arg << "\n";
         }
         debug(0) << "adjoint is:" << adjoint << "\n";
-        Func& func_to_update = func.name() != current_func_name ?
-            adjoint_funcs[func.name()] : tmp_adjoint_func;
+        // If referring to the current function itself, send to previous update
+        Func& func_to_update = func.name() != current_func_key.first ?
+            adjoint_funcs[FuncKey{func.name(), func.updates().size() - 1}] :
+            adjoint_funcs[FuncKey{func.name(), current_func_key.second - 1}];
         // We want to do this:
         // func_to_update(op->args) += adjoint;
         // But op->args can be invalid lhs, need to canonicalize
 
         VariableFinder finder;
-        assert(func_bounds.find(func.name()) != func_bounds.end());
-
         // We canonicalize the left hand side arguments (op->args) so that it's always x, y, z, ...
         for (int i = 0; i < (int)op->args.size(); i++) {
             if (!finder.find(op->args[i], args[i])) {
@@ -749,12 +742,12 @@ void test_simple_1d_blur() {
     const float eps = 1e-6;
 #define CMP(x, target) \
     internal_assert(fabs((x) - (target)) < eps) << \
-    "Expected " << (target) << " instead of " << (x) << "\n";
+        "Expected " << (target) << " instead of " << (x) << "\n";
 
-    CMP(d_blur_buf(0), 2 * blur_buf(0));
-    CMP(d_blur_buf(1), 2 * blur_buf(1));
     std::cerr << "d_blur_buf(0):" << d_blur_buf(0) << std::endl;
     std::cerr << "d_blur_buf(1):" << d_blur_buf(1) << std::endl;
+    CMP(d_blur_buf(0), 2 * blur_buf(0));
+    CMP(d_blur_buf(1), 2 * blur_buf(1));
     Buffer<float> d_clamped_buf = adjoints[clamped.name()].realize(2);
     CMP(d_clamped_buf(0), d_blur_buf(0));
     CMP(d_clamped_buf(1), d_blur_buf(0) + d_blur_buf(1));
@@ -869,9 +862,9 @@ internal_assert(fabs((x) - (target)) < eps) << \
 void derivative_test() {
     test_simple_bounds_inference();
     test_simple_bounds_inference_update();
-    //test_simple_1d_blur();
-    //test_simple_2d_blur();
-    //test_update();
+    test_simple_1d_blur();
+    test_simple_2d_blur();
+    test_update();
     debug(0) << "Derivative test passed\n";
 }
 
