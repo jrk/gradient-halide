@@ -744,8 +744,6 @@ void test_simple_1d_blur() {
     internal_assert(fabs((x) - (target)) < eps) << \
         "Expected " << (target) << " instead of " << (x) << "\n";
 
-    std::cerr << "d_blur_buf(0):" << d_blur_buf(0) << std::endl;
-    std::cerr << "d_blur_buf(1):" << d_blur_buf(1) << std::endl;
     CMP(d_blur_buf(0), 2 * blur_buf(0));
     CMP(d_blur_buf(1), 2 * blur_buf(1));
     Buffer<float> d_clamped_buf = adjoints[clamped.name()].realize(2);
@@ -847,14 +845,61 @@ void test_update() {
     Buffer<float> d_blur_buf = adjoints[blur.name()].realize(2);
     const float eps = 1e-6;
 #define CMP(x, target) \
-internal_assert(fabs((x) - (target)) < eps) << \
-"Expected " << (target) << " instead of " << (x) << "\n";
+    internal_assert(fabs((x) - (target)) < eps) << \
+        "Expected " << (target) << " instead of " << (x) << "\n";
 
     CMP(d_blur_buf(0), 2 * blur_buf(0));
     CMP(d_blur_buf(1), 2 * blur_buf(1));
     Buffer<float> d_clamped_buf = adjoints[clamped.name()].realize(2);
     CMP(d_clamped_buf(0), d_blur_buf(0));
     CMP(d_clamped_buf(1), d_blur_buf(0) + d_blur_buf(1));
+
+#undef CMP
+}
+
+void test_rdom_conv() {
+    Var x("x");
+    float input_data[] = {1.f, 2.f, 3.f, 4.f};
+    Buffer<float> input(input_data, 4, "input");
+    Func clamped("clamped");
+    Expr clamped_x = Halide::clamp(x, 0, input.width() - 1);
+    clamped(x) = input(clamped_x);
+    float kernel_data[] = {1.f, 1.f};
+    Buffer<float> kernel(kernel_data, 2, "kernel");
+    Func kernel_func("kernel_func");
+    kernel_func(x) = kernel(x);
+    Func convolved("convolved");
+    RDom support(0, 2);
+    convolved(x) = clamped(x + support.x) * kernel_func(support.x);
+    RDom r(0, 4);
+    Expr loss = convolved(r.x);
+
+    std::map<std::string, Func> adjoints = propagate_adjoints(loss);
+    Buffer<float> convolved_buf = convolved.realize(4);
+    // d loss / d blur = 2 * blur(x)
+    Buffer<float> d_convolved_buf = adjoints[convolved.name()].realize(4);
+    const float eps = 1e-6;
+#define CMP(x, target) \
+    internal_assert(fabs((x) - (target)) < eps) << \
+        "Expected " << (target) << " instead of " << (x) << "\n";
+
+    for (int i = 0; i < 4; i++) {
+        CMP(d_convolved_buf(i), 2 * convolved_buf(i));
+    }
+    // d loss / d clamped = d_convolved convolve with flipped kernel
+    Buffer<float> d_clamped_buf = adjoints[clamped.name()].realize(4);
+    for (int i = 0; i < 4; i++) {
+        float target = d_convolved_buf(i) * kernel_data[0];
+        if (i >= 1) {
+            target += d_convolved_buf(i - 1) * kernel_data[1];
+        }
+        CMP(d_clamped_buf(i), target);
+    }
+    // d loss / d kernel(0) = 1 + 2 + 3 + 4
+    // d loss / d kernel(1) = 2 + 3 + 4 + 4
+    Buffer<float> d_kernel_buf = adjoints[kernel_func.name()].realize(2);
+    CMP(d_kernel_buf(0), 10);
+    CMP(d_kernel_buf(1), 13);
 
 #undef CMP
 }
