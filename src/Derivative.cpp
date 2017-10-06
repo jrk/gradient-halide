@@ -870,9 +870,10 @@ void test_rdom_conv() {
     kernel_func(x) = kernel(x);
     Func convolved("convolved");
     RDom support(0, 2);
-    convolved(x) = clamped(x + support.x) * kernel_func(support.x);
+    convolved(x) = 0.f;
+    convolved(x) += clamped(x + support.x) * kernel_func(support.x);
     RDom r(0, 4);
-    Expr loss = convolved(r.x);
+    Expr loss = convolved(r.x) * convolved(r.x);
 
     std::map<std::string, Func> adjoints = propagate_adjoints(loss);
     Buffer<float> convolved_buf = convolved.realize(4);
@@ -895,11 +896,14 @@ void test_rdom_conv() {
         }
         CMP(d_clamped_buf(i), target);
     }
-    // d loss / d kernel(0) = 1 + 2 + 3 + 4
-    // d loss / d kernel(1) = 2 + 3 + 4 + 4
+    // loss = (k0 + 2k1)^2 + (2k0 + 3k1)^2 + (3k0 + 4k1)^2 + (4k0 + 4k1)^2
+    //      = k0^2 + 4k0k1 + 4k1^2 + 4k0^2 + 12 k0k1 + 9k1^2 + 9k0^2 + 24 k0k1 + 16 k1^2 + 16k0^2 + 32k0k1 + 16k1^2
+    //      = 30 k0^2 + 72 k0k1 + 45 k1^2
+    // d loss / d kernel(0) = 2 * 30 + 72 = 132
+    // d loss / d kernel(1) = 2 * 45 + 72 = 162
     Buffer<float> d_kernel_buf = adjoints[kernel_func.name()].realize(2);
-    CMP(d_kernel_buf(0), 10);
-    CMP(d_kernel_buf(1), 13);
+    CMP(d_kernel_buf(0), 132);
+    CMP(d_kernel_buf(1), 162);
 
 #undef CMP
 }
@@ -910,6 +914,7 @@ void derivative_test() {
     test_simple_1d_blur();
     test_simple_2d_blur();
     test_update();
+    test_rdom_conv();
     debug(0) << "Derivative test passed\n";
 }
 
