@@ -129,6 +129,11 @@ void FunctionSorter::sort(const Func &func) {
 void FunctionSorter::visit(const Call *op) {
     if (op->call_type == Call::Halide) {
         Func func(Function(op->func));
+        // Avoid implicit functions
+        // TODO: FIX THIS
+        if (func.args().size() > 0 && func.args()[0].is_implicit()) {
+            return;
+        }
         if (traversed_functions.find(func.name()) != traversed_functions.end()) {
             return;
         }
@@ -266,7 +271,12 @@ void BoundsInferencer::inference(const Func &func) {
 void BoundsInferencer::visit(const Call *op) {
     if (op->call_type == Call::Halide) {
         Func func(Function(op->func));
-        debug(0) << recursion_depth << " Visiting " << func.name() << "\n";
+        // Avoid implicit functions
+        // TODO: FIX THIS
+        if (func.args().size() > 0 && func.args()[0].is_implicit()) {
+            return;
+        }
+        // debug(0) << recursion_depth << " Visiting " << func.name() << "\n";
 
         FuncBounds arg_bounds;
         arg_bounds.reserve(op->args.size());
@@ -286,14 +296,14 @@ void BoundsInferencer::visit(const Call *op) {
             for (int i = 0; i < (int)arg_bounds.size(); i++) {
                 arg_bounds[i] = merge_bounds(prev_bounds[i], arg_bounds[i]);
             }
-            debug(0) << "  Updated function bounds:" << "\n";
+            // debug(0) << "  Updated function bounds:" << "\n";
         }
 
-        for (int i = 0; i < (int)arg_bounds.size(); i++) {
-          debug(0) << "    arg" << i << " (" 
-                   << arg_bounds[i].first << ", "
-                   << arg_bounds[i].second << ")\n";
-        }
+        // for (int i = 0; i < (int)arg_bounds.size(); i++) {
+        //   debug(0) << "    arg" << i << " ("
+        //            << arg_bounds[i].first << ", "
+        //            << arg_bounds[i].second << ")\n";
+        // }
 
         func_bounds[key] = arg_bounds;
 
@@ -303,11 +313,9 @@ void BoundsInferencer::visit(const Call *op) {
             inference(func);
             recursion_depth -= 1;
         }
-        return;
     }
 
     for (size_t i = 0; i < op->args.size(); i++) {
-        // include(op->args[i]);
         op->args[i].accept(this);
     }
 }
@@ -377,6 +385,11 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
     for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
         const Func &func = funcs[func_id];
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
+            debug(0) << "Initializing adjoint for " << func.name() << "\n";
+            debug(0) << "args:" << "\n";
+            for (const auto &arg : func.args()) {
+                debug(0) << arg << "\n";
+            }
             Func adjoint_func(func.name() + "_" + std::to_string(update_id + 1) + "_d__");
             adjoint_func(func.args()) = 0.f;
             adjoint_funcs[FuncKey{func.name(), update_id}] = adjoint_func;
@@ -536,22 +549,23 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
     if (op->func.defined()) {
         // This is a Halide function call
         Function func(op->func);
-        // Gather the domain variables of the function
-        std::vector<std::string> func_args = func.args();
-        std::vector<Var> args;
-        std::for_each(func_args.begin(), func_args.end(),
-                      [&args](const std::string &name){ args.push_back(Var(name)); });
+        // Avoid implicit functions
+        // TODO: FIX THIS
+        if (func.args().size() > 0 && Var::is_implicit(func.args()[0])) {
+            return;
+        }
         // We are scattering to this function
         debug(0) << "Scattering to " << func.name() << "\n";
-        debug(0) << "op->args:" << "\n";
-        for (const auto &arg : op->args) {
-            debug(0) << arg << "\n";
-        }
-        debug(0) << "adjoint is:" << adjoint << "\n";
+        debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
         // If referring to the current function itself, send to previous update
-        Func& func_to_update = func.name() != current_func_key.first ?
-            adjoint_funcs[FuncKey{func.name(), func.updates().size() - 1}] :
-            adjoint_funcs[FuncKey{func.name(), current_func_key.second - 1}];
+        FuncKey func_key = func.name() != current_func_key.first ?
+                           FuncKey{func.name(), func.updates().size() - 1} :
+                           FuncKey{func.name(), current_func_key.second - 1};
+        assert(adjoint_funcs.find(func_key) != adjoint_funcs.end());
+        Func& func_to_update = adjoint_funcs[func_key];
+        // Gather the domain variables of the adjoint
+        std::vector<Var> args = func_to_update.args();
+
         // We want to do this:
         // func_to_update(op->args) += adjoint;
         // But op->args can be invalid lhs, need to canonicalize
@@ -564,7 +578,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 // all x in adjoint needs to be replaced by a RDom looping through the bounds
                 // of the current function
                 if (finder.find(adjoint, args[i])) {
-                    adjoint = substitute(args[i].name(), current_bounds, adjoint);
+                    adjoint = substitute(args[i].name(), current_bounds[i], adjoint);
                 }
                 // If it's a RVar, we need to replace it with the non-reduction argument
                 if (op->args[i].get()->node_type == IRNodeType::Variable) {
@@ -590,8 +604,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
         }
 
-        debug(0) << "adjoint after canonicalization:" << adjoint << "\n";
-        func_to_update(args) += adjoint;
+        debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
+        func_to_update(func_to_update.args()) += adjoint;
+
         print_func(func_to_update);
     }
 }
