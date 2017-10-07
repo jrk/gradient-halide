@@ -8,7 +8,7 @@
 #include "IROperator.h"
 #include "IREquality.h"
 #include "Error.h"
-#include "runtime/printer.h"
+//#include "runtime/printer.h"
 
 #include <iostream>
 #include <cmath>
@@ -18,6 +18,7 @@ namespace Internal {
 
 class VariableFinder : public IRGraphVisitor {
 public:
+    using IRGraphVisitor::visit;
     bool find(const Expr &expr, const Var &var) {
         visited.clear();
         var_name = var.name();
@@ -39,6 +40,7 @@ private:
 
 class VariableGatherer : public IRGraphVisitor {
 public:
+    using IRGraphVisitor::visit;
     std::vector<std::string> gather(const Expr &expr) {
         visited.clear();
         variables.clear();
@@ -113,6 +115,7 @@ std::pair<Expr, Expr> merge_bounds(const std::pair<Expr, Expr> &bounds0, const s
  */
 class FunctionSorter : public IRGraphVisitor {
 public:
+    using IRGraphVisitor::visit;
     void sort(const Expr &expr);
     void sort(const Func &func);
 
@@ -170,6 +173,9 @@ void FunctionSorter::visit(const Call *op) {
  */
 class ExpressionSorter : public IRGraphVisitor {
 public:
+    using IRGraphVisitor::visit;
+    using IRGraphVisitor::include;
+
     void sort(const Expr &expr);
 
     std::vector<Expr> get_expr_list() const {
@@ -222,6 +228,8 @@ using FuncKey = std::pair<std::string, int>; // function name & update_id, for i
  */
 class BoundsInferencer : public IRVisitor {
 public:
+    using IRVisitor::visit;
+
     void inference(const Expr &expr);
     void inference(const Func &func);
 
@@ -344,6 +352,8 @@ void BoundsInferencer::visit(const Call *op) {
  */
 class ReverseAccumulationVisitor : public IRVisitor {
 public:
+    using IRVisitor::visit;
+
     void propagate_adjoints(const Expr &output, const std::vector<Func> &funcs);
     std::map<std::string, Func> get_adjoint_funcs() const {
         // TOOD: avoid recomputation
