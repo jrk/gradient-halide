@@ -58,6 +58,31 @@ private:
     std::vector<std::string> variables;
 };
 
+class RVarGatherer : public IRGraphVisitor {
+public:
+    using IRGraphVisitor::visit;
+    std::map<std::string, std::pair<Expr, Expr>> gather(const Expr &expr) {
+        visited.clear();
+        rvar_map.clear();
+        expr.accept(this);
+        return rvar_map;
+    }
+
+    void visit(const Variable *op) {
+        if (op->reduction_domain.defined()) {
+            for (const ReductionVariable &rv : op->reduction_domain.domain()) {
+                if (rv.var == op->name) {
+                    rvar_map[op->name] = std::make_pair(rv.min, rv.extent);
+                    return;
+                }
+            }
+            internal_error << "Unknown reduction variable encountered";
+        }
+    }
+private:
+    std::map<std::string, std::pair<Expr, Expr>> rvar_map;
+};
+
 std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr, const std::vector<Var> &current_args,
                                          const RDom &current_bounds, const int index) {
     if (expr.get()->node_type == IRNodeType::Add) {
@@ -645,6 +670,21 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             for (int i = 0; i < (int) arg_id_to_substitute.size(); i++) {
                 int arg_id = arg_id_to_substitute[i];
                 adjoint = substitute(current_args[arg_id].name(), r[i], adjoint);
+            }
+        }
+        // Merge RDoms on rhs
+        RVarGatherer rvar_gatherer;
+        std::map<std::string, std::pair<Expr, Expr>> rvar_maps = rvar_gatherer.gather(adjoint);
+        std::vector<std::string> var_names;
+        FuncBounds merged_bounds;
+        for (const auto &it : rvar_maps) {
+            var_names.push_back(it.first);
+            merged_bounds.emplace_back(it.second.first, it.second.second);
+        }
+        if (merged_bounds.size() > 0) {
+            RDom r(merged_bounds);
+            for (int i = 0; i < r.dimensions(); i++) {
+                adjoint = substitute(var_names[i], r[i], adjoint);
             }
         }
 
