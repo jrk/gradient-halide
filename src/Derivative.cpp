@@ -37,28 +37,47 @@ private:
     bool found;
 };
 
+class VariableGatherer : public IRGraphVisitor {
+public:
+    std::vector<std::string> gather(const Expr &expr) {
+        visited.clear();
+        variables.clear();
+        expr.accept(this);
+        return variables;
+    }
+
+    void visit(const Variable *op) {
+        if (!op->reduction_domain.defined()) {
+            variables.push_back(op->name);
+        }
+    }
+
+private:
+    std::vector<std::string> variables;
+};
+
 std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr, const std::vector<Var> &current_args,
                                          const RDom &current_bounds, const int index) {
     if (expr.get()->node_type == IRNodeType::Add) {
         const Add *op = expr.as<Add>();
         const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
         const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
-        debug(0) << "  " << index << " bounds for Add\n";
+        //debug(0) << "  " << index << " bounds for Add\n";
         return {a_bounds.first + b_bounds.first, a_bounds.second + b_bounds.second};
     } else if (expr.get()->node_type == IRNodeType::Sub) {
         const Sub *op = expr.as<Sub>();
         const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
         const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
-        debug(0) << "  " << index << " bounds for Sub\n";
+        //debug(0) << "  " << index << " bounds for Sub\n";
         return {a_bounds.first - b_bounds.second, a_bounds.second - b_bounds.first};
     } else if (expr.get()->node_type == IRNodeType::Variable) {
         const Variable *var = expr.as<Variable>();
         if (var->reduction_domain.defined()) {
             ReductionVariable rvar = var->reduction_domain.domain()[index];
-            debug(0) << "  " << index << " bounds for Rvar\n";
+            //debug(0) << "  " << index << " bounds for Rvar\n";
             return {rvar.min, rvar.min + rvar.extent - 1};
         } else {
-            debug(0) << "  " << index << " bounds for Var\n";
+            //debug(0) << "  " << index << " bounds for Var\n";
             for (int i = 0; i < (int)current_args.size(); i++) {
                 if (current_args[i].name() == var->name) {
                     return {current_bounds[i].min(), current_bounds[i].extent()};
@@ -69,16 +88,16 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr, const std::vector<Var
         const Max *op = expr.as<Max>();
         const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
         const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
-        debug(0) << "  " << index << " bounds for Max\n";
+        //debug(0) << "  " << index << " bounds for Max\n";
         return {max(a_bounds.first, b_bounds.first), max(a_bounds.second, b_bounds.second)};
     } else if (expr.get()->node_type == IRNodeType::Min) {
         const Min *op = expr.as<Min>();
         const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
         const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
-        debug(0) << "  " << index << " bounds for Min\n";
+        //debug(0) << "  " << index << " bounds for Min\n";
         return {min(a_bounds.first, b_bounds.first), min(a_bounds.second, b_bounds.second)};
     } else if (expr.get()->node_type == IRNodeType::IntImm) {
-        debug(0) << "  " << index << " bounds for IntImm\n";
+        //debug(0) << "  " << index << " bounds for IntImm\n";
         return {expr, expr};
     }
 
@@ -357,6 +376,7 @@ private:
     std::map<std::string, Expr> let_var_mapping; // TODO: replace this with Scope
     std::map<FuncKey, RDom> func_bounds;
     FuncKey current_func_key;
+    std::vector<Var> current_args;
     RDom current_bounds;
 };
 
@@ -385,11 +405,6 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
     for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
         const Func &func = funcs[func_id];
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
-            debug(0) << "Initializing adjoint for " << func.name() << "\n";
-            debug(0) << "args:" << "\n";
-            for (const auto &arg : func.args()) {
-                debug(0) << arg << "\n";
-            }
             Func adjoint_func(func.name() + "_" + std::to_string(update_id + 1) + "_d__");
             adjoint_func(func.args()) = 0.f;
             adjoint_funcs[FuncKey{func.name(), update_id}] = adjoint_func;
@@ -411,6 +426,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
     // Traverse functions
     for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
         const Func &func = funcs[func_id];
+        current_args = func.args();
         // Traverse from the last update to first
         for (int update_id = func.num_update_definitions() - 1; update_id >= -1; update_id--) {
             // Topologically sort the expressions
@@ -563,45 +579,69 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                            FuncKey{func.name(), current_func_key.second - 1};
         assert(adjoint_funcs.find(func_key) != adjoint_funcs.end());
         Func& func_to_update = adjoint_funcs[func_key];
-        // Gather the domain variables of the adjoint
-        std::vector<Var> args = func_to_update.args();
 
         // We want to do this:
         // func_to_update(op->args) += adjoint;
         // But op->args can be invalid lhs, need to canonicalize
 
-        VariableFinder finder;
+        // Create a set of new substitution variables
+        std::vector<Var> new_args;
+        std::set<std::string> new_args_set;
+        for (int i = 0; i < (int)func_to_update.args().size(); i++) {
+            new_args.push_back(Var("u" + std::to_string(i) + "_"));
+            new_args_set.insert(new_args.back().name());
+        }
+
+        VariableGatherer gatherer;
         // We canonicalize the left hand side arguments (op->args) so that it's always x, y, z, ...
         for (int i = 0; i < (int)op->args.size(); i++) {
-            if (!finder.find(op->args[i], args[i])) {
-                // When an argument x doesn't appear in op->args,
-                // all x in adjoint needs to be replaced by a RDom looping through the bounds
-                // of the current function
-                if (finder.find(adjoint, args[i])) {
-                    adjoint = substitute(args[i].name(), current_bounds[i], adjoint);
-                }
-                // If it's a RVar, we need to replace it with the non-reduction argument
-                if (op->args[i].get()->node_type == IRNodeType::Variable) {
-                    const Variable *var = op->args[i].as<Variable>();
-                    if (var->reduction_domain.defined()) {
-                        adjoint = substitute(var->name, args[i], adjoint);
-                    }
-                }
-            } else {
-                // Apply the inverse to rhs
-                Var tmp("tmp");
-                SolverResult result = solve_expression(tmp == op->args[i], args[i].name());
+            // Let new_args[i] == op->args[i]
+            // Gather all pure variables at op->args[i], substitute them with new_args
+            // For now only support single pure variable
+            std::vector<std::string> variables = gatherer.gather(op->args[i]);
+            if (variables.size() > 1) {
+                internal_error << "Can't solve the inverse when there are more than one pure variable";
+            }
+            if (variables.size() > 0) {
+                // Let new_args[i] == op->args[i]
+                SolverResult result = solve_expression(new_args[i] == op->args[i], variables[0]);
                 if (!result.fully_solved) {
                     internal_error << "Can't solve the inverse";
                 }
                 assert(result.result.as<EQ>() != nullptr);
                 Expr result_rhs = result.result.as<EQ>()->b;
-                Expr inv = substitute(tmp.name(), args[i], result_rhs);
-                // tmp = f(x)
-                // x = f^{-1}(tmp)
-                // substitute(f^{-1}, tmp, x)
-                adjoint = substitute(args[i].name(), inv, adjoint);
+                // replace pure variable with the reverse
+                adjoint = substitute(variables[0], result_rhs, adjoint);
+            } else {
+                adjoint = substitute(op->args[i], new_args[i], adjoint);
             }
+        }
+
+        // For each free variable on the rhs, replace it with current bound
+        // First gather all free variables
+        VariableFinder finder;
+        FuncBounds bounds_subset;
+        std::vector<int> arg_id_to_substitute;
+        for (int i = 0; i < (int)current_args.size(); i++) {
+            if (finder.find(adjoint, current_args[i].name())) {
+                const RVar &rvar = current_bounds[i];
+                bounds_subset.emplace_back(rvar.min(), rvar.extent());
+                arg_id_to_substitute.push_back(i);
+            }
+        }
+        // Create a new RDom to loop over all free variables
+        if (arg_id_to_substitute.size() > 0) {
+            RDom r(bounds_subset);
+            for (int i = 0; i < (int) arg_id_to_substitute.size(); i++) {
+                int arg_id = arg_id_to_substitute[i];
+                adjoint = substitute(current_args[arg_id].name(), r[i], adjoint);
+            }
+        }
+
+        std::vector<Var> func_to_update_args = func_to_update.args();
+        for (int i = 0; i < (int)func_to_update_args.size(); i++) {
+            // substitute the new_args back to original variables
+            adjoint = substitute(new_args[i].name(), func_to_update_args[i], adjoint);
         }
 
         debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
@@ -923,6 +963,40 @@ void test_rdom_conv() {
 #undef CMP
 }
 
+void test_1d_to_2d() {
+    Var x("x"), y("y");
+    float input_data[] = {1.f, 2.f};
+    Buffer<float> input(input_data, 2, "input");
+    Func f_input("f_input");
+    f_input(x) = input(x);
+    Func f_output("output");
+    f_output(x, y) = f_input(y);
+
+    RDom r(0, 2, 0, 2);
+    Expr loss = f_output(r.x, r.y) * f_output(r.x, r.y);
+    std::map<std::string, Func> adjoints = propagate_adjoints(loss);
+
+    // loss = 2i0^2 + 2i1^2
+    // d loss / d i0 = 4i0 = 4
+    // d loss / d i1 = 4i1 = 8
+    const float eps = 1e-6;
+#define CMP(x, target) \
+    internal_assert(fabs((x) - (target)) < eps) << \
+        "Expected " << (target) << " instead of " << (x) << "\n";
+
+    Buffer<float> d_output = adjoints[f_output.name()].realize(2, 2);
+    CMP(d_output(0, 0), 2);
+    CMP(d_output(1, 0), 2);
+    CMP(d_output(0, 1), 4);
+    CMP(d_output(1, 1), 4);
+
+    Buffer<float> d_input = adjoints[f_input.name()].realize(2);
+    CMP(d_input(0), 4);
+    CMP(d_input(1), 8);
+
+#undef CMP
+}
+
 void derivative_test() {
     test_simple_bounds_inference();
     test_simple_bounds_inference_update();
@@ -930,6 +1004,7 @@ void derivative_test() {
     test_simple_2d_blur();
     test_update();
     test_rdom_conv();
+    test_1d_to_2d();
     debug(0) << "Derivative test passed\n";
 }
 
