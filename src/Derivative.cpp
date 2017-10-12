@@ -8,7 +8,6 @@
 #include "IROperator.h"
 #include "IREquality.h"
 #include "Error.h"
-//#include "runtime/printer.h"
 
 #include <iostream>
 #include <cmath>
@@ -62,14 +61,18 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr, const std::vector<Var
                                          const RDom &current_bounds, const int index) {
     if (expr.get()->node_type == IRNodeType::Add) {
         const Add *op = expr.as<Add>();
-        const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
-        const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> a_bounds =
+            get_min_max_bounds(op->a, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> b_bounds =
+            get_min_max_bounds(op->b, current_args, current_bounds, index);
         //debug(0) << "  " << index << " bounds for Add\n";
         return {a_bounds.first + b_bounds.first, a_bounds.second + b_bounds.second};
     } else if (expr.get()->node_type == IRNodeType::Sub) {
         const Sub *op = expr.as<Sub>();
-        const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
-        const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> a_bounds =
+            get_min_max_bounds(op->a, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> b_bounds =
+            get_min_max_bounds(op->b, current_args, current_bounds, index);
         //debug(0) << "  " << index << " bounds for Sub\n";
         return {a_bounds.first - b_bounds.second, a_bounds.second - b_bounds.first};
     } else if (expr.get()->node_type == IRNodeType::Variable) {
@@ -88,14 +91,18 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr, const std::vector<Var
         }
     } else if (expr.get()->node_type == IRNodeType::Max) {
         const Max *op = expr.as<Max>();
-        const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
-        const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> a_bounds =
+            get_min_max_bounds(op->a, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> b_bounds =
+            get_min_max_bounds(op->b, current_args, current_bounds, index);
         //debug(0) << "  " << index << " bounds for Max\n";
         return {max(a_bounds.first, b_bounds.first), max(a_bounds.second, b_bounds.second)};
     } else if (expr.get()->node_type == IRNodeType::Min) {
         const Min *op = expr.as<Min>();
-        const std::pair<Expr, Expr> a_bounds = get_min_max_bounds(op->a, current_args, current_bounds, index);
-        const std::pair<Expr, Expr> b_bounds = get_min_max_bounds(op->b, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> a_bounds =
+            get_min_max_bounds(op->a, current_args, current_bounds, index);
+        const std::pair<Expr, Expr> b_bounds =
+            get_min_max_bounds(op->b, current_args, current_bounds, index);
         //debug(0) << "  " << index << " bounds for Min\n";
         return {min(a_bounds.first, b_bounds.first), min(a_bounds.second, b_bounds.second)};
     } else if (expr.get()->node_type == IRNodeType::IntImm) {
@@ -107,8 +114,10 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr, const std::vector<Var
     return std::pair<Expr, Expr>();
 }
 
-std::pair<Expr, Expr> merge_bounds(const std::pair<Expr, Expr> &bounds0, const std::pair<Expr, Expr> &bounds1) {
-    return {simplify(min(bounds0.first, bounds1.first)), simplify(max(bounds0.second, bounds1.second))};
+std::pair<Expr, Expr> merge_bounds(const std::pair<Expr, Expr> &bounds0,
+                                   const std::pair<Expr, Expr> &bounds1) {
+    return {simplify(min(bounds0.first, bounds1.first)),
+            simplify(max(bounds0.second, bounds1.second))};
 };
 
 /** An IR graph visitor that gather the function DAG and sort them in reverse topological order
@@ -220,7 +229,6 @@ void ExpressionSorter::include(const Expr &e) {
 }
 
 using FuncBounds = std::vector<std::pair<Expr, Expr>>;
-using FuncKey = std::pair<std::string, int>; // function name & update_id, for initialization update_id == -1
 
 /**
  *  Visit function calls and determine their bounds.
@@ -365,6 +373,9 @@ public:
         }
         return ret;
     }
+    std::map<FuncKey, RDom> get_reductions() const {
+        return reductions;
+    };
 
 protected:
     void visit(const Cast *op);
@@ -383,6 +394,7 @@ private:
 
     std::map<const BaseExprNode *, Expr> accumulated_adjoints;
     std::map<FuncKey, Func> adjoint_funcs;
+    std::map<FuncKey, RDom> reductions;
     std::map<std::string, Expr> let_var_mapping; // TODO: replace this with Scope
     std::map<FuncKey, RDom> func_bounds;
     FuncKey current_func_key;
@@ -646,6 +658,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 int arg_id = arg_id_to_substitute[i];
                 adjoint = substitute(current_args[arg_id].name(), r[i], adjoint);
             }
+            reductions[func_key] = r;
+        } else {
+            reductions[func_key] = RDom();
         }
 
         std::vector<Var> func_to_update_args = func_to_update.args();
@@ -672,7 +687,7 @@ void ReverseAccumulationVisitor::visit(const Let *op) {
 } // namespace Internal
 
 
-std::map<std::string, Func> propagate_adjoints(const Expr &output) {
+Derivative propagate_adjoints(const Expr &output) {
     Internal::FunctionSorter sorter;
     Internal::debug(0) << "Propagate: Sorting functions" << "\n";
     sorter.sort(output);
@@ -683,7 +698,7 @@ std::map<std::string, Func> propagate_adjoints(const Expr &output) {
     }
     Internal::ReverseAccumulationVisitor visitor;
     visitor.propagate_adjoints(output, funcs);
-    return visitor.get_adjoint_funcs();
+    return Derivative{visitor.get_adjoint_funcs(), visitor.get_reductions()};
 }
 
 void print_func(const Func &func) {
@@ -800,7 +815,9 @@ void test_simple_1d_blur() {
     RDom r(0, 2);
     Expr loss = blur(r.x) * blur(r.x);
 
-    std::map<std::string, Func> adjoints = propagate_adjoints(loss);
+    Derivative d = propagate_adjoints(loss);
+    std::map<std::string, Func> adjoints = d.adjoints;
+
     Buffer<float> blur_buf = blur.realize(2);
     // d loss / d blur = 2 * blur(x)
     Buffer<float> d_blur_buf = adjoints[blur.name()].realize(2);
@@ -840,7 +857,9 @@ void test_simple_2d_blur() {
     RDom r(0, 5, 0, 5);
     Expr loss = blur_y(r.x, r.y) * blur_y(r.x, r.y);
 
-    std::map<std::string, Func> adjoints = propagate_adjoints(loss);
+    Derivative d = propagate_adjoints(loss);
+    std::map<std::string, Func> adjoints = d.adjoints;
+
     Buffer<float> blur_y_buf = blur_y.realize(5, 5);
     // d loss / d blur_y = 2 * blur_y(x, y)
     Buffer<float> d_blur_y_buf = adjoints[blur_y.name()].realize(5, 5);
@@ -904,7 +923,8 @@ void test_update() {
     RDom r(0, 2);
     Expr loss = blur(r.x) * blur(r.x);
 
-    std::map<std::string, Func> adjoints = propagate_adjoints(loss);
+    Derivative d = propagate_adjoints(loss);
+    std::map<std::string, Func> adjoints = d.adjoints;
     Buffer<float> blur_buf = blur.realize(2);
     // d loss / d blur = 2 * blur(x)
     Buffer<float> d_blur_buf = adjoints[blur.name()].realize(2);
@@ -940,7 +960,8 @@ void test_rdom_conv() {
     RDom r(0, 4);
     Expr loss = convolved(r.x) * convolved(r.x);
 
-    std::map<std::string, Func> adjoints = propagate_adjoints(loss);
+    Derivative d = propagate_adjoints(loss);
+    std::map<std::string, Func> adjoints = d.adjoints;
     Buffer<float> convolved_buf = convolved.realize(4);
     // d loss / d blur = 2 * blur(x)
     Buffer<float> d_convolved_buf = adjoints[convolved.name()].realize(4);
@@ -984,7 +1005,8 @@ void test_1d_to_2d() {
 
     RDom r(0, 2, 0, 2);
     Expr loss = f_output(r.x, r.y) * f_output(r.x, r.y);
-    std::map<std::string, Func> adjoints = propagate_adjoints(loss);
+    Derivative d = propagate_adjoints(loss);
+    std::map<std::string, Func> adjoints = d.adjoints;
 
     // loss = 2i0^2 + 2i1^2
     // d loss / d i0 = 4i0 = 4
