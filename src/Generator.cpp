@@ -1084,17 +1084,18 @@ GeneratorBase::ParamInfo::ParamInfo(GeneratorBase *generator, const size_t size)
     }
 
     const auto add_synthetic_params = [this](GIOBase *gio) {
-        if (!gio->allow_synthetic_generator_params()) {
-            return;
-        }
         const std::string &n = gio->name();
         if (gio->kind() != IOKind::Scalar) {
-            owned_synthetic_params.emplace_back(new GeneratorParam_Synthetic<Type>(n + ".type", *gio, GeneratorParam_Synthetic<Type>::Type));
-            generator_params.push_back(owned_synthetic_params.back().get());
-            owned_synthetic_params.emplace_back(new GeneratorParam_Synthetic<int>(n + ".dim", *gio, GeneratorParam_Synthetic<int>::Dim));
-            generator_params.push_back(owned_synthetic_params.back().get());
+            if (!gio->types_defined()) {
+                owned_synthetic_params.emplace_back(new GeneratorParam_Synthetic<Type>(n + ".type", *gio, GeneratorParam_Synthetic<Type>::Type));
+                generator_params.push_back(owned_synthetic_params.back().get());
+            }
+            if (!gio->dims_defined()) {
+                owned_synthetic_params.emplace_back(new GeneratorParam_Synthetic<int>(n + ".dim", *gio, GeneratorParam_Synthetic<int>::Dim));
+                generator_params.push_back(owned_synthetic_params.back().get());
+            }
         }
-        if (gio->is_array()) {
+        if (gio->is_array() && !gio->array_size_defined()) {
             owned_synthetic_params.emplace_back(new GeneratorParam_Synthetic<size_t>(n + ".size", *gio, GeneratorParam_Synthetic<size_t>::ArraySize));
             generator_params.push_back(owned_synthetic_params.back().get());
         }
@@ -1640,14 +1641,6 @@ void GeneratorInputBase::set_def_min_max() {
     // nothing
 }
 
-void GeneratorInputBase::init_parameters() {
-    parameters_.clear();
-    for (size_t i = 0; i < array_size(); ++i) {
-        parameters_.emplace_back(type(), kind() != IOKind::Scalar, dims(), array_name(i), true, false);
-    }
-    set_def_min_max();
-}
-
 void GeneratorInputBase::verify_internals() const {
     GIOBase::verify_internals();
 
@@ -1661,12 +1654,12 @@ void GeneratorInputBase::init_internals() {
     user_assert(types_defined()) << "Type is not defined for Input " << name() << "; you may need to specify a GeneratorParam.\n";
     user_assert(dims_defined()) << "Dimensions is not defined for Input " << name() << "; you may need to specify a GeneratorParam.\n";
 
-    init_parameters();
-
+    parameters_.clear();
     exprs_.clear();
     funcs_.clear();
     for (size_t i = 0; i < array_size(); ++i) {
         auto name = array_name(i);
+        parameters_.emplace_back(type(), kind() != IOKind::Scalar, dims(), name, true, false);
         auto &p = parameters_[i];
         if (kind() != IOKind::Scalar) {
             internal_assert(dims() == p.dimensions());
@@ -1677,6 +1670,7 @@ void GeneratorInputBase::init_internals() {
         }
     }
 
+    set_def_min_max();
     verify_internals();
 }
 
@@ -1708,7 +1702,6 @@ void GeneratorInputBase::set_inputs(const std::vector<StubInput> &inputs) {
     }
 
     set_def_min_max();
-
     verify_internals();
 }
 
