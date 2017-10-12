@@ -388,6 +388,7 @@ public:
     using IRVisitor::visit;
 
     void propagate_adjoints(const Expr &output, const std::vector<Func> &funcs);
+
     std::map<std::string, Func> get_adjoint_funcs() const {
         // TOOD: avoid recomputation
         std::map<std::string, Func> ret;
@@ -398,6 +399,18 @@ public:
         }
         return ret;
     }
+
+    std::map<std::string, Func> get_adjoint_funcs_without_boundary_conditions() const {
+        // TOOD: avoid recomputation
+        std::map<std::string, Func> ret;
+        for (const auto &it : adjoint_funcs_without_boundary_conditions) {
+            if (it.first.second == -1) { // XXX: is this correct?
+                ret.insert(std::make_pair(it.first.first, it.second));
+            }
+        }
+        return ret;
+    }
+
     std::map<FuncKey, RDom> get_reductions() const {
         return reductions;
     };
@@ -419,6 +432,7 @@ private:
 
     std::map<const BaseExprNode *, Expr> accumulated_adjoints;
     std::map<FuncKey, Func> adjoint_funcs;
+    std::map<FuncKey, Func> adjoint_funcs_without_boundary_conditions;
     std::map<FuncKey, RDom> reductions;
     std::map<std::string, Expr> let_var_mapping; // TODO: replace this with Scope
     std::map<FuncKey, RDom> func_bounds;
@@ -491,6 +505,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
             current_bounds = func_bounds[func_key];
 
             // Set up boundary condition
+            adjoint_funcs_without_boundary_conditions[func_key] = adjoint_funcs[func_key];
             adjoint_funcs[func_key] = BoundaryConditions::constant_exterior(
                 adjoint_funcs[func_key], 0.f, rdom_to_vector(func_bounds[func_key]));
 
@@ -683,9 +698,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 int arg_id = arg_id_to_substitute[i];
                 adjoint = substitute(current_args[arg_id].name(), r[i], adjoint);
             }
-            reductions[func_key] = r;
-        } else {
-            reductions[func_key] = RDom();
         }
         // Merge RDoms on rhs
         RVarGatherer rvar_gatherer;
@@ -701,6 +713,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             for (int i = 0; i < r.dimensions(); i++) {
                 adjoint = substitute(var_names[i], r[i], adjoint);
             }
+            reductions[FuncKey{func_to_update.name(), func_to_update.num_update_definitions()}] = r;
+        } else {
+            reductions[FuncKey{func_to_update.name(), func_to_update.num_update_definitions()}] = RDom();
         }
 
         std::vector<Var> func_to_update_args = func_to_update.args();
@@ -738,7 +753,9 @@ Derivative propagate_adjoints(const Expr &output) {
     }
     Internal::ReverseAccumulationVisitor visitor;
     visitor.propagate_adjoints(output, funcs);
-    return Derivative{visitor.get_adjoint_funcs(), visitor.get_reductions()};
+    return Derivative{visitor.get_adjoint_funcs(),
+                      visitor.get_adjoint_funcs_without_boundary_conditions(),
+                      visitor.get_reductions()};
 }
 
 void print_func(const Func &func) {
