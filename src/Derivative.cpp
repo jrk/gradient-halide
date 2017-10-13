@@ -400,17 +400,6 @@ public:
         return ret;
     }
 
-    std::map<std::string, Func> get_adjoint_funcs_without_boundary_conditions() const {
-        // TOOD: avoid recomputation
-        std::map<std::string, Func> ret;
-        for (const auto &it : adjoint_funcs_without_boundary_conditions) {
-            if (it.first.second == -1) { // XXX: is this correct?
-                ret.insert(std::make_pair(it.first.first, it.second));
-            }
-        }
-        return ret;
-    }
-
     std::map<FuncKey, RDom> get_reductions() const {
         return reductions;
     };
@@ -432,7 +421,6 @@ private:
 
     std::map<const BaseExprNode *, Expr> accumulated_adjoints;
     std::map<FuncKey, Func> adjoint_funcs;
-    std::map<FuncKey, Func> adjoint_funcs_without_boundary_conditions;
     std::map<FuncKey, RDom> reductions;
     std::map<std::string, Expr> let_var_mapping; // TODO: replace this with Scope
     std::map<FuncKey, RDom> func_bounds;
@@ -505,9 +493,23 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
             current_bounds = func_bounds[func_key];
 
             // Set up boundary condition
-            adjoint_funcs_without_boundary_conditions[func_key] = adjoint_funcs[func_key];
-            adjoint_funcs[func_key] = BoundaryConditions::constant_exterior(
-                adjoint_funcs[func_key], 0.f, rdom_to_vector(func_bounds[func_key]));
+            Func &adjoint_func = adjoint_funcs[func_key];
+            const RDom &bounds = func_bounds[func_key];
+            Expr out_of_bounds = cast<bool>(false);
+            for (size_t i = 0; i < bounds.domain().domain().size(); i++) {
+                Var arg_var = adjoint_func.args()[i];
+                Expr min = bounds[i].min();
+                Expr extent = bounds[i].extent();
+
+                internal_assert(min.defined() && extent.defined());
+
+                out_of_bounds = (out_of_bounds ||
+                                 arg_var < min ||
+                                 arg_var >= min + extent);
+            }
+
+            adjoint_func(adjoint_func.args()) =
+                select(out_of_bounds, 0.f, adjoint_func(adjoint_func.args()));
 
             std::vector<Expr> expr_list = sorter.get_expr_list();
             // Retrieve previously propagated adjoint
@@ -754,7 +756,6 @@ Derivative propagate_adjoints(const Expr &output) {
     Internal::ReverseAccumulationVisitor visitor;
     visitor.propagate_adjoints(output, funcs);
     return Derivative{visitor.get_adjoint_funcs(),
-                      visitor.get_adjoint_funcs_without_boundary_conditions(),
                       visitor.get_reductions()};
 }
 

@@ -15,7 +15,7 @@ public:
 
     Output<Buffer<float>> f_ReLU{"ReLU", 4};
     Output<Buffer<float>> d_filter{"d_filter", 4};
-    Output<Buffer<float>> d_bias{"d_bias", 1};
+    //Output<Buffer<float>> d_bias{"d_bias", 1};
 
     void generate() {
         /* THE ALGORITHM */
@@ -41,10 +41,8 @@ public:
         Expr loss = diff * diff;
         Derivative derivative = propagate_adjoints(loss);
         std::map<std::string, Func> adjoints = derivative.adjoints;
-        std::map<std::string, Func> adjoints_without_boundary_conditions =
-                derivative.adjoints_without_boundary_conditions;
         d_filter(x, y, z, n) = adjoints[f_filter.name()](x, y, z, n);
-        d_bias(z) = adjoints[f_bias.name()](z);
+        //d_bias(z) = 0.f;//adjoints[f_bias.name()](z);
 
         /* THE SCHEDULE */
 
@@ -78,7 +76,7 @@ public:
                     .estimate(z, 0, 32)
                     .estimate(n, 0, 32);
 
-            d_bias.estimate(z, 0, 32);
+            //d_bias.estimate(z, 0, 32);
 
             // Auto schedule the pipeline: this calls auto_schedule() for
             // all of the Outputs in this Generator
@@ -97,16 +95,21 @@ public:
                   .parallel(z)
                   .vectorize(x, 8);
 
-            Func &d_ReLU = adjoints_without_boundary_conditions[f_ReLU.name()];
-            d_ReLU.compute_root()
+            Func &d_ReLU = adjoints[f_ReLU.name()];
+            d_ReLU.compute_root();
+            d_ReLU.update(0)
+                  .parallel(n)
+                  .parallel(z)
+                  .vectorize(x, 8);
+            d_ReLU.update(1)
                   .parallel(n)
                   .parallel(z)
                   .vectorize(x, 8);
 
-            Func &d_filter = adjoints_without_boundary_conditions[f_filter.name()];
+            Func &d_filter = adjoints[f_filter.name()];
             RDom r_conv = derivative.reductions[{d_filter.name(), 0}];
             d_filter.compute_root();
-            d_filter.update()
+            d_filter.update(0)
                     .reorder(r_conv.x, r_conv.y, r_conv.z, z, n)
                     .parallel(n)
                     .parallel(z)
@@ -114,6 +117,10 @@ public:
                     .unroll(x, 3)
                     .allow_race_conditions()
                     .vectorize(r_conv.x, 8);
+            d_filter.update(1)
+                    .parallel(n)
+                    .parallel(z)
+                    .vectorize(x, 8);
         }
     }
 };

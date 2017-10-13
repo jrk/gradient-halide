@@ -18,7 +18,6 @@ using FuncKey = std::pair<std::string, int>;
 
 struct Derivative {
     std::map<std::string, Func> adjoints;
-    std::map<std::string, Func> adjoints_without_boundary_conditions;
     std::map<FuncKey, RDom> reductions;
 };
 
