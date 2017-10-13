@@ -40,9 +40,9 @@ public:
                     compare(r_target.x, r_target.y, r_target.z, r_target.w);
         Expr loss = diff * diff;
         Derivative derivative = propagate_adjoints(loss);
-        std::map<std::string, Func> adjoints = derivative.adjoints;
-        d_filter(x, y, z, n) = adjoints[f_filter.name()](x, y, z, n);
-        //d_bias(z) = 0.f;//adjoints[f_bias.name()](z);
+        std::map<FuncKey, Func> adjoints = derivative.adjoints;
+        d_filter(x, y, z, n) = adjoints[FuncKey{f_filter.name(), -1}](x, y, z, n);
+        //d_bias(z) = 0.f;//adjoints[FuncKey{f_bias.name(), -1}](z);
 
         /* THE SCHEDULE */
 
@@ -81,6 +81,8 @@ public:
             // Auto schedule the pipeline: this calls auto_schedule() for
             // all of the Outputs in this Generator
             auto_schedule_outputs();
+
+            d_filter.print_loop_nest();
         } else {
             f_conv.compute_root();
             f_conv.parallel(n)
@@ -95,7 +97,14 @@ public:
                   .parallel(z)
                   .vectorize(x, 8);
 
-            Func &d_ReLU = adjoints[f_ReLU.name()];
+            Func &d_conv_1 = adjoints[FuncKey{f_conv.name(), 0}];
+            d_conv_1.compute_root();
+            d_conv_1.update(0)
+                    .parallel(n)
+                    .parallel(z)
+                    .vectorize(x, 8);
+
+            Func &d_ReLU = adjoints[FuncKey{f_ReLU.name(), -1}];
             d_ReLU.compute_root();
             d_ReLU.update(0)
                   .parallel(n)
@@ -106,21 +115,16 @@ public:
                   .parallel(z)
                   .vectorize(x, 8);
 
-            Func &d_filter = adjoints[f_filter.name()];
+            Func &d_filter = adjoints[FuncKey{f_filter.name(), -1}];
             RDom r_conv = derivative.reductions[{d_filter.name(), 0}];
             d_filter.compute_root();
             d_filter.update(0)
-                    .reorder(r_conv.x, r_conv.y, r_conv.z, z, n)
                     .parallel(n)
-                    .parallel(z)
-                    .unroll(y, 3)
-                    .unroll(x, 3)
-                    .allow_race_conditions()
-                    .vectorize(r_conv.x, 8);
+                    .vectorize(z, 8);
             d_filter.update(1)
                     .parallel(n)
-                    .parallel(z)
-                    .vectorize(x, 8);
+                    .vectorize(z, 8);
+            d_filter.print_loop_nest();
         }
     }
 };

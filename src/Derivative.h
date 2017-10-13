@@ -17,7 +17,7 @@ namespace Halide {
 using FuncKey = std::pair<std::string, int>;
 
 struct Derivative {
-    std::map<std::string, Func> adjoints;
+    std::map<FuncKey, Func> adjoints;
     std::map<FuncKey, RDom> reductions;
 };
 

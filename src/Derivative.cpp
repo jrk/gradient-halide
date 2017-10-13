@@ -389,15 +389,8 @@ public:
 
     void propagate_adjoints(const Expr &output, const std::vector<Func> &funcs);
 
-    std::map<std::string, Func> get_adjoint_funcs() const {
-        // TOOD: avoid recomputation
-        std::map<std::string, Func> ret;
-        for (const auto &it : adjoint_funcs) {
-            if (it.first.second == -1) { // XXX: is this correct?
-                ret.insert(std::make_pair(it.first.first, it.second));
-            }
-        }
-        return ret;
+    std::map<FuncKey, Func> get_adjoint_funcs() const {
+        return adjoint_funcs;
     }
 
     std::map<FuncKey, RDom> get_reductions() const {
@@ -874,11 +867,11 @@ void test_simple_1d_blur() {
     Expr loss = blur(r.x) * blur(r.x);
 
     Derivative d = propagate_adjoints(loss);
-    std::map<std::string, Func> adjoints = d.adjoints;
+    std::map<FuncKey, Func> adjoints = d.adjoints;
 
     Buffer<float> blur_buf = blur.realize(2);
     // d loss / d blur = 2 * blur(x)
-    Buffer<float> d_blur_buf = adjoints[blur.name()].realize(2);
+    Buffer<float> d_blur_buf = adjoints[FuncKey{blur.name(), -1}].realize(2);
     const float eps = 1e-6;
 #define CMP(x, target) \
     internal_assert(fabs((x) - (target)) < eps) << \
@@ -886,7 +879,7 @@ void test_simple_1d_blur() {
 
     CMP(d_blur_buf(0), 2 * blur_buf(0));
     CMP(d_blur_buf(1), 2 * blur_buf(1));
-    Buffer<float> d_clamped_buf = adjoints[clamped.name()].realize(2);
+    Buffer<float> d_clamped_buf = adjoints[FuncKey{clamped.name(), -1}].realize(2);
     CMP(d_clamped_buf(0), d_blur_buf(0));
     CMP(d_clamped_buf(1), d_blur_buf(0) + d_blur_buf(1));
 
@@ -916,11 +909,11 @@ void test_simple_2d_blur() {
     Expr loss = blur_y(r.x, r.y) * blur_y(r.x, r.y);
 
     Derivative d = propagate_adjoints(loss);
-    std::map<std::string, Func> adjoints = d.adjoints;
+    std::map<FuncKey, Func> adjoints = d.adjoints;
 
     Buffer<float> blur_y_buf = blur_y.realize(5, 5);
     // d loss / d blur_y = 2 * blur_y(x, y)
-    Buffer<float> d_blur_y_buf = adjoints[blur_y.name()].realize(5, 5);
+    Buffer<float> d_blur_y_buf = adjoints[FuncKey{blur_y.name(), -1}].realize(5, 5);
     const float eps = 1e-6;
     for (int y = 0; y < 5; y++) {
         for (int x = 0; x < 5; x++) {
@@ -932,8 +925,7 @@ void test_simple_2d_blur() {
         }
     }
     // d loss / d blur_x = d blur_y(x, y) + d blur_y(x, y - 1) + d blur_y(x, y - 2)
-    print_func(adjoints[blur_x.name()]);
-    Buffer<float> d_blur_x_buf = adjoints[blur_x.name()].realize(5, 5);
+    Buffer<float> d_blur_x_buf = adjoints[FuncKey{blur_x.name(), -1}].realize(5, 5);
     for (int y = 0; y < 5; y++) {
         for (int x = 0; x < 5; x++) {
             float target = d_blur_y_buf(x, y);
@@ -949,7 +941,7 @@ void test_simple_2d_blur() {
                 target << " instead of " << d_blur_x_buf(x, y) << "\n" ;
         }
     }
-    Buffer<float> d_clamped = adjoints[clamped.name()].realize(5, 5);
+    Buffer<float> d_clamped = adjoints[FuncKey{clamped.name(), -1}].realize(5, 5);
     // d loss / d clamped = d blur_x(x, y) + d blur_x(x - 1, y) + d blur_x(x - 2, y)
     for (int y = 0; y < 5; y++) {
         for (int x = 0; x < 5; x++) {
@@ -982,10 +974,10 @@ void test_update() {
     Expr loss = blur(r.x) * blur(r.x);
 
     Derivative d = propagate_adjoints(loss);
-    std::map<std::string, Func> adjoints = d.adjoints;
+    std::map<FuncKey, Func> adjoints = d.adjoints;
     Buffer<float> blur_buf = blur.realize(2);
     // d loss / d blur = 2 * blur(x)
-    Buffer<float> d_blur_buf = adjoints[blur.name()].realize(2);
+    Buffer<float> d_blur_buf = adjoints[FuncKey{blur.name(), -1}].realize(2);
     const float eps = 1e-6;
 #define CMP(x, target) \
     internal_assert(fabs((x) - (target)) < eps) << \
@@ -993,7 +985,7 @@ void test_update() {
 
     CMP(d_blur_buf(0), 2 * blur_buf(0));
     CMP(d_blur_buf(1), 2 * blur_buf(1));
-    Buffer<float> d_clamped_buf = adjoints[clamped.name()].realize(2);
+    Buffer<float> d_clamped_buf = adjoints[FuncKey{clamped.name(), -1}].realize(2);
     CMP(d_clamped_buf(0), d_blur_buf(0));
     CMP(d_clamped_buf(1), d_blur_buf(0) + d_blur_buf(1));
 
@@ -1019,10 +1011,10 @@ void test_rdom_conv() {
     Expr loss = convolved(r.x) * convolved(r.x);
 
     Derivative d = propagate_adjoints(loss);
-    std::map<std::string, Func> adjoints = d.adjoints;
+    std::map<FuncKey, Func> adjoints = d.adjoints;
     Buffer<float> convolved_buf = convolved.realize(4);
     // d loss / d blur = 2 * blur(x)
-    Buffer<float> d_convolved_buf = adjoints[convolved.name()].realize(4);
+    Buffer<float> d_convolved_buf = adjoints[FuncKey{convolved.name(), -1}].realize(4);
     const float eps = 1e-6;
 #define CMP(x, target) \
     internal_assert(fabs((x) - (target)) < eps) << \
@@ -1032,7 +1024,7 @@ void test_rdom_conv() {
         CMP(d_convolved_buf(i), 2 * convolved_buf(i));
     }
     // d loss / d clamped = d_convolved convolve with flipped kernel
-    Buffer<float> d_clamped_buf = adjoints[clamped.name()].realize(4);
+    Buffer<float> d_clamped_buf = adjoints[FuncKey{clamped.name(), -1}].realize(4);
     for (int i = 0; i < 4; i++) {
         float target = d_convolved_buf(i) * kernel_data[0];
         if (i >= 1) {
@@ -1045,7 +1037,7 @@ void test_rdom_conv() {
     //      = 30 k0^2 + 72 k0k1 + 45 k1^2
     // d loss / d kernel(0) = 2 * 30 + 72 = 132
     // d loss / d kernel(1) = 2 * 45 + 72 = 162
-    Buffer<float> d_kernel_buf = adjoints[kernel_func.name()].realize(2);
+    Buffer<float> d_kernel_buf = adjoints[FuncKey{kernel_func.name(), -1}].realize(2);
     CMP(d_kernel_buf(0), 132);
     CMP(d_kernel_buf(1), 162);
 
@@ -1064,7 +1056,7 @@ void test_1d_to_2d() {
     RDom r(0, 2, 0, 2);
     Expr loss = f_output(r.x, r.y) * f_output(r.x, r.y);
     Derivative d = propagate_adjoints(loss);
-    std::map<std::string, Func> adjoints = d.adjoints;
+    std::map<FuncKey, Func> adjoints = d.adjoints;
 
     // loss = 2i0^2 + 2i1^2
     // d loss / d i0 = 4i0 = 4
@@ -1074,13 +1066,13 @@ void test_1d_to_2d() {
     internal_assert(fabs((x) - (target)) < eps) << \
         "Expected " << (target) << " instead of " << (x) << "\n";
 
-    Buffer<float> d_output = adjoints[f_output.name()].realize(2, 2);
+    Buffer<float> d_output = adjoints[FuncKey{f_output.name(), -1}].realize(2, 2);
     CMP(d_output(0, 0), 2);
     CMP(d_output(1, 0), 2);
     CMP(d_output(0, 1), 4);
     CMP(d_output(1, 1), 4);
 
-    Buffer<float> d_input = adjoints[f_input.name()].realize(2);
+    Buffer<float> d_input = adjoints[FuncKey{f_input.name(), -1}].realize(2);
     CMP(d_input(0), 4);
     CMP(d_input(1), 8);
 
