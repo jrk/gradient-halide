@@ -203,7 +203,7 @@ void Module::append(const Internal::LoweredFunc &function) {
 void Module::append(const Module &module) {
     contents->submodules.push_back(module);
 }
- 
+
 void Module::append(const ExternalCode &external_code) {
     contents->external_code.push_back(external_code);
 }
@@ -241,7 +241,7 @@ Buffer<uint8_t> Module::compile_to_buffer() const {
     if (target().arch == Target::Hexagon) {
         return compile_module_to_hexagon_shared_object(*this);
     }
-    
+
     llvm::LLVMContext context;
     std::unique_ptr<llvm::Module> llvm_module(compile_module_to_llvm_module(*this, context));
 
@@ -582,6 +582,8 @@ void compile_multitarget(const std::string &fn_name,
     if (!output_files.c_header_name.empty()) {
         Module header_module(fn_name, base_target);
         header_module.append(LoweredFunc(fn_name, base_target_args, {}, LoweredFunc::ExternalPlusMetadata));
+        // Add a wrapper to accept old buffer_ts
+        add_legacy_wrapper(header_module, header_module.functions().back());
         Outputs header_out = Outputs().c_header(output_files.c_header_name);
         futures.emplace_back(pool.async([](Module m, Outputs o) {
             debug(1) << "compile_multitarget: c_header_name " << o.c_header_name << "\n";

@@ -2,7 +2,7 @@
 #define HALIDE_DERIVATIVE_H
 
 /** \file
- *  Propagate the adjoints of a Halide function
+ *  Automatic differentiation
  */
 
 #include "Module.h"
@@ -13,7 +13,15 @@
 
 namespace Halide {
 
-std::map<std::string, Func> propagate_adjoints(const Expr &output);
+// function name & update_id, for initialization update_id == -1
+using FuncKey = std::pair<std::string, int>;
+
+struct Derivative {
+    std::map<FuncKey, Func> adjoints;
+    std::map<FuncKey, RDom> reductions;
+};
+
+Derivative propagate_adjoints(const Expr &output);
 void print_func(const Func &func);
 
 namespace Internal {
