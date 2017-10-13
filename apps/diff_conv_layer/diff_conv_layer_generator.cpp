@@ -120,10 +120,17 @@ public:
             d_filter.compute_root();
             d_filter.update(0)
                     .parallel(n)
-                    .vectorize(z, 8);
+                    .parallel(z);
             d_filter.update(1)
                     .parallel(n)
-                    .vectorize(z, 8);
+                    .parallel(z);
+            Var rx("rx");
+            Func intermediate = d_filter.update(0).rfactor(r_conv.x, rx);
+            intermediate.compute_at(d_filter, x);
+            intermediate.update(0)
+                        .parallel(n)
+                        .parallel(z)
+                        .vectorize(rx, 8);
             d_filter.print_loop_nest();
         }
     }
