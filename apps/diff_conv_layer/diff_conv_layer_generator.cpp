@@ -85,13 +85,17 @@ public:
             d_filter.print_loop_nest();
         } else {
             f_conv.compute_root();
-            f_conv.parallel(n)
-                  .parallel(z)
-                  .vectorize(x, 8);
+            f_conv
+              .parallel(n)
+              .vectorize(x, 8);
+
             f_conv.update()
+                  .reorder(r.x, r.y, x, y, z, r.z, n)
                   .parallel(n)
-                  .parallel(z)
-                  .vectorize(x, 8);
+                  .parallel(z, 2)
+                  .vectorize(x, 8)
+                  .unroll(r.x, 3)
+                  ;
             f_ReLU.compute_root();
             f_ReLU.parallel(n)
                   .parallel(z)

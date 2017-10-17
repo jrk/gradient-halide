@@ -4,9 +4,9 @@ BIN ?= bin
 
 all: $(BIN)/process
 
-$(BIN)/diff_conv_layer_exec: diff_conv_layer_generator.cpp $(GENERATOR_DEPS)
+$(BIN)/diff_conv_layer_exec: diff_conv_layer_generator.cpp $(GENERATOR_DEPS) $(LIB_HALIDE)
 	@-mkdir -p $(BIN)
-	$(CXX) $(CXXFLAGS) -g -fno-rtti $(filter-out %.h,$^) -o $@ $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -g -fno-rtti $(filter-out %.h,$^) -o $@ $(LDFLAGS) $(HALIDE_SYSTEM_LDFLAGS)
 
 $(BIN)/diff_conv_layer.a: $(BIN)/diff_conv_layer_exec
 	@-mkdir -p $(BIN)
