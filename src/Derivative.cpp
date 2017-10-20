@@ -19,8 +19,12 @@ class VariableFinder : public IRGraphVisitor {
 public:
     using IRGraphVisitor::visit;
     bool find(const Expr &expr, const Var &var) {
+        return find(expr, var.name());
+    }
+
+    bool find(const Expr &expr, const std::string &_var_name) {
         visited.clear();
-        var_name = var.name();
+        var_name = _var_name;
         found = false;
         expr.accept(this);
         return found;
@@ -37,10 +41,48 @@ private:
     bool found;
 };
 
+class LetFinder : public IRGraphVisitor {
+public:
+    using IRGraphVisitor::visit;
+    bool find(const Expr &expr, const std::string &_var_name) {
+        visited.clear();
+        var_name = _var_name;
+        found = false;
+        expr.accept(this);
+        return found;
+    }
+
+    void visit(const Let *op) {
+        if (op->name == var_name) {
+            found = true;
+        }
+        op->value->accept(this);
+        op->body->accept(this);
+    }
+
+private:
+    std::string var_name;
+    bool found;
+};
+
+// Remove all Lets
+class LetRemover : public IRMutator {
+public:
+    Expr remove(const Expr &expr) {
+        return mutate(expr);
+    }
+
+    void visit(const Let *op) {
+        expr = mutate(op->body);
+    }
+};
+
 class VariableGatherer : public IRGraphVisitor {
 public:
     using IRGraphVisitor::visit;
-    std::vector<std::string> gather(const Expr &expr) {
+    std::vector<std::string> gather(const Expr &expr,
+                                    const std::vector<std::string> &_gather_set) {
+        gather_set = _gather_set;
         visited.clear();
         variables.clear();
         expr.accept(this);
@@ -48,13 +90,16 @@ public:
     }
 
     void visit(const Variable *op) {
-        if (!op->reduction_domain.defined()) {
-            variables.push_back(op->name);
+        for (const auto &pv : gather_set) {
+            if (op->name == pv) {
+                variables.push_back(op->name);    
+            }
         }
     }
 
 private:
     std::vector<std::string> variables;
+    std::vector<std::string> gather_set;
 };
 
 class RVarGatherer : public IRGraphVisitor {
@@ -82,22 +127,25 @@ private:
     std::map<std::string, std::pair<Expr, Expr>> rvar_map;
 };
 
-std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr, const std::vector<Var> &current_args,
-                                         const RDom &current_bounds, const int index) {
+std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
+                                         const std::vector<Var> &current_args,
+                                         const RDom &current_bounds,
+                                         const int index,
+                                         const Scope<Expr> &scope) {
     if (expr.get()->node_type == IRNodeType::Add) {
         const Add *op = expr.as<Add>();
         const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index);
+            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
         const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index);
+            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
         //debug(0) << "  " << index << " bounds for Add\n";
         return {a_bounds.first + b_bounds.first, a_bounds.second + b_bounds.second};
     } else if (expr.get()->node_type == IRNodeType::Sub) {
         const Sub *op = expr.as<Sub>();
         const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index);
+            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
         const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index);
+            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
         //debug(0) << "  " << index << " bounds for Sub\n";
         return {a_bounds.first - b_bounds.second, a_bounds.second - b_bounds.first};
     } else if (expr.get()->node_type == IRNodeType::Variable) {
@@ -113,26 +161,56 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr, const std::vector<Var
                     return {current_bounds[i].min(), current_bounds[i].extent()};
                 }
             }
+            if (scope.contains(var->name)) {
+                return get_min_max_bounds(scope.get(var->name),
+                                          current_args,
+                                          current_bounds,
+                                          index,
+                                          scope);
+            }
         }
     } else if (expr.get()->node_type == IRNodeType::Max) {
         const Max *op = expr.as<Max>();
         const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index);
+            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
         const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index);
+            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
         //debug(0) << "  " << index << " bounds for Max\n";
         return {max(a_bounds.first, b_bounds.first), max(a_bounds.second, b_bounds.second)};
     } else if (expr.get()->node_type == IRNodeType::Min) {
         const Min *op = expr.as<Min>();
         const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index);
+            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
         const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index);
+            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
         //debug(0) << "  " << index << " bounds for Min\n";
         return {min(a_bounds.first, b_bounds.first), min(a_bounds.second, b_bounds.second)};
     } else if (expr.get()->node_type == IRNodeType::IntImm) {
         //debug(0) << "  " << index << " bounds for IntImm\n";
         return {expr, expr};
+    } else if (expr.get()->node_type == IRNodeType::FloatImm) {
+        return {expr, expr};
+    } else if (expr.get()->node_type == IRNodeType::Cast) {
+        const Cast *op = expr.as<Cast>();
+        const std::pair<Expr, Expr> bounds =
+            get_min_max_bounds(op->value, current_args, current_bounds, index, scope);
+        return {cast(op->type, bounds.first), cast(op->type, bounds.second)};
+    } else if (expr.get()->node_type == IRNodeType::Call) {
+        const Call *op = expr.as<Call>();
+        if (op->call_type == Call::PureExtern) {
+            if (op->name == "floor_f32") {
+                internal_assert(op->args.size() == 1);
+                const std::pair<Expr, Expr> bounds =
+                    get_min_max_bounds(op->args[0], current_args, current_bounds, index, scope);
+                return {floor(bounds.first), floor(bounds.second)};
+            }
+        } else if (op->call_type == Call::Halide) {
+            return {std::numeric_limits<float>::min(),
+                    std::numeric_limits<float>::max()};
+        }
+    } else if (expr.get()->node_type == IRNodeType::Let) {
+        //const Let *op = expr.as<Let>();
+        internal_error << "Let\n";
     }
 
     internal_error << "Can't infer bounds, Expr type not handled\n";
@@ -144,6 +222,29 @@ std::pair<Expr, Expr> merge_bounds(const std::pair<Expr, Expr> &bounds0,
     return {simplify(min(bounds0.first, bounds1.first)),
             simplify(max(bounds0.second, bounds1.second))};
 };
+
+Expr add_let_expression(const Expr &expr,
+                        const std::map<std::string, Expr> &let_var_mapping,
+                        const std::vector<std::string> &let_variables) {
+    // TODO: find a faster way to do this
+    Expr ret = expr;
+    VariableFinder var_finder;
+    LetRemover let_remover;
+    LetFinder let_finder;
+    ret = let_remover.remove(ret);
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto &let_variable : let_variables) {
+            if (var_finder.find(ret, let_variable) && !let_finder.find(ret, let_variable)) {
+                auto value = let_var_mapping.find(let_variable)->second;
+                ret = Let::make(let_variable, value, ret);
+                changed = true;
+            }
+        }
+    }
+    return ret;
+}
 
 /** An IR graph visitor that gather the function DAG and sort them in reverse topological order
  */
@@ -267,6 +368,7 @@ public:
     void inference(const Func &func);
 
     void visit(const Call *op);
+    void visit(const Let *op);
 
     std::map<FuncKey, RDom> get_func_bounds() const {
         // TODO(mgharbi): don't recompute that all the time..
@@ -293,6 +395,7 @@ private:
     FuncKey current_func_key;
     std::vector<Var> current_args;
     RDom current_bounds;
+    Scope<Expr> scope;
 };
 
 void BoundsInferencer::inference(const Expr &expr) {
@@ -341,7 +444,8 @@ void BoundsInferencer::visit(const Call *op) {
         FuncBounds arg_bounds;
         arg_bounds.reserve(op->args.size());
         for (int i = 0; i < (int)op->args.size(); i++) {
-            std::pair<Expr, Expr> min_max_bounds = get_min_max_bounds(op->args[i], current_args, current_bounds, i);
+            std::pair<Expr, Expr> min_max_bounds =
+                get_min_max_bounds(op->args[i], current_args, current_bounds, i, scope);
             arg_bounds.push_back(min_max_bounds);
         }
 
@@ -380,6 +484,13 @@ void BoundsInferencer::visit(const Call *op) {
     }
 }
 
+void BoundsInferencer::visit(const Let *op) {
+    op->value.accept(this);
+    scope.push(op->name, op->value);
+    op->body.accept(this);
+    scope.pop(op->name);
+}
+
 
 /** An IR visitor that computes the derivatives through reverse accumulation
  */
@@ -415,7 +526,8 @@ private:
     std::map<const BaseExprNode *, Expr> accumulated_adjoints;
     std::map<FuncKey, Func> adjoint_funcs;
     std::map<FuncKey, RDom> reductions;
-    std::map<std::string, Expr> let_var_mapping; // TODO: replace this with Scope
+    std::map<std::string, Expr> let_var_mapping;
+    std::vector<std::string> let_variables;
     std::map<FuncKey, RDom> func_bounds;
     FuncKey current_func_key;
     std::vector<Var> current_args;
@@ -457,8 +569,17 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
     ExpressionSorter sorter;
     sorter.sort(output);
     std::vector<Expr> expr_list = sorter.get_expr_list();
-    accumulate(output, 1.f);
+    // Gather let variables
+    for (auto it = expr_list.begin(); it != expr_list.end(); it++) {
+        Expr expr = *it;
+        if (expr.get()->node_type == IRNodeType::Let) {
+            const Let *op = expr.as<Let>();
+            let_var_mapping[op->name] = op->value;
+            let_variables.push_back(op->name);
+        }
+    }
 
+    accumulate(output, 1.f);
     // Traverse the expressions in reverse order
     for (auto it = expr_list.rbegin(); it != expr_list.rend(); it++) {
         // Propagate adjoints
@@ -505,6 +626,18 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
                 select(out_of_bounds, 0.f, adjoint_func(adjoint_func.args()));
 
             std::vector<Expr> expr_list = sorter.get_expr_list();
+            let_var_mapping.clear();
+            let_variables.clear();
+            // Gather let variables
+            for (auto it = expr_list.begin(); it != expr_list.end(); it++) {
+                Expr expr = *it;
+                if (expr.get()->node_type == IRNodeType::Let) {
+                    const Let *op = expr.as<Let>();
+                    let_var_mapping[op->name] = op->value;
+                    let_variables.push_back(op->name);
+                }
+            }
+
             // Retrieve previously propagated adjoint
             std::vector<Expr> args;
             for (const auto &arg : func.args()) {
@@ -629,6 +762,14 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
         // We are scattering to this function
         debug(0) << "Scattering to " << func.name() << "\n";
+
+        // Add Let expressions
+        adjoint = add_let_expression(adjoint, let_var_mapping, let_variables);
+        std::vector<Expr> lhs = op->args;
+        for (int i = 0; i < (int)lhs.size(); i++) {
+            lhs[i] = add_let_expression(lhs[i], let_var_mapping, let_variables);
+        }
+
         debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
         // If referring to the current function itself, send to previous update
         FuncKey func_key = func.name() != current_func_key.first ?
@@ -651,17 +792,17 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
         VariableGatherer gatherer;
         // We canonicalize the left hand side arguments (op->args) so that it's always x, y, z, ...
-        for (int i = 0; i < (int)op->args.size(); i++) {
+        for (int i = 0; i < (int)lhs.size(); i++) {
             // Let new_args[i] == op->args[i]
             // Gather all pure variables at op->args[i], substitute them with new_args
             // For now only support single pure variable
-            std::vector<std::string> variables = gatherer.gather(op->args[i]);
+            std::vector<std::string> variables = gatherer.gather(lhs[i], func.args());
             if (variables.size() > 1) {
                 internal_error << "Can't solve the inverse when there are more than one pure variable";
             }
             if (variables.size() > 0) {
                 // Let new_args[i] == op->args[i]
-                SolverResult result = solve_expression(new_args[i] == op->args[i], variables[0]);
+                SolverResult result = solve_expression(new_args[i] == lhs[i], variables[0]);
                 if (!result.fully_solved) {
                     internal_error << "Can't solve the inverse";
                 }
@@ -670,7 +811,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 // replace pure variable with the reverse
                 adjoint = substitute(variables[0], result_rhs, adjoint);
             } else {
-                adjoint = substitute(op->args[i], new_args[i], adjoint);
+                adjoint = substitute(lhs[i], new_args[i], adjoint);
             }
         }
 
@@ -719,6 +860,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             adjoint = substitute(new_args[i].name(), func_to_update_args[i], adjoint);
         }
 
+        // Add definition for all let variables
         debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
         func_to_update(func_to_update.args()) += adjoint;
 
@@ -731,7 +873,6 @@ void ReverseAccumulationVisitor::visit(const Let *op) {
     Expr adjoint = accumulated_adjoints[op];
 
     accumulate(op->body, adjoint);
-    let_var_mapping[op->name] = op->value;
 }
 
 } // namespace Internal
@@ -1079,6 +1220,62 @@ void test_1d_to_2d() {
 #undef CMP
 }
 
+void test_linear_interpolation() {
+    Var x("x");
+    float input_data0[] = {0.3f, 1.8f};
+    float input_data1[] = {1.0f, 2.0f, 4.0f};
+    Buffer<float> input0(input_data0, 2, "input0");
+    Buffer<float> input1(input_data1, 3, "input1");
+    Func f_input0("f_input0");
+    Expr clamped_x0 = Halide::clamp(x, 0, input0.width() - 1);
+    f_input0(x) = input0(clamped_x0);
+    Func f_input1("f_input1");
+    Expr clamped_x1 = Halide::clamp(x, 0, input1.width() - 1);
+    f_input1(x) = input1(clamped_x1);
+    Expr gx = f_input0(x);
+    Expr fx = cast<int>(clamp(floor(f_input0(x)), 0.f, 1.f));
+    Expr cx = fx + 1;
+    Expr wx = gx - fx;
+    Func f_interpolate("interpolate");
+    Expr f1 = f_input1(fx);
+    f_interpolate(x) = f_input1(fx) * (1.f - wx) + f_input1(cx) * wx;
+
+    RDom r(0, 2);
+    Expr loss = f_interpolate(r.x);
+    Derivative d = propagate_adjoints(loss);
+    std::map<FuncKey, Func> adjoints = d.adjoints;
+
+    // f_interpolate = {i1[0] * (1 - (i0[0] - floor(i0[0]))) +
+    //                  i1[1] * (i0[0] - floor(i0[0])),
+    //                  i1[1] * (1 - (i0[1] - floor(i0[1]))) +
+    //                  i1[2] * (i0[1] - floor(i0[1]))}
+    // loss = f_interpolate[0] + f_interpolate[1]
+    // d loss / d i0[0] = -i1[0] + i1[1] = 1
+    // d loss / d i0[1] = -i1[1] + i1[2] = 2
+    // d loss / d i1[0] = 1 - (i0[0] - floor(i0[0]))
+    // d loss / d i1[1] = (i0[0] - floor(i0[0])) +
+    //                    (1 - (i0[1] - floor(i0[1])))
+    // d loss / d i1[2] = i0[1] - floor(i0[1])
+    const float eps = 1e-6;
+#define CMP(x, target) \
+    internal_assert(fabs((x) - (target)) < eps) << \
+        "Expected " << (target) << " instead of " << (x) << "\n";
+
+    Buffer<float> interpolate = f_interpolate.realize(2);
+    CMP(interpolate(0), 1.3f);
+    CMP(interpolate(1), 3.6f);
+
+    Buffer<float> d_input_0 = adjoints[FuncKey{f_input0.name(), -1}].realize(2);
+    CMP(d_input_0(0), 1.f);
+    CMP(d_input_0(1), 2.f);
+
+    Buffer<float> d_input_1 = adjoints[FuncKey{f_input1.name(), -1}].realize(3);
+    CMP(d_input_1(0), 0.7f);
+    CMP(d_input_1(1), 0.5f);
+    CMP(d_input_1(2), 0.8f);
+#undef CMP
+}
+
 void derivative_test() {
     test_simple_bounds_inference();
     test_simple_bounds_inference_update();
@@ -1087,6 +1284,7 @@ void derivative_test() {
     test_update();
     test_rdom_conv();
     test_1d_to_2d();
+    test_linear_interpolation();
     debug(0) << "Derivative test passed\n";
 }
 
