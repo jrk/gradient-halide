@@ -21,7 +21,7 @@ struct Derivative {
     std::map<FuncKey, RDom> reductions;
 };
 
-Derivative propagate_adjoints(const Expr &output);
+Derivative propagate_adjoints(const Func &output);
 void print_func(const Func &func);
 
 namespace Internal {

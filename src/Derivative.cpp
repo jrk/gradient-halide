@@ -1,5 +1,6 @@
 #include "Derivative.h"
 
+#include "DerivativeUtils.h"
 #include "BoundaryConditions.h"
 #include "Simplify.h"
 #include "Solve.h"
@@ -7,6 +8,8 @@
 #include "IRMutator.h"
 #include "IROperator.h"
 #include "IREquality.h"
+#include "FindCalls.h"
+#include "RealizationOrder.h"
 #include "Error.h"
 
 #include <iostream>
@@ -15,502 +18,13 @@
 namespace Halide {
 namespace Internal {
 
-class VariableFinder : public IRGraphVisitor {
-public:
-    using IRGraphVisitor::visit;
-    bool find(const Expr &expr, const Var &var) {
-        return find(expr, var.name());
-    }
-
-    bool find(const Expr &expr, const std::string &_var_name) {
-        visited.clear();
-        var_name = _var_name;
-        found = false;
-        expr.accept(this);
-        return found;
-    }
-
-    void visit(const Variable *op) {
-        if (op->name == var_name) {
-            found = true;
-        }
-    }
-
-private:
-    std::string var_name;
-    bool found;
-};
-
-class LetFinder : public IRGraphVisitor {
-public:
-    using IRGraphVisitor::visit;
-    bool find(const Expr &expr, const std::string &_var_name) {
-        visited.clear();
-        var_name = _var_name;
-        found = false;
-        expr.accept(this);
-        return found;
-    }
-
-    void visit(const Let *op) {
-        if (op->name == var_name) {
-            found = true;
-        }
-        op->value->accept(this);
-        op->body->accept(this);
-    }
-
-private:
-    std::string var_name;
-    bool found;
-};
-
-// Remove all Lets
-class LetRemover : public IRMutator {
-public:
-    Expr remove(const Expr &expr) {
-        return mutate(expr);
-    }
-
-    void visit(const Let *op) {
-        expr = mutate(op->body);
-    }
-};
-
-class VariableGatherer : public IRGraphVisitor {
-public:
-    using IRGraphVisitor::visit;
-    std::vector<std::string> gather(const Expr &expr,
-                                    const std::vector<std::string> &_gather_set) {
-        gather_set = _gather_set;
-        visited.clear();
-        variables.clear();
-        expr.accept(this);
-        return variables;
-    }
-
-    void visit(const Variable *op) {
-        for (const auto &pv : gather_set) {
-            if (op->name == pv) {
-                variables.push_back(op->name);    
-            }
-        }
-    }
-
-private:
-    std::vector<std::string> variables;
-    std::vector<std::string> gather_set;
-};
-
-class RVarGatherer : public IRGraphVisitor {
-public:
-    using IRGraphVisitor::visit;
-    std::map<std::string, std::pair<Expr, Expr>> gather(const Expr &expr) {
-        visited.clear();
-        rvar_map.clear();
-        expr.accept(this);
-        return rvar_map;
-    }
-
-    void visit(const Variable *op) {
-        if (op->reduction_domain.defined()) {
-            for (const ReductionVariable &rv : op->reduction_domain.domain()) {
-                if (rv.var == op->name) {
-                    rvar_map[op->name] = std::make_pair(rv.min, rv.extent);
-                    return;
-                }
-            }
-            internal_error << "Unknown reduction variable encountered";
-        }
-    }
-private:
-    std::map<std::string, std::pair<Expr, Expr>> rvar_map;
-};
-
-std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
-                                         const std::vector<Var> &current_args,
-                                         const RDom &current_bounds,
-                                         const int index,
-                                         const Scope<Expr> &scope) {
-    if (expr.get()->node_type == IRNodeType::Add) {
-        const Add *op = expr.as<Add>();
-        const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
-        const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        //debug(0) << "  " << index << " bounds for Add\n";
-        return {a_bounds.first + b_bounds.first, a_bounds.second + b_bounds.second};
-    } else if (expr.get()->node_type == IRNodeType::Sub) {
-        const Sub *op = expr.as<Sub>();
-        const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
-        const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        //debug(0) << "  " << index << " bounds for Sub\n";
-        return {a_bounds.first - b_bounds.second, a_bounds.second - b_bounds.first};
-    } else if (expr.get()->node_type == IRNodeType::Mul) {
-        const Mul *op = expr.as<Mul>();
-        const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
-        const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        //debug(0) << "  " << index << " bounds for Sub\n";
-        return {a_bounds.first * b_bounds.first, a_bounds.second * b_bounds.second};
-    } else if (expr.get()->node_type == IRNodeType::Variable) {
-        const Variable *var = expr.as<Variable>();
-        if (var->reduction_domain.defined()) {
-            ReductionVariable rvar = var->reduction_domain.domain()[index];
-            //debug(0) << "  " << index << " bounds for Rvar\n";
-            return {rvar.min, rvar.min + rvar.extent - 1};
-        } else {
-            //debug(0) << "  " << index << " bounds for Var\n";
-            for (int i = 0; i < (int)current_args.size(); i++) {
-                if (current_args[i].name() == var->name) {
-                    return {current_bounds[i].min(), current_bounds[i].extent()};
-                }
-            }
-            if (scope.contains(var->name)) {
-                return get_min_max_bounds(scope.get(var->name),
-                                          current_args,
-                                          current_bounds,
-                                          index,
-                                          scope);
-            }
-        }
-        // Treat it as a constant (XXX: is this correct?)
-        std::cerr << "var->name:" << var->name << std::endl;
-        return {expr, expr};
-    } else if (expr.get()->node_type == IRNodeType::Max) {
-        const Max *op = expr.as<Max>();
-        const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
-        const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        //debug(0) << "  " << index << " bounds for Max\n";
-        return {max(a_bounds.first, b_bounds.first), max(a_bounds.second, b_bounds.second)};
-    } else if (expr.get()->node_type == IRNodeType::Min) {
-        const Min *op = expr.as<Min>();
-        const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
-        const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        //debug(0) << "  " << index << " bounds for Min\n";
-        return {min(a_bounds.first, b_bounds.first), min(a_bounds.second, b_bounds.second)};
-    } else if (expr.get()->node_type == IRNodeType::IntImm) {
-        //debug(0) << "  " << index << " bounds for IntImm\n";
-        return {expr, expr};
-    } else if (expr.get()->node_type == IRNodeType::FloatImm) {
-        return {expr, expr};
-    } else if (expr.get()->node_type == IRNodeType::Cast) {
-        const Cast *op = expr.as<Cast>();
-        const std::pair<Expr, Expr> bounds =
-            get_min_max_bounds(op->value, current_args, current_bounds, index, scope);
-        return {cast(op->type, bounds.first), cast(op->type, bounds.second)};
-    } else if (expr.get()->node_type == IRNodeType::Call) {
-        const Call *op = expr.as<Call>();
-        if (op->call_type == Call::PureExtern) {
-            if (op->name == "floor_f32") {
-                internal_assert(op->args.size() == 1);
-                const std::pair<Expr, Expr> bounds =
-                    get_min_max_bounds(op->args[0], current_args, current_bounds, index, scope);
-                return {floor(bounds.first), floor(bounds.second)};
-            }
-        } else if (op->call_type == Call::Halide) {
-            return {std::numeric_limits<float>::min(),
-                    std::numeric_limits<float>::max()};
-        }
-    } else if (expr.get()->node_type == IRNodeType::Let) {
-        //const Let *op = expr.as<Let>();
-        internal_error << "Let\n";
-    }
-
-    std::cerr << "expr.get()->node_type:" << (int)expr.get()->node_type << std::endl;
-    internal_error << "Can't infer bounds, Expr type not handled\n";
-    return std::pair<Expr, Expr>();
-}
-
-std::pair<Expr, Expr> merge_bounds(const std::pair<Expr, Expr> &bounds0,
-                                   const std::pair<Expr, Expr> &bounds1) {
-    return {simplify(min(bounds0.first, bounds1.first)),
-            simplify(max(bounds0.second, bounds1.second))};
-};
-
-Expr add_let_expression(const Expr &expr,
-                        const std::map<std::string, Expr> &let_var_mapping,
-                        const std::vector<std::string> &let_variables) {
-    // TODO: find a faster way to do this
-    Expr ret = expr;
-    VariableFinder var_finder;
-    LetRemover let_remover;
-    LetFinder let_finder;
-    ret = let_remover.remove(ret);
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (const auto &let_variable : let_variables) {
-            if (var_finder.find(ret, let_variable) && !let_finder.find(ret, let_variable)) {
-                auto value = let_var_mapping.find(let_variable)->second;
-                ret = Let::make(let_variable, value, ret);
-                changed = true;
-            }
-        }
-    }
-    return ret;
-}
-
-/** An IR graph visitor that gather the function DAG and sort them in reverse topological order
- */
-class FunctionSorter : public IRGraphVisitor {
-public:
-    using IRGraphVisitor::visit;
-    void sort(const Expr &expr);
-    void sort(const Func &func);
-
-    std::vector<Func> get_functions() const {
-        return functions;
-    }
-
-    void visit(const Call *op);
-
-private:
-    std::vector<Func> functions;
-    std::set<std::string> traversed_functions;
-};
-
-void FunctionSorter::sort(const Expr &expr) {
-    visited.clear();
-    expr.accept(this);
-}
-
-void FunctionSorter::sort(const Func &func) {
-    traversed_functions.insert(func.name());
-    functions.push_back(Func(func));
-    // Traverse from the last update to first
-    for (int update_id = func.num_update_definitions() - 1; update_id >= -1; update_id--) {
-        if (update_id >= 0) {
-            func.update_value(update_id).accept(this);
-        } else {
-            func.value().accept(this);
-        }
-    }
-}
-
-void FunctionSorter::visit(const Call *op) {
-    if (op->call_type == Call::Halide) {
-        Func func(Function(op->func));
-        // Avoid implicit functions
-        // TODO: FIX THIS
-        if (func.args().size() > 0 && func.args()[0].is_implicit()) {
-            return;
-        }
-        if (traversed_functions.find(func.name()) != traversed_functions.end()) {
-            return;
-        }
-        sort(func);
-        return;
-    }
-
-    for (size_t i = 0; i < op->args.size(); i++) {
-        include(op->args[i]);
-    }
-}
-
-
-/** An IR graph visitor that gather the expression DAG and sort them in topological order
- */
-class ExpressionSorter : public IRGraphVisitor {
-public:
-    using IRGraphVisitor::visit;
-    using IRGraphVisitor::include;
-
-    void sort(const Expr &expr);
-
-    std::vector<Expr> get_expr_list() const {
-        return expr_list;
-    }
-
-    void visit(const Call *op);
-protected:
-    void include(const Expr &e);
-private:
-    std::vector<Expr> expr_list;
-};
-
-void ExpressionSorter::sort(const Expr &e) {
-    visited.clear();
-    expr_list.clear();
-    e.accept(this);
-    expr_list.push_back(e);
-}
-
-void ExpressionSorter::visit(const Call *op) {
-    // No point visiting the arguments of a Halide func or an image
-    if (op->call_type == Call::Halide || op->call_type == Call::Image) {
-        return;
-    }
-
-    for (size_t i = 0; i < op->args.size(); i++) {
-        include(op->args[i]);
-    }
-}
-
-
-void ExpressionSorter::include(const Expr &e) {
-    if (visited.count(e.get())) {
-        return;
-    } else {
-        visited.insert(e.get());
-        e.accept(this);
-        expr_list.push_back(e);
-        return;
-    }
-}
-
-using FuncBounds = std::vector<std::pair<Expr, Expr>>;
-
-/**
- *  Visit function calls and determine their bounds.
- *  So when we do f(x, y) = ... we know what the loop bounds are
- */
-class BoundsInferencer : public IRVisitor {
-public:
-    using IRVisitor::visit;
-
-    void inference(const Expr &expr);
-    void inference(const Func &func);
-
-    void visit(const Call *op);
-    void visit(const Let *op);
-
-    std::map<FuncKey, RDom> get_func_bounds() const {
-        // TODO(mgharbi): don't recompute that all the time..
-        std::map<FuncKey, RDom> ret;
-        // Convert to an Rdom
-        for(auto b: func_bounds) { 
-          debug(0) << "Computed bounds for " << b.first.first << "[" << b.first.second << "]" << ":\n";
-          FuncBounds min_extent_bounds;
-          min_extent_bounds.reserve(b.second.size());
-          for (int i = 0; i < (int)b.second.size(); ++i) {
-            Expr lower_bound = simplify(b.second[i].first);
-            Expr extent = simplify(b.second[i].second - lower_bound+1);
-            min_extent_bounds.push_back(std::make_pair(lower_bound, extent));
-            debug(0) << "  arg" << i << " ("  << lower_bound << ", " << extent << ")\n";
-          }
-          ret[b.first] = RDom(min_extent_bounds);
-        }
-        return ret;
-    }
-
-private:
-    int recursion_depth;
-    std::map<FuncKey, FuncBounds> func_bounds;
-    FuncKey current_func_key;
-    std::vector<Var> current_args;
-    RDom current_bounds;
-    Scope<Expr> scope;
-};
-
-void BoundsInferencer::inference(const Expr &expr) {
-    // initialization
-    func_bounds.clear();
-    recursion_depth = 0;
-    current_func_key = FuncKey{"", -1};
-    current_args.clear();
-    current_bounds = RDom();
-
-    expr.accept(this);
-}
-
-void BoundsInferencer::inference(const Func &func) {
-    FuncKey previous_func_key = current_func_key;
-    RDom previous_bounds = current_bounds;
-    std::vector<Var> previous_args = current_args;
-
-    // Traverse from the last update to first
-    for (int update_id = func.num_update_definitions() - 1; update_id >= -1; update_id--) {
-        current_func_key = FuncKey{func.name(), update_id};
-        current_bounds = RDom(func_bounds[current_func_key]);
-        current_args = func.args();
-        if (update_id >= 0) {
-            func.update_value(update_id).accept(this);
-        } else {
-            func.value().accept(this);
-        }
-    }
-
-    current_func_key = previous_func_key;
-    current_args = previous_args;
-    current_bounds = previous_bounds;
-}
-
-void BoundsInferencer::visit(const Call *op) {
-    if (op->call_type == Call::Halide) {
-        Func func(Function(op->func));
-        // Avoid implicit functions
-        // TODO: FIX THIS
-        if (func.args().size() > 0 && func.args()[0].is_implicit()) {
-            return;
-        }
-        // debug(0) << recursion_depth << " Visiting " << func.name() << "\n";
-
-        FuncBounds arg_bounds;
-        arg_bounds.reserve(op->args.size());
-        for (int i = 0; i < (int)op->args.size(); i++) {
-            std::pair<Expr, Expr> min_max_bounds =
-                get_min_max_bounds(op->args[i], current_args, current_bounds, i, scope);
-            arg_bounds.push_back(min_max_bounds);
-        }
-
-        // Update function bounds
-        FuncKey key = current_func_key.first == func.name() ?
-            FuncKey{func.name(), current_func_key.second - 1} :
-            FuncKey{func.name(), func.num_update_definitions() - 1};
-
-        if (func_bounds.find(key) != func_bounds.end()) {
-            FuncBounds prev_bounds = func_bounds[key];
-            assert(arg_bounds.size() == prev_bounds.size());
-            for (int i = 0; i < (int)arg_bounds.size(); i++) {
-                arg_bounds[i] = merge_bounds(prev_bounds[i], arg_bounds[i]);
-            }
-            // debug(0) << "  Updated function bounds:" << "\n";
-        }
-
-        // for (int i = 0; i < (int)arg_bounds.size(); i++) {
-        //   debug(0) << "    arg" << i << " ("
-        //            << arg_bounds[i].first << ", "
-        //            << arg_bounds[i].second << ")\n";
-        // }
-
-        func_bounds[key] = arg_bounds;
-
-        // Don't recurse if the target is the same function
-        if (current_func_key.first != func.name()) {
-            recursion_depth += 1;
-            inference(func);
-            recursion_depth -= 1;
-        }
-    }
-
-    for (size_t i = 0; i < op->args.size(); i++) {
-        op->args[i].accept(this);
-    }
-}
-
-void BoundsInferencer::visit(const Let *op) {
-    op->value.accept(this);
-    scope.push(op->name, op->value);
-    op->body.accept(this);
-    scope.pop(op->name);
-}
-
-
 /** An IR visitor that computes the derivatives through reverse accumulation
  */
 class ReverseAccumulationVisitor : public IRVisitor {
 public:
     using IRVisitor::visit;
 
-    void propagate_adjoints(const Expr &output, const std::vector<Func> &funcs);
+    void propagate_adjoints(const Func &output);
 
     std::map<FuncKey, Func> get_adjoint_funcs() const {
         return adjoint_funcs;
@@ -546,73 +60,48 @@ private:
     RDom current_bounds;
 };
 
-std::vector<std::pair<Expr, Expr>> rdom_to_vector(const RDom &bounds) {
-    std::vector<std::pair<Expr, Expr>> ret;
-    ret.reserve(bounds.domain().domain().size());
-    for (const auto &rvar : bounds.domain().domain()) {
-        ret.push_back({rvar.min, rvar.extent});
+void ReverseAccumulationVisitor::propagate_adjoints(const Func &output) {
+    // Topologically sort the functions
+    std::map<std::string, Function> env = find_transitive_calls(output.function());
+    std::vector<std::string> order = realization_order({output.function()}, env);
+    std::vector<Func> funcs;
+    funcs.reserve(order.size());
+    Internal::debug(0) << "Propagate: Sorted Func list:" << "\n";
+    for (const auto &func_name : order) {
+        Internal::debug(0) << "  . " << func_name << "\n";
     }
-    return ret;
-};
+    for (const auto &func_name : order) {
+        funcs.push_back(Func(env[func_name]));
+    }
 
-void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const std::vector<Func> &funcs) {
     if (funcs.size() == 0) {
         debug(0) << "ReverseAccumulationVisitor: no functions to backpropagate to.\n";
         return;
     }
 
-    BoundsInferencer bounds_inferencer;
     debug(0) << "ReverseAccumulationVisitor: infering bounds.\n";
-    bounds_inferencer.inference(output);
-    func_bounds = bounds_inferencer.get_func_bounds();
+    func_bounds = inference_bounds(output);
 
     // Create a stub for each function to accumulate adjoints
-    // Meanwhile set up boundary condition
     for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
         const Func &func = funcs[func_id];
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
             Func adjoint_func(func.name() + "_" + std::to_string(update_id + 1) + "_d__");
-            adjoint_func(func.args()) = 0.f;
-            adjoint_funcs[FuncKey{func.name(), update_id}] = adjoint_func;
+            bool is_last = func_id == (int)funcs.size() - 1 &&
+                           update_id == func.num_update_definitions() - 1;
+            adjoint_func(func.args()) = is_last ? 1.f : 0.f;
+            FuncKey func_key{func.name(), update_id};
+            adjoint_funcs[func_key] = adjoint_func;
         }
     }
 
-    // Propagate output
-    ExpressionSorter sorter;
-    sorter.sort(output);
-    std::vector<Expr> expr_list = sorter.get_expr_list();
-    // Gather let variables
-    for (auto it = expr_list.begin(); it != expr_list.end(); it++) {
-        Expr expr = *it;
-        if (expr.get()->node_type == IRNodeType::Let) {
-            const Let *op = expr.as<Let>();
-            let_var_mapping[op->name] = op->value;
-            let_variables.push_back(op->name);
-        }
-    }
-
-    accumulate(output, 1.f);
-    // Traverse the expressions in reverse order
-    for (auto it = expr_list.rbegin(); it != expr_list.rend(); it++) {
-        // Propagate adjoints
-        it->accept(this);
-    }
-
-    // Traverse functions
-    for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
+    // Traverse functions from back to front
+    for (int func_id = funcs.size() - 1; func_id >=  0; func_id--) {
         const Func &func = funcs[func_id];
         current_args = func.args();
         // Traverse from the last update to first
         for (int update_id = func.num_update_definitions() - 1;
                 update_id >= -1; update_id--) {
-            // Topologically sort the expressions
-            ExpressionSorter sorter;
-            if (update_id >= 0) {
-                sorter.sort(func.update_value(update_id));
-            } else {
-                sorter.sort(func.value());
-            }
-
             FuncKey func_key{func.name(), update_id};
             // TODO: take lhs other than (x, y, z) into account
             assert(func_bounds.find(func_key) != func_bounds.end());
@@ -638,7 +127,10 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Expr &output, const st
             adjoint_func(adjoint_func.args()) =
                 select(out_of_bounds, 0.f, adjoint_func(adjoint_func.args()));
 
-            std::vector<Expr> expr_list = sorter.get_expr_list();
+            // Topologically sort the expressions
+            std::vector<Expr> expr_list =
+                update_id >= 0 ? sort_expressions(func.update_value(update_id)) :
+                                 sort_expressions(func.value());
             let_var_mapping.clear();
             let_variables.clear();
             // Gather let variables
@@ -804,13 +296,12 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
 
         std::vector<bool> canonicalized(lhs.size(), false);
-        VariableGatherer gatherer;
         // We canonicalize the left hand side arguments (op->args) so that it's always x, y, z, ...
         for (int i = 0; i < (int)lhs.size(); i++) {
             // Let new_args[i] == op->args[i]
             // Gather all pure variables at op->args[i], substitute them with new_args
             // For now only support single pure variable
-            std::vector<std::string> variables = gatherer.gather(lhs[i], func.args());
+            std::vector<std::string> variables = gather_variables(lhs[i], func.args());
             if (variables.size() > 1) {
                 continue;
             }
@@ -834,11 +325,10 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // For each free variable on the rhs, replace it with current bound
 
         // First gather all free variables
-        VariableFinder finder;
         FuncBounds bounds_subset;
         std::vector<int> arg_id_to_substitute;
         for (int i = 0; i < (int)current_args.size(); i++) {
-            if (finder.find(adjoint, current_args[i].name())) {
+            if (has_variable(adjoint, current_args[i].name())) {
                 const RVar &rvar = current_bounds[i];
                 bounds_subset.emplace_back(rvar.min(), rvar.extent());
                 arg_id_to_substitute.push_back(i);
@@ -857,7 +347,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // We replace the pure variables inside lhs with RDoms for general scattering
         for (int i = 0; i < (int)lhs.size(); i++) {
             if (!canonicalized[i]) {
-                std::vector<std::string> variables = gatherer.gather(lhs[i], func.args());
+                std::vector<std::string> variables = gather_variables(lhs[i], func.args());
                 internal_assert(variables.size() <= 1);
                 // Find the corresponding current argument to obtain the bound
                 std::pair<Expr, Expr> bound;
@@ -877,8 +367,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
 
         // Merge RDoms on rhs
-        RVarGatherer rvar_gatherer;
-        std::map<std::string, std::pair<Expr, Expr>> rvar_maps = rvar_gatherer.gather(adjoint);
+        std::map<std::string, std::pair<Expr, Expr>> rvar_maps =
+            gather_rvariables(adjoint);
         std::vector<std::string> var_names;
         FuncBounds merged_bounds;
         for (const auto &it : rvar_maps) {
@@ -919,26 +409,25 @@ void ReverseAccumulationVisitor::visit(const Let *op) {
 } // namespace Internal
 
 
-Derivative propagate_adjoints(const Expr &output) {
-    Internal::FunctionSorter sorter;
-    Internal::debug(0) << "Propagate: Sorting functions" << "\n";
-    sorter.sort(output);
-    std::vector<Func> funcs = sorter.get_functions();
-    Internal::debug(0) << "Propagate: Sorted Func list:" << "\n";
-    for (const auto &func : funcs) {
-        Internal::debug(0) << "  . " << func.name() << "\n";
-    }
+Derivative propagate_adjoints(const Func &output) {
     Internal::ReverseAccumulationVisitor visitor;
-    visitor.propagate_adjoints(output, funcs);
+    visitor.propagate_adjoints(output);
     return Derivative{visitor.get_adjoint_funcs(),
                       visitor.get_reductions()};
 }
 
 void print_func(const Func &func) {
     Internal::debug(0) << "Printing function:" << func.name() << "\n";
-    Internal::FunctionSorter sorter;
-    sorter.sort(func);
-    std::vector<Func> funcs = sorter.get_functions();
+    // Topologically sort the functions
+    std::map<std::string, Internal::Function> env =
+        find_transitive_calls(func.function());
+    std::vector<std::string> order = realization_order({func.function()}, env);
+    std::vector<Func> funcs;
+    funcs.reserve(order.size());
+    for (const auto &func_name : order) {
+        funcs.push_back(Func(env[func_name]));
+    }
+
     for (int i = (int)funcs.size() - 1; i >= 0; i--) {
         Func &func = funcs[i];
         Internal::debug(0) << "  funcs[" << i << "]: " << func.name() << "\n";
@@ -968,11 +457,11 @@ void test_simple_bounds_inference() {
     blur_y(x, y) = blur_x(x, y) + blur_x(x, y+1) + blur_x(x, y+2);
 
     RDom r(0, width-2, 0, height-2);
-    Expr loss = blur_y(r.x, r.y);
+    Func f_loss("f_loss");
+    f_loss(x) = 0.f;
+    f_loss(x) += blur_y(r.x, r.y);
 
-    BoundsInferencer bounds_inferencer;
-    bounds_inferencer.inference(loss);
-    std::map<FuncKey, RDom> bounds = bounds_inferencer.get_func_bounds();
+    std::map<FuncKey, RDom> bounds = inference_bounds(f_loss);
 
     FuncKey blur_y_key{blur_y.name(), -1};
     internal_assert(equal(bounds[blur_y_key][0].min(), 0))
@@ -1013,11 +502,11 @@ void test_simple_bounds_inference_update() {
     blur(x) = input(x);
     blur(x) += input(x + 1);
     RDom r(0, 2);
-    Expr loss = blur(r.x);
+    Func f_loss("f_loss");
+    f_loss(x) = 0.f;
+    f_loss(x) += blur(r.x);
 
-    BoundsInferencer bounds_inferencer;
-    bounds_inferencer.inference(loss);
-    std::map<FuncKey, RDom> bounds = bounds_inferencer.get_func_bounds();
+    std::map<FuncKey, RDom> bounds = inference_bounds(f_loss);
 
     FuncKey blur_key_1{blur.name(), 0};
     internal_assert(equal(bounds[blur_key_1][0].min(), 0))
@@ -1046,9 +535,10 @@ void test_simple_1d_blur() {
     Func blur("blur");
     blur(x) = clamped(x) + clamped(x + 1);
     RDom r(0, 2);
-    Expr loss = blur(r.x) * blur(r.x);
-
-    Derivative d = propagate_adjoints(loss);
+    Func f_loss("f_loss");
+    f_loss(x) = 0.f;
+    f_loss(x) += blur(r.x) * blur(r.x);
+    Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
     Buffer<float> blur_buf = blur.realize(2);
@@ -1088,9 +578,10 @@ void test_simple_2d_blur() {
     blur_y(x, y) = blur_x(x, y) + blur_x(x, y + 1) + blur_x(x, y + 2);
 
     RDom r(0, 5, 0, 5);
-    Expr loss = blur_y(r.x, r.y) * blur_y(r.x, r.y);
-
-    Derivative d = propagate_adjoints(loss);
+    Func f_loss("f_loss");
+    f_loss(x) = 0.f;
+    f_loss(x) += blur_y(r.x, r.y) * blur_y(r.x, r.y);
+    Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
     Buffer<float> blur_y_buf = blur_y.realize(5, 5);
@@ -1153,10 +644,12 @@ void test_update() {
     blur(x) = clamped(x);
     blur(x) += clamped(x + 1);
     RDom r(0, 2);
-    Expr loss = blur(r.x) * blur(r.x);
-
-    Derivative d = propagate_adjoints(loss);
+    Func f_loss("f_loss");
+    f_loss(x) = 0.f;
+    f_loss(x) += blur(r.x) * blur(r.x);
+    Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
+
     Buffer<float> blur_buf = blur.realize(2);
     // d loss / d blur = 2 * blur(x)
     Buffer<float> d_blur_buf = adjoints[FuncKey{blur.name(), -1}].realize(2);
@@ -1190,9 +683,10 @@ void test_rdom_conv() {
     convolved(x) = 0.f;
     convolved(x) += clamped(x + support.x) * kernel_func(support.x);
     RDom r(0, 4);
-    Expr loss = convolved(r.x) * convolved(r.x);
-
-    Derivative d = propagate_adjoints(loss);
+    Func f_loss("f_loss");
+    f_loss(x) = 0.f;
+    f_loss(x) += convolved(r.x) * convolved(r.x);
+    Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
     Buffer<float> convolved_buf = convolved.realize(4);
     // d loss / d blur = 2 * blur(x)
@@ -1236,8 +730,10 @@ void test_1d_to_2d() {
     f_output(x, y) = f_input(y);
 
     RDom r(0, 2, 0, 2);
-    Expr loss = f_output(r.x, r.y) * f_output(r.x, r.y);
-    Derivative d = propagate_adjoints(loss);
+    Func f_loss("f_loss");
+    f_loss(x) = 0.f;
+    f_loss(x) += f_output(r.x, r.y) * f_output(r.x, r.y);
+    Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
     // loss = 2i0^2 + 2i1^2
@@ -1282,8 +778,10 @@ void test_linear_interpolation() {
     f_interpolate(x) = f_input1(fx) * (1.f - wx) + f_input1(cx) * wx;
 
     RDom r(0, 2);
-    Expr loss = f_interpolate(r.x);
-    Derivative d = propagate_adjoints(loss);
+    Func f_loss("f_loss");
+    f_loss(x) = 0.f;
+    f_loss(x) += f_interpolate(r.x);
+    Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
     // f_interpolate = {i1[0] * (1 - (i0[0] - floor(i0[0]))) +
@@ -1329,9 +827,11 @@ void test_sparse_update() {
 
     Buffer<float> output = f_output.realize(2);
 
+    Func f_loss("f_loss");
     RDom r(0, 2);
-    Expr loss = f_output(r.x);
-    Derivative d = propagate_adjoints(loss);
+    f_loss(x) = 0.f;
+    f_loss(x) += f_output(r.x);
+    Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
     const float eps = 1e-6;

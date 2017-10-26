@@ -305,6 +305,7 @@ SOURCE_FILES = \
   Definition.cpp \
   Deinterleave.cpp \
   Derivative.cpp \
+  DerivativeUtils.cpp \
   DeviceArgument.cpp \
   DeviceInterface.cpp \
   EarlyFree.cpp \
@@ -438,6 +439,7 @@ HEADER_FILES = \
   Definition.h \
   Deinterleave.h \
   Derivative.h \
+  DerivativeUtils.h \
   DeviceArgument.h \
   DeviceInterface.h \
   EarlyFree.h \
