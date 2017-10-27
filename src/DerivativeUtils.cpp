@@ -151,7 +151,6 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
             get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
         const std::pair<Expr, Expr> b_bounds =
             get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        //debug(0) << "  " << index << " bounds for Add\n";
         return {a_bounds.first + b_bounds.first, a_bounds.second + b_bounds.second};
     } else if (expr.get()->node_type == IRNodeType::Sub) {
         const Sub *op = expr.as<Sub>();
@@ -159,7 +158,6 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
             get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
         const std::pair<Expr, Expr> b_bounds =
             get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        //debug(0) << "  " << index << " bounds for Sub\n";
         return {a_bounds.first - b_bounds.second, a_bounds.second - b_bounds.first};
     } else if (expr.get()->node_type == IRNodeType::Mul) {
         const Mul *op = expr.as<Mul>();
@@ -167,16 +165,13 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
             get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
         const std::pair<Expr, Expr> b_bounds =
             get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        //debug(0) << "  " << index << " bounds for Sub\n";
         return {a_bounds.first * b_bounds.first, a_bounds.second * b_bounds.second};
     } else if (expr.get()->node_type == IRNodeType::Variable) {
         const Variable *var = expr.as<Variable>();
         if (var->reduction_domain.defined()) {
             ReductionVariable rvar = var->reduction_domain.domain()[index];
-            //debug(0) << "  " << index << " bounds for Rvar\n";
             return {rvar.min, rvar.min + rvar.extent - 1};
         } else {
-            //debug(0) << "  " << index << " bounds for Var\n";
             for (int i = 0; i < (int)current_args.size(); i++) {
                 if (current_args[i].name() == var->name) {
                     return {current_bounds[i].min(), current_bounds[i].extent()};
@@ -198,7 +193,6 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
             get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
         const std::pair<Expr, Expr> b_bounds =
             get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        //debug(0) << "  " << index << " bounds for Max\n";
         return {max(a_bounds.first, b_bounds.first), max(a_bounds.second, b_bounds.second)};
     } else if (expr.get()->node_type == IRNodeType::Min) {
         const Min *op = expr.as<Min>();
@@ -206,10 +200,8 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
             get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
         const std::pair<Expr, Expr> b_bounds =
             get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        //debug(0) << "  " << index << " bounds for Min\n";
         return {min(a_bounds.first, b_bounds.first), min(a_bounds.second, b_bounds.second)};
     } else if (expr.get()->node_type == IRNodeType::IntImm) {
-        //debug(0) << "  " << index << " bounds for IntImm\n";
         return {expr, expr};
     } else if (expr.get()->node_type == IRNodeType::FloatImm) {
         return {expr, expr};
@@ -224,7 +216,7 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
             if (op->name == "floor_f32") {
                 internal_assert(op->args.size() == 1);
                 const std::pair<Expr, Expr> bounds =
-                    get_min_max_bounds(op->args[0], current_args, current_bounds, index, scope);
+                    get_min_max_bounds(op->args[0], current_args, current_bounds, index, scope);;
                 return {floor(bounds.first), floor(bounds.second)};
             }
         } else if (op->call_type == Call::Halide) {
@@ -236,6 +228,7 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
         internal_error << "Let\n";
     }
 
+    // std::cerr << "expr.get()->node_type:" << (int)expr.get()->node_type << std::endl;
     internal_error << "Can't infer bounds, Expr type not handled\n";
     return std::pair<Expr, Expr>();
 }
@@ -369,7 +362,7 @@ void BoundsInferencer::inference(const Func &func) {
 
     FuncBounds bounds;
     for (int i = 0; i < (int)func.args().size(); i++) {
-        bounds.push_back({1, 1});
+        bounds.push_back({0, 0});
     }
     // assume the output has size 1
     func_bounds[FuncKey{func.name(), func.num_update_definitions() - 1}] =
@@ -482,6 +475,7 @@ std::vector<std::pair<Expr, Expr>> rdom_to_vector(const RDom &bounds) {
 }
 
 Func set_boundary_zero(Func func, const RDom &bounds) {
+    internal_assert(func.args().size() == bounds.domain().domain().size());
     // Set up boundary condition
     Expr out_of_bounds = cast<bool>(false);
     for (size_t i = 0; i < bounds.domain().domain().size(); i++) {
@@ -520,6 +514,28 @@ std::vector<std::string> vars_to_strings(const std::vector<Var> &vars) {
         ret.push_back(var.name());
     }
     return ret;
+}
+
+class RDomExtractor : public IRGraphVisitor {
+public:
+    using IRGraphVisitor::visit;
+    ReductionDomain gather(const Expr &expr) {
+        expr.accept(this);
+        return rdom;
+    }
+
+    void visit(const Variable *op) {
+        if (op->reduction_domain.defined()) {
+            rdom = op->reduction_domain;
+        }
+    }
+private:
+    ReductionDomain rdom;
+};
+
+ReductionDomain extract_rdom(const Expr &expr) {
+    RDomExtractor extractor;
+    return extractor.gather(expr);
 }
 
 } // namespace Internal

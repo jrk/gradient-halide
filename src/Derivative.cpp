@@ -70,6 +70,12 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Func &output) {
         Internal::debug(0) << "  . " << func_name << "\n";
     }
     for (const auto &func_name : order) {
+        Func func(env[func_name]);
+        // Avoid implicit functions
+        // TODO: FIX THIS
+        if (func.args().size() > 0 && func.args()[0].is_implicit()) {
+            continue;
+        }
         funcs.push_back(Func(env[func_name]));
     }
 
@@ -101,6 +107,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Func &output) {
 
         FuncKey last_func_key{func.name(), func.num_update_definitions() - 1};
         // Set up boundary condition for previously propagated adjoints
+        internal_assert(func_bounds.find(last_func_key) != func_bounds.end());
         Func adjoint_func = adjoint_funcs[last_func_key];
         const RDom &bounds = func_bounds[last_func_key];
         adjoint_func = set_boundary_zero(adjoint_func, bounds);
@@ -110,7 +117,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Func &output) {
                 update_id >= -1; update_id--) {
             current_update_id = update_id;
             FuncKey func_key{func.name(), update_id};
-            assert(func_bounds.find(func_key) != func_bounds.end());
+            internal_assert(func_bounds.find(func_key) != func_bounds.end());
 
             // Set up boundary condition
             if (update_id != func.num_update_definitions() - 1) {
@@ -352,7 +359,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
             assert(result.result.as<EQ>() != nullptr);
             Expr result_rhs = result.result.as<EQ>()->b;
-            std::cerr << "replace " << variables[0] << " with " << result_rhs << std::endl;
             // Replace pure variable with the reverse
             adjoint = substitute(variables[0], result_rhs, adjoint);
 
@@ -475,25 +481,43 @@ void print_func(const Func &func) {
     std::vector<Func> funcs;
     funcs.reserve(order.size());
     for (const auto &func_name : order) {
-        funcs.push_back(Func(env[func_name]));
+        Func func(env[func_name]);
+        // Avoid implicit functions
+        // TODO: FIX THIS
+        if (func.args().size() > 0 && func.args()[0].is_implicit()) {
+            continue;
+        }
+        funcs.push_back(func);
     }
 
     for (int i = (int)funcs.size() - 1; i >= 0; i--) {
         Func &func = funcs[i];
         Internal::debug(0) << "  funcs[" << i << "]: " << func.name() << "\n";
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
+            Internal::ReductionDomain rdom;
             if (update_id >= 0) {
                 Internal::debug(0) << "    update:" << func.name() << "(" << func.update_args(update_id)[0];
                 for (int i = 1; i < (int)func.update_args(update_id).size(); i++) {
                     Internal::debug(0) << ", " << func.update_args()[i];
                 }
                 Internal::debug(0) << ") = " << func.update_value(update_id) << "\n";
+                rdom = Internal::extract_rdom(func.update_value(update_id));
             } else {
                 Internal::debug(0) << "    " << func.name() << "(" << func.args()[0];
                 for (int i = 1; i < (int)func.args().size(); i++) {
                     Internal::debug(0) << ", " << func.args()[i];
                 }
                 Internal::debug(0) << ") = " << func.value() << "\n";
+                rdom = Internal::extract_rdom(func.value());
+            }
+
+            if (rdom.defined()) {
+                Internal::debug(0) << "    RDom:";
+                for (int i = 0; i < (int)rdom.domain().size(); i++) {
+                    Internal::debug(0) << " (" <<
+                        rdom.domain()[i].min << ", " << rdom.domain()[i].extent << ")";
+                }
+                Internal::debug(0) << "\n";
             }
         }
     }
@@ -612,6 +636,36 @@ void test_simple_1d_blur() {
     Buffer<float> d_clamped_buf = adjoints[FuncKey{clamped.name(), -1}].realize(2);
     CMP(d_clamped_buf(0), d_blur_buf(0));
     CMP(d_clamped_buf(1), d_blur_buf(0) + d_blur_buf(1));
+
+#undef CMP
+}
+
+void test_simple_1d_blur_no_clamp() {
+    Var x("x");
+    float input_data[] = {1.f, 2.f};
+    Buffer<float> input(input_data, 2, "input");
+    Func f_input("f_input");
+    f_input(x) = input(x);
+    Func blur("blur");
+    blur(x) = f_input(x) + f_input(x + 1);
+    RDom r(0, 1);
+    Func f_loss("f_loss");
+    f_loss(x) = 0.f;
+    f_loss(x) += blur(r.x) * blur(r.x);
+    Derivative d = propagate_adjoints(f_loss);
+    std::map<FuncKey, Func> adjoints = d.adjoints;
+
+    Buffer<float> blur_buf = blur.realize(1);
+    // d loss / d blur = 2 * blur(x)
+    Buffer<float> d_blur_buf = adjoints[FuncKey{blur.name(), -1}].realize(1);
+    const float eps = 1e-6;
+#define CMP(x, target) \
+    internal_assert(fabs((x) - (target)) < eps) << \
+        "Expected " << (target) << " instead of " << (x) << "\n";
+
+    CMP(d_blur_buf(0), 2 * blur_buf(0));
+    Buffer<float> d_clamped_buf = adjoints[FuncKey{f_input.name(), -1}].realize(1);
+    CMP(d_clamped_buf(0), d_blur_buf(0));
 
 #undef CMP
 }
@@ -778,6 +832,49 @@ void test_rdom_conv() {
 #undef CMP
 }
 
+void test_rdom_conv_no_clamp() {
+    Var x("x");
+    float input_data[] = {1.f, 2.f, 3.f, 4.f};
+    Buffer<float> input(input_data, 4, "input");
+    Func f_input("f_input");
+    f_input(x) = input(x);
+    float kernel_data[] = {1.f, 1.f};
+    Buffer<float> kernel(kernel_data, 2, "kernel");
+    Func kernel_func("kernel_func");
+    kernel_func(x) = kernel(x);
+    Func convolved("convolved");
+    RDom support(0, 2);
+    convolved(x) = 0.f;
+    convolved(x) += f_input(x + support.x) * kernel_func(support.x);
+    RDom r(0, 3);
+    Func f_loss("f_loss");
+    f_loss(x) = 0.f;
+    f_loss(x) += convolved(r.x) * convolved(r.x);
+    Derivative d = propagate_adjoints(f_loss);
+    std::map<FuncKey, Func> adjoints = d.adjoints;
+    Buffer<float> convolved_buf = convolved.realize(3);
+    // d loss / d blur = 2 * blur(x)
+    Buffer<float> d_convolved_buf = adjoints[FuncKey{convolved.name(), -1}].realize(3);
+    const float eps = 1e-6;
+#define CMP(x, target) \
+    internal_assert(fabs((x) - (target)) < eps) << \
+        "Expected " << (target) << " instead of " << (x) << "\n";
+
+    for (int i = 0; i < 3; i++) {
+        CMP(d_convolved_buf(i), 2 * convolved_buf(i));
+    }
+    // d loss / d clamped = d_convolved convolve with flipped kernel
+    Buffer<float> d_input_buf = adjoints[FuncKey{f_input.name(), -1}].realize(3);
+    for (int i = 0; i < 3; i++) {
+        float target = d_convolved_buf(i) * kernel_data[0];
+        if (i >= 1) {
+            target += d_convolved_buf(i - 1) * kernel_data[1];
+        }
+        CMP(d_input_buf(i), target);
+    }
+#undef CMP
+}
+
 void test_1d_to_2d() {
     Var x("x"), y("y");
     float input_data[] = {1.f, 2.f};
@@ -896,8 +993,6 @@ void test_sparse_update() {
     internal_assert(fabs((x) - (target)) < eps) << \
         "Expected " << (target) << " instead of " << (x) << "\n";
 
-    print_func(adjoints[FuncKey{f_input.name(), -1}]);
-
     Buffer<float> d_input = adjoints[FuncKey{f_input.name(), -1}].realize(3);
     CMP(d_input(0), 1.0f);
     CMP(d_input(1), 1.0f);
@@ -929,8 +1024,6 @@ void test_rdom_update() {
     internal_assert(fabs((x) - (target)) < eps) << \
         "Expected " << (target) << " instead of " << (x) << "\n";
 
-    print_func(adjoints[FuncKey{f_input.name(), -1}]);
-
     Buffer<float> d_input = adjoints[FuncKey{f_input.name(), -1}].realize(3);
     CMP(d_input(0), 2.0f);
     CMP(d_input(1), 1.0f);
@@ -942,9 +1035,11 @@ void derivative_test() {
     test_simple_bounds_inference();
     test_simple_bounds_inference_update();
     test_simple_1d_blur();
+    test_simple_1d_blur_no_clamp();
     test_simple_2d_blur();
     test_update();
     test_rdom_conv();
+    test_rdom_conv_no_clamp();
     test_1d_to_2d();
     test_linear_interpolation();
     test_sparse_update();
