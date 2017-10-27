@@ -884,8 +884,6 @@ void test_sparse_update() {
     f_output(1) = 0.f;
     f_output(2) = f_input(1);
 
-    Buffer<float> output = f_output.realize(3);
-
     Func f_loss("f_loss");
     RDom r(0, 3);
     f_loss(x) = 0.f;
@@ -907,6 +905,39 @@ void test_sparse_update() {
 #undef CMP
 }
 
+void test_rdom_update() {
+    Var x("x");
+    float input_data[] = {1.0f, 2.0f, 3.0f};
+    Buffer<float> input(input_data, 3, "input");
+    Func f_input("f_input");
+    f_input(x) = input(x);
+    Func f_output("f_output");
+    RDom r0(1, 2), r1(3, 4);
+    f_output(x) = f_input(x);
+    f_output(r0) = f_input(r0 - 1);
+    f_output(r1) = 0.f;
+
+    Func f_loss("f_loss");
+    RDom r_target(0, 5);
+    f_loss(x) = 0.f;
+    f_loss(x) += f_output(r_target);
+    Derivative d = propagate_adjoints(f_loss);
+    std::map<FuncKey, Func> adjoints = d.adjoints;
+
+    const float eps = 1e-6;
+#define CMP(x, target) \
+    internal_assert(fabs((x) - (target)) < eps) << \
+        "Expected " << (target) << " instead of " << (x) << "\n";
+
+    print_func(adjoints[FuncKey{f_input.name(), -1}]);
+
+    Buffer<float> d_input = adjoints[FuncKey{f_input.name(), -1}].realize(3);
+    CMP(d_input(0), 2.0f);
+    CMP(d_input(1), 1.0f);
+    CMP(d_input(2), 0.0f);
+#undef CMP
+}
+
 void derivative_test() {
     test_simple_bounds_inference();
     test_simple_bounds_inference_update();
@@ -917,6 +948,7 @@ void derivative_test() {
     test_1d_to_2d();
     test_linear_interpolation();
     test_sparse_update();
+    test_rdom_update();
     debug(0) << "Derivative test passed\n";
 }
 
