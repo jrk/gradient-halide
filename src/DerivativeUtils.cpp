@@ -13,7 +13,6 @@ class VariableFinder : public IRGraphVisitor {
 public:
     using IRGraphVisitor::visit;
     bool find(const Expr &expr, const std::string &_var_name) {
-        visited.clear();
         var_name = _var_name;
         found = false;
         expr.accept(this);
@@ -42,7 +41,6 @@ class LetFinder : public IRGraphVisitor {
 public:
     using IRGraphVisitor::visit;
     bool find(const Expr &expr, const std::string &_var_name) {
-        visited.clear();
         var_name = _var_name;
         found = false;
         expr.accept(this);
@@ -89,7 +87,6 @@ public:
     std::vector<std::string> gather(const Expr &expr,
                                     const std::vector<std::string> &_filter) {
         filter = _filter;
-        visited.clear();
         variables.clear();
         expr.accept(this);
         return variables;
@@ -118,8 +115,6 @@ class RVarGatherer : public IRGraphVisitor {
 public:
     using IRGraphVisitor::visit;
     std::map<std::string, std::pair<Expr, Expr>> gather(const Expr &expr) {
-        visited.clear();
-        rvar_map.clear();
         expr.accept(this);
         return rvar_map;
     }
@@ -285,12 +280,11 @@ public:
 protected:
     void include(const Expr &e);
 private:
+    std::set<const IRNode *> visited_exprs;
     std::vector<Expr> expr_list;
 };
 
 std::vector<Expr> ExpressionSorter::sort(const Expr &e) {
-    visited.clear();
-    expr_list.clear();
     e.accept(this);
     expr_list.push_back(e);
     return expr_list;
@@ -309,13 +303,10 @@ void ExpressionSorter::visit(const Call *op) {
 
 
 void ExpressionSorter::include(const Expr &e) {
-    if (visited.count(e.get())) {
-        return;
-    } else {
-        visited.insert(e.get());
-        e.accept(this);
+    IRGraphVisitor::include(e);
+    if (visited_exprs.count(e.get()) == 0) {
+        visited_exprs.insert(e.get());
         expr_list.push_back(e);
-        return;
     }
 }
 
