@@ -308,6 +308,7 @@ SOURCE_FILES = \
   DerivativeUtils.cpp \
   DeviceArgument.cpp \
   DeviceInterface.cpp \
+  Dimension.cpp \
   EarlyFree.cpp \
   Elf.cpp \
   EliminateBoolVectors.cpp \
@@ -442,6 +443,7 @@ HEADER_FILES = \
   DerivativeUtils.h \
   DeviceArgument.h \
   DeviceInterface.h \
+  Dimension.h \
   EarlyFree.h \
   Elf.h \
   EliminateBoolVectors.h \
@@ -1357,11 +1359,19 @@ $(BIN_DIR)/tutorial_lesson_21_auto_scheduler_generate: $(ROOT_DIR)/tutorial/less
 	$(CXX) $(TUTORIAL_CXX_FLAGS) $(IMAGE_IO_CXX_FLAGS) $(OPTIMIZE) $< $(BUILD_DIR)/GenGen.o \
 	-I$(INCLUDE_DIR) $(TEST_LD_FLAGS) $(IMAGE_IO_LIBS) -o $@
 
+# The values in MachineParams are:
+# - the maximum level of parallelism available, 
+# - the size of the last-level cache (in KB), 
+# - the ratio between the cost of a miss at the last level cache and the cost
+#   of arithmetic on the target architecture
+# ...in that order.
+LESSON_21_MACHINE_PARAMS = 32,16777216,40
+
 $(BIN_DIR)/tutorial_lesson_21_auto_scheduler_run: $(ROOT_DIR)/tutorial/lesson_21_auto_scheduler_run.cpp $(BIN_DIR)/tutorial_lesson_21_auto_scheduler_generate
 	@-mkdir -p $(TMP_DIR)
 	# Run the generator
-	$(BIN_DIR)/tutorial_lesson_21_auto_scheduler_generate -g auto_schedule_gen -o $(TMP_DIR) -f auto_schedule_false target=host            auto_schedule=false
-	$(BIN_DIR)/tutorial_lesson_21_auto_scheduler_generate -g auto_schedule_gen -o $(TMP_DIR) -f auto_schedule_true  target=host-no_runtime auto_schedule=true
+	$(BIN_DIR)/tutorial_lesson_21_auto_scheduler_generate -g auto_schedule_gen -o $(TMP_DIR) -e static_library,h,schedule -f auto_schedule_false target=host            auto_schedule=false
+	$(BIN_DIR)/tutorial_lesson_21_auto_scheduler_generate -g auto_schedule_gen -o $(TMP_DIR) -e static_library,h,schedule -f auto_schedule_true  target=host-no_runtime auto_schedule=true machine_params=$(LESSON_21_MACHINE_PARAMS)
 	# Compile the runner
 	$(CXX) $(TUTORIAL_CXX_FLAGS) $(IMAGE_IO_CXX_FLAGS) $(OPTIMIZE) $< \
 	-I$(INCLUDE_DIR) -L$(BIN_DIR) -I $(TMP_DIR) $(TMP_DIR)/auto_schedule_*.a \
@@ -1476,6 +1486,7 @@ test_apps: $(LIB_DIR)/libHalide.a $(BIN_DIR)/libHalide.$(SHARED_EXT) $(INCLUDE_D
 	        $(ROOT_DIR)/apps/HelloMatlab \
 	        $(ROOT_DIR)/apps/fft \
 	        $(ROOT_DIR)/apps/linear_algebra \
+	        $(ROOT_DIR)/apps/linear_blur \
 	        $(ROOT_DIR)/apps/resize \
 	        $(ROOT_DIR)/apps/images \
 	        $(ROOT_DIR)/apps/support \
@@ -1510,6 +1521,8 @@ test_apps: $(LIB_DIR)/libHalide.a $(BIN_DIR)/libHalide.$(SHARED_EXT) $(INCLUDE_D
 	  make -C apps/linear_algebra clean HALIDE_BIN_PATH=$(CURDIR) HALIDE_SRC_PATH=$(ROOT_DIR) ; \
 	  make -C apps/linear_algebra test HALIDE_BIN_PATH=$(CURDIR) HALIDE_SRC_PATH=$(ROOT_DIR) ; \
 	fi
+	make -C apps/linear_blur clean HALIDE_BIN_PATH=$(CURDIR) HALIDE_SRC_PATH=$(ROOT_DIR) ; \
+	make -C apps/linear_blur test HALIDE_BIN_PATH=$(CURDIR) HALIDE_SRC_PATH=$(ROOT_DIR) ; \
 	make -C apps/resize clean  HALIDE_BIN_PATH=$(CURDIR) HALIDE_SRC_PATH=$(ROOT_DIR)
 	make -C apps/resize all  HALIDE_BIN_PATH=$(CURDIR) HALIDE_SRC_PATH=$(ROOT_DIR)
 

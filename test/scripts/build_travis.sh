@@ -19,7 +19,7 @@ if [ ${BUILD_SYSTEM} = 'CMAKE' ]; then
   mkdir -p build/ && cd build/
   cmake -DLLVM_DIR="/usr/local/llvm/share/llvm/cmake/" \
         -DHALIDE_SHARED_LIBRARY="${HALIDE_SHARED_LIBRARY}" \
-        -DWITH_APPS=ON \
+        -DWITH_APPS=OFF \
         -DWITH_TESTS=ON \
         -DWITH_TEST_OPENGL=OFF \
         -DWITH_TUTORIALS=OFF \
@@ -29,7 +29,8 @@ if [ ${BUILD_SYSTEM} = 'CMAKE' ]; then
         ../
 
   # Build and run internal tests
-  make ${MAKEFLAGS} VERBOSE=1
+  make ${MAKEFLAGS} Halide
+  make ${MAKEFLAGS} test_internal
   
   # Build the docs and run the tests
   make doc 
@@ -54,10 +55,9 @@ elif [ ${BUILD_SYSTEM} = 'MAKE' ]; then
 
   # Build our one-and-only Bazel test.
   # --verbose_failures so failures are easier to figure out.
-  # Disabled for now: see https://github.com/halide/Halide/issues/2195
-  # echo "Testing apps/bazeldemo..."
-  # cd apps/bazeldemo
-  # bazel build --verbose_failures :all
+  echo "Testing apps/bazeldemo..."
+  cd apps/bazeldemo
+  bazel build --verbose_failures :all
 
 else
   echo "Unexpected BUILD_SYSTEM: \"${BUILD_SYSTEM}\""

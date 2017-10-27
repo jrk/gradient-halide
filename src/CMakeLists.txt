@@ -281,6 +281,7 @@ set(HEADER_FILES
   Derivative.h
   DeviceArgument.h
   DeviceInterface.h
+  Dimension.h
   EarlyFree.h
   Elf.h
   EliminateBoolVectors.h
@@ -438,6 +439,7 @@ add_library(Halide ${HALIDE_LIBRARY_TYPE}
   Derivative.cpp
   DeviceArgument.cpp
   DeviceInterface.cpp
+  Dimension.cpp
   EarlyFree.cpp
   Elf.cpp
   EliminateBoolVectors.cpp
