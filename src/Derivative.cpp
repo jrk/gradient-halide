@@ -55,9 +55,8 @@ private:
     std::map<std::string, Expr> let_var_mapping;
     std::vector<std::string> let_variables;
     std::map<FuncKey, RDom> func_bounds;
-    FuncKey current_func_key;
-    std::vector<Var> current_args;
-    RDom current_bounds;
+    Func current_func;
+    int current_update_id;
 };
 
 void ReverseAccumulationVisitor::propagate_adjoints(const Func &output) {
@@ -98,34 +97,47 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Func &output) {
     // Traverse functions from back to front
     for (int func_id = funcs.size() - 1; func_id >=  0; func_id--) {
         const Func &func = funcs[func_id];
-        current_args = func.args();
+        current_func = func;
+
+        FuncKey last_func_key{func.name(), func.num_update_definitions() - 1};
+        // Set up boundary condition for previously propagated adjoints
+        Func adjoint_func = adjoint_funcs[last_func_key];
+        const RDom &bounds = func_bounds[last_func_key];
+        adjoint_func = set_boundary_zero(adjoint_func, bounds);
+
         // Traverse from the last update to first
         for (int update_id = func.num_update_definitions() - 1;
                 update_id >= -1; update_id--) {
+            current_update_id = update_id;
             FuncKey func_key{func.name(), update_id};
-            // TODO: take lhs other than (x, y, z) into account
             assert(func_bounds.find(func_key) != func_bounds.end());
-            current_func_key = func_key;
-            current_bounds = func_bounds[func_key];
 
             // Set up boundary condition
-            Func &adjoint_func = adjoint_funcs[func_key];
-            const RDom &bounds = func_bounds[func_key];
-            Expr out_of_bounds = cast<bool>(false);
-            for (size_t i = 0; i < bounds.domain().domain().size(); i++) {
-                Var arg_var = adjoint_func.args()[i];
-                Expr min = bounds[i].min();
-                Expr extent = bounds[i].extent();
-
-                internal_assert(min.defined() && extent.defined());
-
-                out_of_bounds = (out_of_bounds ||
-                                 arg_var < min ||
-                                 arg_var >= min + extent);
+            if (update_id != func.num_update_definitions() - 1) {
+                // Optimization: if this function has the same bounds as the previous updates,
+                // don't need to apply boundary condition
+                const RDom &bounds = func_bounds[func_key];
+                FuncKey prev_func_key{func.name(), update_id + 1};
+                if (!equal(bounds, func_bounds[prev_func_key])) {
+                    Func adjoint_func = adjoint_funcs[func_key];
+                    adjoint_func = set_boundary_zero(adjoint_func, bounds);
+                }
             }
 
-            adjoint_func(adjoint_func.args()) =
-                select(out_of_bounds, 0.f, adjoint_func(adjoint_func.args()));
+            // Propagate adjoints to next update
+            if (update_id >= 0) {
+                FuncKey next_func_key{func.name(), update_id - 1};
+                Func next_adjoint_func = adjoint_funcs[next_func_key];
+                next_adjoint_func(next_adjoint_func.args()) =
+                    adjoint_funcs[func_key](next_adjoint_func.args());
+            }
+
+            // Mask next update
+            if (update_id >= 0) {
+                FuncKey next_func_key{func.name(), update_id - 1};
+                Func next_adjoint_func = adjoint_funcs[next_func_key];
+                next_adjoint_func(func.update_args(update_id)) = 0.f;
+            }
 
             // Topologically sort the expressions
             std::vector<Expr> expr_list =
@@ -275,17 +287,44 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             lhs[i] = add_let_expression(lhs[i], let_var_mapping, let_variables);
         }
 
+        debug(0) << "lhs is:";
+        for (const auto &arg : lhs) {
+            debug(0) << " " << arg;
+        }
+        debug(0) << "\n";
         debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
         // If referring to the current function itself, send to previous update
-        FuncKey func_key = func.name() != current_func_key.first ?
+        FuncKey func_key = func.name() != current_func.name() ?
                            FuncKey{func.name(), func.updates().size() - 1} :
-                           FuncKey{func.name(), current_func_key.second - 1};
+                           FuncKey{func.name(), current_update_id - 1};
         assert(adjoint_funcs.find(func_key) != adjoint_funcs.end());
         Func& func_to_update = adjoint_funcs[func_key];
 
+        // Gather argument & bounds information
+        std::vector<Var> current_args = current_func.args();
+        std::vector<Expr> current_update_args;
+        if (current_update_id >= 0) {
+            current_update_args = current_func.update_args(current_update_id);
+        } else {
+            current_update_args.reserve(current_args.size());
+            for (const auto &var : current_args) {
+                current_update_args.push_back(var);
+            }
+        }
+        RDom current_bounds = func_bounds[FuncKey{current_func.name(), current_update_id}];
+
         // We want to do this:
-        // func_to_update(op->args) += adjoint;
-        // But op->args can be invalid lhs, need to canonicalize
+        // func_to_update(op->args) += adjoint(current_args);
+        // But 1. the pure variables inside adjoint should be replaced by current_update_args
+        //     2. op->args can be invalid lhs, need to canonicalize
+        //        we canonicalize by first try to subsitute with pure variables
+        //        if that fails we will replace variables on lhs with RDoms
+
+        // Perform 1. here
+        for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
+            adjoint = substitute(current_args[arg_id].name(),
+                                current_update_args[arg_id], adjoint);
+        }
 
         // Create a set of new substitution variables
         std::vector<Var> new_args;
@@ -298,32 +337,53 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         std::vector<bool> canonicalized(lhs.size(), false);
         // We canonicalize the left hand side arguments (op->args) so that it's always x, y, z, ...
         for (int i = 0; i < (int)lhs.size(); i++) {
-            // Let new_args[i] == op->args[i]
             // Gather all pure variables at op->args[i], substitute them with new_args
             // For now only support single pure variable
-            std::vector<std::string> variables = gather_variables(lhs[i], func.args());
-            if (variables.size() > 1) {
+            std::vector<std::string> variables =
+                gather_variables(lhs[i], vars_to_strings(current_args));
+            if (variables.size() != 1) {
                 continue;
             }
-            if (variables.size() > 0) {
-                // Let new_args[i] == op->args[i]
-                SolverResult result = solve_expression(new_args[i] == lhs[i], variables[0]);
-                if (!result.fully_solved) {
-                    continue;
-                }
-                assert(result.result.as<EQ>() != nullptr);
-                Expr result_rhs = result.result.as<EQ>()->b;
-                // replace pure variable with the reverse
-                adjoint = substitute(variables[0], result_rhs, adjoint);
-            } else {
-                adjoint = substitute(lhs[i], new_args[i], adjoint);
+
+            // Let new_args[i] == op->args[i]
+            SolverResult result = solve_expression(new_args[i] == lhs[i], variables[0]);
+            if (!result.fully_solved) {
+                continue;
             }
+            assert(result.result.as<EQ>() != nullptr);
+            Expr result_rhs = result.result.as<EQ>()->b;
+            std::cerr << "replace " << variables[0] << " with " << result_rhs << std::endl;
+            // Replace pure variable with the reverse
+            adjoint = substitute(variables[0], result_rhs, adjoint);
+
             lhs[i] = func_to_update.args()[i];
             canonicalized[i] = true;
         }
 
-        // For each free variable on the rhs, replace it with current bound
+        // Sometimes the canonicalization above doesn't work.
+        // We replace the pure variables inside lhs with RDoms for general scattering
+        for (int lhs_id = 0; lhs_id < (int)lhs.size(); lhs_id++) {
+            Expr lhs_arg = lhs[lhs_id];
+            if (!canonicalized[lhs_id]) {
+                std::vector<std::string> variables = gather_variables(lhs_arg, func.args());
+                // Find the corresponding current argument to obtain the bound
+                std::vector<std::pair<Expr, Expr>> bounds;
+                for (const auto &var : variables) {
+                    for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
+                        if (current_args[arg_id].name() == var) {
+                            bounds.push_back({current_bounds[arg_id].min(), current_bounds[arg_id].extent()});
+                        }
+                    }
+                }
+                RDom r(bounds);
+                for (int var_id = 0; var_id < (int)variables.size(); var_id++) {
+                    lhs[lhs_id] = substitute(variables[var_id], r.x, lhs[lhs_id]);
+                    adjoint = substitute(variables[var_id], r.x, adjoint);
+                }
+            }
+        }
 
+        // For each free variable on the rhs, replace it with current bounds
         // First gather all free variables
         FuncBounds bounds_subset;
         std::vector<int> arg_id_to_substitute;
@@ -343,32 +403,14 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
         }
 
-        // Sometimes the canonicalization doesn't work.
-        // We replace the pure variables inside lhs with RDoms for general scattering
-        for (int i = 0; i < (int)lhs.size(); i++) {
-            if (!canonicalized[i]) {
-                std::vector<std::string> variables = gather_variables(lhs[i], func.args());
-                internal_assert(variables.size() <= 1);
-                // Find the corresponding current argument to obtain the bound
-                std::pair<Expr, Expr> bound;
-                bool found = false;
-                for (int j = 0; j < (int)current_args.size(); j++) {
-                    if (current_args[j].name() == variables[j]) {
-                        bound = {current_bounds[j].min(), current_bounds[j].extent()};
-                        found = true;
-                        break;
-                    }
-                }
-                internal_assert(found);
-                RDom r({bound});
-                lhs[i] = substitute(variables[0], r.x, lhs[i]);
-                adjoint = substitute(variables[0], r.x, adjoint);
-            }
-        }
-
-        // Merge RDoms on rhs
+        // Merge RDoms on both lhs and rhs
         std::map<std::string, std::pair<Expr, Expr>> rvar_maps =
             gather_rvariables(adjoint);
+        for (const auto &lhs_arg : lhs) {
+            std::map<std::string, std::pair<Expr, Expr>> maps =
+                gather_rvariables(lhs_arg);
+            rvar_maps.insert(maps.begin(), maps.end());
+        }
         std::vector<std::string> var_names;
         FuncBounds merged_bounds;
         for (const auto &it : rvar_maps) {
@@ -379,6 +421,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             RDom r(merged_bounds);
             for (int i = 0; i < r.dimensions(); i++) {
                 adjoint = substitute(var_names[i], r[i], adjoint);
+                for (auto &lhs_arg : lhs) {
+                    lhs_arg = substitute(var_names[i], r[i], lhs_arg);
+                }
             }
             reductions[FuncKey{func_to_update.name(), func_to_update.num_update_definitions()}] = r;
         } else {
@@ -392,6 +437,11 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
 
         // Add definition for all let variables
+        debug(0) << "lhs after canonicalization:";
+        for (const auto &arg : lhs) {
+            debug(0) << " " << arg;
+        }
+        debug(0) << "\n";
         debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
         func_to_update(lhs) += adjoint;
 
@@ -433,9 +483,17 @@ void print_func(const Func &func) {
         Internal::debug(0) << "  funcs[" << i << "]: " << func.name() << "\n";
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
             if (update_id >= 0) {
-                Internal::debug(0) << "    update:" << func.update_value(update_id) << "\n";
+                Internal::debug(0) << "    update:" << func.name() << "(" << func.update_args(update_id)[0];
+                for (int i = 1; i < (int)func.update_args(update_id).size(); i++) {
+                    Internal::debug(0) << ", " << func.update_args()[i];
+                }
+                Internal::debug(0) << ") = " << func.update_value(update_id) << "\n";
             } else {
-                Internal::debug(0) << "    init:" << func.value() << "\n";
+                Internal::debug(0) << "    " << func.name() << "(" << func.args()[0];
+                for (int i = 1; i < (int)func.args().size(); i++) {
+                    Internal::debug(0) << ", " << func.args()[i];
+                }
+                Internal::debug(0) << ") = " << func.value() << "\n";
             }
         }
     }
@@ -817,18 +875,19 @@ void test_linear_interpolation() {
 
 void test_sparse_update() {
     Var x("x");
-    float input_data[] = {1.0f, 2.0f};
-    Buffer<float> input(input_data, 2, "input");
+    float input_data[] = {1.0f, 2.0f, 3.0f};
+    Buffer<float> input(input_data, 3, "input");
     Func f_input("f_input");
     f_input(x) = input(x);
     Func f_output("f_output");
-    f_output(x) = input(x);
+    f_output(x) = f_input(x);
     f_output(1) = 0.f;
+    f_output(2) = f_input(1);
 
-    Buffer<float> output = f_output.realize(2);
+    Buffer<float> output = f_output.realize(3);
 
     Func f_loss("f_loss");
-    RDom r(0, 2);
+    RDom r(0, 3);
     f_loss(x) = 0.f;
     f_loss(x) += f_output(r.x);
     Derivative d = propagate_adjoints(f_loss);
@@ -839,9 +898,12 @@ void test_sparse_update() {
     internal_assert(fabs((x) - (target)) < eps) << \
         "Expected " << (target) << " instead of " << (x) << "\n";
 
-    Buffer<float> d_input = adjoints[FuncKey{f_input.name(), -1}].realize(2);
+    print_func(adjoints[FuncKey{f_input.name(), -1}]);
+
+    Buffer<float> d_input = adjoints[FuncKey{f_input.name(), -1}].realize(3);
     CMP(d_input(0), 1.0f);
-    CMP(d_input(1), 0.0f);
+    CMP(d_input(1), 1.0f);
+    CMP(d_input(2), 0.0f);
 #undef CMP
 }
 
@@ -854,8 +916,7 @@ void derivative_test() {
     test_rdom_conv();
     test_1d_to_2d();
     test_linear_interpolation();
-    // sparse update does not work for now
-    // test_sparse_update();
+    test_sparse_update();
     debug(0) << "Derivative test passed\n";
 }
 

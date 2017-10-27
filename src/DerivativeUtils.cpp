@@ -3,6 +3,7 @@
 #include "IRVisitor.h"
 #include "IRMutator.h"
 #include "IROperator.h"
+#include "IREquality.h"
 #include "Simplify.h"
 
 namespace Halide {
@@ -342,19 +343,21 @@ public:
         std::map<FuncKey, RDom> ret;
         // Convert to an Rdom
         for(auto b: func_bounds) { 
-          debug(0) << "Computed bounds for " << b.first.first << "[" << b.first.second << "]" << ":\n";
-          FuncBounds min_extent_bounds;
-          min_extent_bounds.reserve(b.second.size());
-          for (int i = 0; i < (int)b.second.size(); ++i) {
-            Expr lower_bound = simplify(b.second[i].first);
-            Expr extent = simplify(b.second[i].second - lower_bound+1);
-            min_extent_bounds.push_back(std::make_pair(lower_bound, extent));
-            debug(0) << "  arg" << i << " ("  << lower_bound << ", " << extent << ")\n";
-          }
-          ret[b.first] = RDom(min_extent_bounds);
+            debug(0) << "Computed bounds for " << b.first.first << "[" << b.first.second << "]" << ":\n";
+            FuncBounds min_extent_bounds;
+            min_extent_bounds.reserve(b.second.size());
+            for (int i = 0; i < (int)b.second.size(); ++i) {
+                Expr lower_bound = simplify(b.second[i].first);
+                Expr extent = simplify(b.second[i].second - lower_bound+1);
+                min_extent_bounds.push_back(std::make_pair(lower_bound, extent));
+                debug(0) << "  arg" << i << " ("  << lower_bound << ", " << extent << ")\n";
+            }
+            ret[b.first] = RDom(min_extent_bounds);
         }
         return ret;
     }
+
+    void update_func_bound();
 
 private:
     int recursion_depth;
@@ -399,6 +402,20 @@ void BoundsInferencer::internal_inference(const Func &func) {
         } else {
             func.value().accept(this);
         }
+
+        if (update_id >= 0) {
+            // Update function bounds for next update
+            FuncBounds bounds = func_bounds[current_func_key];
+            FuncKey next_key{func.name(), current_func_key.second - 1};
+            if (func_bounds.find(next_key) != func_bounds.end()) {
+                FuncBounds next_bounds = func_bounds[next_key];
+                assert(bounds.size() == next_bounds.size());
+                for (int i = 0; i < (int)bounds.size(); i++) {
+                    bounds[i] = merge_bounds(bounds[i], next_bounds[i]);
+                }
+            }
+            func_bounds[next_key] = bounds;
+        }
     }
 
     current_func_key = previous_func_key;
@@ -414,7 +431,6 @@ void BoundsInferencer::visit(const Call *op) {
         if (func.args().size() > 0 && func.args()[0].is_implicit()) {
             return;
         }
-        // debug(0) << recursion_depth << " Visiting " << func.name() << "\n";
 
         FuncBounds arg_bounds;
         arg_bounds.reserve(op->args.size());
@@ -435,14 +451,7 @@ void BoundsInferencer::visit(const Call *op) {
             for (int i = 0; i < (int)arg_bounds.size(); i++) {
                 arg_bounds[i] = merge_bounds(prev_bounds[i], arg_bounds[i]);
             }
-            // debug(0) << "  Updated function bounds:" << "\n";
         }
-
-        // for (int i = 0; i < (int)arg_bounds.size(); i++) {
-        //   debug(0) << "    arg" << i << " ("
-        //            << arg_bounds[i].first << ", "
-        //            << arg_bounds[i].second << ")\n";
-        // }
 
         func_bounds[key] = arg_bounds;
 
@@ -477,6 +486,47 @@ std::vector<std::pair<Expr, Expr>> rdom_to_vector(const RDom &bounds) {
     ret.reserve(bounds.domain().domain().size());
     for (const auto &rvar : bounds.domain().domain()) {
         ret.push_back({rvar.min, rvar.extent});
+    }
+    return ret;
+}
+
+Func set_boundary_zero(Func func, const RDom &bounds) {
+    // Set up boundary condition
+    Expr out_of_bounds = cast<bool>(false);
+    for (size_t i = 0; i < bounds.domain().domain().size(); i++) {
+        Var arg_var = func.args()[i];
+        Expr min = bounds[i].min();
+        Expr extent = bounds[i].extent();
+
+        internal_assert(min.defined() && extent.defined());
+
+        out_of_bounds = (out_of_bounds ||
+                         arg_var < min ||
+                         arg_var >= min + extent);
+    }
+
+    func(func.args()) = select(out_of_bounds, 0.f, func(func.args()));
+    return func;
+}
+
+bool equal(const RDom &bounds0, const RDom &bounds1) {
+    if (bounds0.domain().domain().size() != bounds1.domain().domain().size()) {
+        return false;
+    }
+    for (int bid = 0; bid < (int)bounds0.domain().domain().size(); bid++) {
+        if (!equal(bounds0[bid].min(), bounds1[bid].min()) ||
+                !equal(bounds0[bid].extent(), bounds1[bid].extent())) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<std::string> vars_to_strings(const std::vector<Var> &vars) {
+    std::vector<std::string> ret;
+    ret.reserve(vars.size());
+    for (const auto &var : vars) {
+        ret.push_back(var.name());
     }
     return ret;
 }
