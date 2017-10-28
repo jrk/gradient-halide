@@ -474,26 +474,6 @@ std::vector<std::pair<Expr, Expr>> rdom_to_vector(const RDom &bounds) {
     return ret;
 }
 
-Func set_boundary_zero(Func func, const RDom &bounds) {
-    internal_assert(func.args().size() == bounds.domain().domain().size());
-    // Set up boundary condition
-    Expr out_of_bounds = cast<bool>(false);
-    for (size_t i = 0; i < bounds.domain().domain().size(); i++) {
-        Var arg_var = func.args()[i];
-        Expr min = bounds[i].min();
-        Expr extent = bounds[i].extent();
-
-        internal_assert(min.defined() && extent.defined());
-
-        out_of_bounds = (out_of_bounds ||
-                         arg_var < min ||
-                         arg_var >= min + extent);
-    }
-
-    func(func.args()) = select(out_of_bounds, 0.f, func(func.args()));
-    return func;
-}
-
 bool equal(const RDom &bounds0, const RDom &bounds1) {
     if (bounds0.domain().domain().size() != bounds1.domain().domain().size()) {
         return false;

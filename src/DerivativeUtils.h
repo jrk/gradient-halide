@@ -24,7 +24,6 @@ Expr add_let_expression(const Expr &expr,
 std::vector<Expr> sort_expressions(const Expr &expr);
 std::map<FuncKey, RDom> inference_bounds(const Func &func);
 std::vector<std::pair<Expr, Expr>> rdom_to_vector(const RDom &bounds);
-Func set_boundary_zero(Func func, const RDom &bounds);
 bool equal(const RDom &bounds0, const RDom &bounds1);
 std::vector<std::string> vars_to_strings(const std::vector<Var> &vars);
 ReductionDomain extract_rdom(const Expr &expr);

@@ -21,17 +21,12 @@ public:
         Var x("x"), y("y"), z("z"), n("n");
 
         // TODO: should we downsample the input here?
-        // TODO: get rid of clamping
-        Func f_input("f_input");
-        Expr clamped_x = Halide::clamp(x, 0, input.width() - 1);
-        Expr clamped_y = Halide::clamp(y, 0, input.height() - 1);
-        f_input(x, y) = input(clamped_x, clamped_y);
 
         // Offsets the input by different biases and applies ReLU
         Func f_bias("bias");
         f_bias(x) = bias(x);
         Func f_offset("offset");
-        f_offset(x, y, z) = max(0.f, f_input(x, y) + f_bias(z));
+        f_offset(x, y, z) = max(0.f, input(x, y) + f_bias(z));
         // Perform 3D filtering in the offseted space
         RDom r(filter.dim(0).min(), filter.dim(0).extent(),
                filter.dim(1).min(), filter.dim(1).extent(),
@@ -43,7 +38,7 @@ public:
         f_conv(x, y, z) += f_filter(r.x, r.y, r.z) * f_offset(x + r.x, y + r.y, r.z);
         // Slice the result back to 2D
         // Find the coordinate in z
-        Expr gz = clamp(f_input(x, y), 0.0f, 1.0f) * (filter.dim(2).extent() - 1);
+        Expr gz = clamp(input(x, y), 0.0f, 1.0f) * (filter.dim(2).extent() - 1);
         // Floor voxel
         Expr fz = cast<int>(floor(gz) - 0.5f);
         // Ceil voxel
@@ -54,8 +49,8 @@ public:
         Func f_output("output");
         f_output(x, y) = f_conv(x, y, fz) * (1.f - wz) + f_conv(x, y, cz) * wz;
 
-        // RDom r_output(compare);
-        RDom r_output(0, 64, 0, 64);
+        RDom r_output(compare);
+        // RDom r_output(0, 64, 0, 64);
         Func f_loss("loss");
         f_loss(x) = 0.f;
         f_loss(x) += f_output(r_output.x, r_output.y);
