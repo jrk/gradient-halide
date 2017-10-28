@@ -389,8 +389,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 }
                 RDom r(bounds);
                 for (int var_id = 0; var_id < (int)variables.size(); var_id++) {
-                    lhs[lhs_id] = substitute(variables[var_id], r.x, lhs[lhs_id]);
-                    adjoint = substitute(variables[var_id], r.x, adjoint);
+                    lhs[lhs_id] = substitute(variables[var_id], r[var_id], lhs[lhs_id]);
+                    adjoint = substitute(variables[var_id], r[var_id], adjoint);
                 }
             }
         }
@@ -457,7 +457,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
         func_to_update(lhs) += adjoint;
 
-        print_func(func_to_update);
+        // print_func(func_to_update);
     }
 }
 
