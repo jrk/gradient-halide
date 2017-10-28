@@ -36,9 +36,7 @@ public:
         f_ReLU(x, y, z, n) = max(0, f_conv(x, y, z, n));
 
         RDom r_target(compare);
-        Expr diff = f_ReLU(r_target.x, r_target.y, r_target.z, r_target.w) -
-                    compare(r_target.x, r_target.y, r_target.z, r_target.w);
-        Expr loss = diff * diff;
+        Expr loss = f_ReLU(r_target.x, r_target.y, r_target.z, r_target.w);
         Derivative derivative = propagate_adjoints(loss);
         std::map<FuncKey, Func> adjoints = derivative.adjoints;
         d_filter(x, y, z, n) = adjoints[FuncKey{f_filter.name(), -1}](x, y, z, n);
@@ -87,15 +85,14 @@ public:
             f_conv.compute_root();
             f_conv
               .parallel(n)
+              .parallel(z)
               .vectorize(x, 8);
 
             f_conv.update()
                   .reorder(r.x, r.y, x, y, z, r.z, n)
                   .parallel(n)
-                  .parallel(z, 2)
-                  .vectorize(x, 8)
-                  .unroll(r.x, 3)
-                  ;
+                  .parallel(z)
+                  .vectorize(x, 8);
             f_ReLU.compute_root();
             f_ReLU.parallel(n)
                   .parallel(z)
@@ -103,6 +100,9 @@ public:
 
             Func &d_conv_1 = adjoints[FuncKey{f_conv.name(), 0}];
             d_conv_1.compute_root();
+            /*d_conv_1.parallel(n)
+                    .parallel(z)
+                    .vectorize(x, 8);*/
             d_conv_1.update(0)
                     .parallel(n)
                     .parallel(z)
@@ -110,6 +110,9 @@ public:
 
             Func &d_ReLU = adjoints[FuncKey{f_ReLU.name(), -1}];
             d_ReLU.compute_root();
+            d_ReLU.parallel(n)
+                  .parallel(z)
+                  .vectorize(x, 8);
             d_ReLU.update(0)
                   .parallel(n)
                   .parallel(z)
@@ -132,8 +135,6 @@ public:
             Func intermediate = d_filter.update(0).rfactor(r_conv.x, rx);
             intermediate.compute_at(d_filter, x);
             intermediate.update(0)
-                        .parallel(n)
-                        .parallel(z)
                         .vectorize(rx, 8);
             d_filter.print_loop_nest();
         }

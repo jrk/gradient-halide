@@ -22,7 +22,6 @@ struct Derivative {
     std::map<FuncKey, RDom> reductions;
 };
 
-static float default_adjoint_buffer[] = {1.f};
 Derivative propagate_adjoints(const Func &output,
                               const Func &adjoint,
                               const std::vector<std::pair<Expr, Expr>> &output_bounds);
