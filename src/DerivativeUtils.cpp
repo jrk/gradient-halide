@@ -67,6 +67,8 @@ bool has_let_defined(const Expr &expr, const std::string &name) {
 
 class LetRemover : public IRMutator {
 public:
+    using IRMutator::visit;
+
     Expr remove(const Expr &expr) {
         return mutate(expr);
     }
