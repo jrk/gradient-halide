@@ -22,7 +22,8 @@ Expr add_let_expression(const Expr &expr,
                         const std::map<std::string, Expr> &let_var_mapping,
                         const std::vector<std::string> &let_variables);
 std::vector<Expr> sort_expressions(const Expr &expr);
-std::map<FuncKey, RDom> inference_bounds(const Func &func);
+std::map<FuncKey, RDom> inference_bounds(const Func &func,
+	 									 const FuncBounds &output_bounds);
 std::vector<std::pair<Expr, Expr>> rdom_to_vector(const RDom &bounds);
 bool equal(const RDom &bounds0, const RDom &bounds1);
 std::vector<std::string> vars_to_strings(const std::vector<Var> &vars);

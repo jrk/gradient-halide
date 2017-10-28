@@ -10,6 +10,7 @@
 #include "Func.h"
 
 #include <vector>
+#include <array>
 
 namespace Halide {
 
@@ -21,6 +22,10 @@ struct Derivative {
     std::map<FuncKey, RDom> reductions;
 };
 
+static float default_adjoint_buffer[] = {1.f};
+Derivative propagate_adjoints(const Func &output,
+                              const Func &adjoint,
+                              const std::vector<std::pair<Expr, Expr>> &output_bounds);
 Derivative propagate_adjoints(const Func &output);
 void print_func(const Func &func);
 

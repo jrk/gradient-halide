@@ -324,7 +324,8 @@ class BoundsInferencer : public IRVisitor {
 public:
     using IRVisitor::visit;
 
-    void inference(const Func &func);
+    void inference(const Func &func,
+                   const std::vector<std::pair<Expr, Expr>> &output_bounds);
     void internal_inference(const Func &func);
 
     void visit(const Call *op);
@@ -359,21 +360,18 @@ private:
     Scope<Expr> scope;
 };
 
-void BoundsInferencer::inference(const Func &func) {
-    // initialization
+void BoundsInferencer::inference(const Func &func,
+                                 const FuncBounds &output_bounds) {
+    // Initialization
     func_bounds.clear();
     recursion_depth = 0;
     current_func_key = FuncKey{"", -1};
     current_args.clear();
     current_bounds = RDom();
 
-    FuncBounds bounds;
-    for (int i = 0; i < (int)func.args().size(); i++) {
-        bounds.push_back({0, 0});
-    }
-    // assume the output has size 1
+    // Bounds of the output is the bounds of the buffer
     func_bounds[FuncKey{func.name(), func.num_update_definitions() - 1}] =
-        bounds;
+        output_bounds;
 
     internal_inference(func);
 }
@@ -466,9 +464,10 @@ void BoundsInferencer::visit(const Let *op) {
     scope.pop(op->name);
 }
 
-std::map<FuncKey, RDom> inference_bounds(const Func &func) {
+std::map<FuncKey, RDom> inference_bounds(const Func &func,
+                                         const FuncBounds &output_bounds) {
 	BoundsInferencer inferencer;
-	inferencer.inference(func);
+	inferencer.inference(func, output_bounds);
 	return inferencer.get_func_bounds();
 }
 

@@ -24,7 +24,9 @@ class ReverseAccumulationVisitor : public IRVisitor {
 public:
     using IRVisitor::visit;
 
-    void propagate_adjoints(const Func &output);
+    void propagate_adjoints(const Func &output,
+                            const Func &adjoint,
+                            const std::vector<std::pair<Expr, Expr>> &output_bounds);
 
     std::map<FuncKey, Func> get_adjoint_funcs() const {
         return adjoint_funcs;
@@ -59,7 +61,10 @@ private:
     int current_update_id;
 };
 
-void ReverseAccumulationVisitor::propagate_adjoints(const Func &output) {
+void ReverseAccumulationVisitor::propagate_adjoints(
+        const Func &output,
+        const Func &adjoint,
+        const std::vector<std::pair<Expr, Expr>> &output_bounds) {
     // Topologically sort the functions
     std::map<std::string, Function> env = find_transitive_calls(output.function());
     std::vector<std::string> order = realization_order({output.function()}, env);
@@ -85,7 +90,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Func &output) {
     }
 
     debug(0) << "ReverseAccumulationVisitor: infering bounds.\n";
-    func_bounds = inference_bounds(output);
+    func_bounds = inference_bounds(output, output_bounds);
 
     // Create a stub for each function to accumulate adjoints
     for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
@@ -94,7 +99,11 @@ void ReverseAccumulationVisitor::propagate_adjoints(const Func &output) {
             Func adjoint_func(func.name() + "_" + std::to_string(update_id + 1) + "_d_def__");
             bool is_last = func_id == (int)funcs.size() - 1 &&
                            update_id == func.num_update_definitions() - 1;
-            adjoint_func(func.args()) = is_last ? 1.f : 0.f;
+            if (is_last) {
+                adjoint_func(func.args()) = adjoint(func.args());
+            } else {
+                adjoint_func(func.args()) = 0.f;
+            }
             FuncKey func_key{func.name(), update_id};
             adjoint_funcs[func_key] = adjoint_func;
         }
@@ -462,11 +471,26 @@ void ReverseAccumulationVisitor::visit(const Let *op) {
 } // namespace Internal
 
 
-Derivative propagate_adjoints(const Func &output) {
+Derivative propagate_adjoints(const Func &output,
+                              const Func &adjoint,
+                              const std::vector<std::pair<Expr, Expr>> &output_bounds) {
+    user_assert(output.dimensions() == adjoint.dimensions());
     Internal::ReverseAccumulationVisitor visitor;
-    visitor.propagate_adjoints(output);
+    visitor.propagate_adjoints(output, adjoint, output_bounds);
     return Derivative{visitor.get_adjoint_funcs(),
                       visitor.get_reductions()};
+}
+
+Derivative propagate_adjoints(const Func &output) {
+    Func adjoint("adjoint");
+    Var x("x");
+    adjoint(x) = 1.f;
+    std::vector<std::pair<Expr, Expr>> output_bounds;
+    output_bounds.reserve(output.dimensions());
+    for (int i = 0; i < output.dimensions(); i++) {
+        output_bounds.push_back({0, 0});
+    }
+    return propagate_adjoints(output, adjoint, output_bounds);
 }
 
 void print_func(const Func &func) {
@@ -542,7 +566,7 @@ void test_simple_bounds_inference() {
     f_loss(x) = 0.f;
     f_loss(x) += blur_y(r.x, r.y);
 
-    std::map<FuncKey, RDom> bounds = inference_bounds(f_loss);
+    std::map<FuncKey, RDom> bounds = inference_bounds(f_loss, {{0, 0}});
 
     FuncKey blur_y_key{blur_y.name(), -1};
     internal_assert(equal(bounds[blur_y_key][0].min(), 0))
@@ -587,7 +611,7 @@ void test_simple_bounds_inference_update() {
     f_loss(x) = 0.f;
     f_loss(x) += blur(r.x);
 
-    std::map<FuncKey, RDom> bounds = inference_bounds(f_loss);
+    std::map<FuncKey, RDom> bounds = inference_bounds(f_loss, {{0, 0}});
 
     FuncKey blur_key_1{blur.name(), 0};
     internal_assert(equal(bounds[blur_key_1][0].min(), 0))
