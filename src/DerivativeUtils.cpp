@@ -219,6 +219,13 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
                     get_min_max_bounds(op->args[0], current_args, current_bounds, index, scope);;
                 return {floor(bounds.first), floor(bounds.second)};
             }
+        } else if (op->call_type == Call::PureIntrinsic) {
+            if (op->name == "likely") {
+                internal_assert(op->args.size() == 1);
+                const std::pair<Expr, Expr> bounds =
+                    get_min_max_bounds(op->args[0], current_args, current_bounds, index, scope);
+                return {bounds.first, bounds.second};
+            }
         } else if (op->call_type == Call::Halide) {
             return {std::numeric_limits<float>::min(),
                     std::numeric_limits<float>::max()};
