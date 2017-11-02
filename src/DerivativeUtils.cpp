@@ -162,6 +162,7 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
             get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
         return {a_bounds.first - b_bounds.second, a_bounds.second - b_bounds.first};
     } else if (expr.get()->node_type == IRNodeType::Mul) {
+        // TODO(mgharbi): handle non-pos case
         const Mul *op = expr.as<Mul>();
         const std::pair<Expr, Expr> a_bounds =
             get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
@@ -220,6 +221,11 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
                 const std::pair<Expr, Expr> bounds =
                     get_min_max_bounds(op->args[0], current_args, current_bounds, index, scope);;
                 return {floor(bounds.first), floor(bounds.second)};
+            } else if (op->name == "ceil_f32") {
+                internal_assert(op->args.size() == 1);
+                const std::pair<Expr, Expr> bounds =
+                    get_min_max_bounds(op->args[0], current_args, current_bounds, index, scope);;
+                return {ceil(bounds.first), ceil(bounds.second)};
             }
         } else if (op->call_type == Call::PureIntrinsic) {
             if (op->name == "likely") {
@@ -235,9 +241,17 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
     } else if (expr.get()->node_type == IRNodeType::Let) {
         //const Let *op = expr.as<Let>();
         internal_error << "Let\n";
+    } else if (expr.get()->node_type == IRNodeType::Div) {
+        // TODO(mgharbi): handle non-positive case
+        const Div *op = expr.as<Div>();
+        const std::pair<Expr, Expr> a_bounds =
+            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
+        const std::pair<Expr, Expr> b_bounds =
+            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
+        return {a_bounds.first/b_bounds.second, a_bounds.second/b_bounds.first};
+        // internal_error << "Div\n";
     }
 
-    // std::cerr << "expr.get()->node_type:" << (int)expr.get()->node_type << std::endl;
     internal_error << "Can't infer bounds, Expr type not handled\n";
     return std::pair<Expr, Expr>();
 }
@@ -337,14 +351,14 @@ public:
         std::map<FuncKey, RDom> ret;
         // Convert to an Rdom
         for(auto b: func_bounds) { 
-            debug(0) << "Computed bounds for " << b.first.first << "[" << b.first.second << "]" << ":\n";
+            // debug(0) << "Computed bounds for " << b.first.first << "[" << b.first.second << "]" << ":\n";
             FuncBounds min_extent_bounds;
             min_extent_bounds.reserve(b.second.size());
             for (int i = 0; i < (int)b.second.size(); ++i) {
                 Expr lower_bound = simplify(b.second[i].first);
                 Expr extent = simplify(b.second[i].second - lower_bound+1);
                 min_extent_bounds.push_back(std::make_pair(lower_bound, extent));
-                debug(0) << "  arg" << i << " ("  << lower_bound << ", " << extent << ")\n";
+                // debug(0) << "  arg" << i << " ("  << lower_bound << ", " << extent << ")\n";
             }
             ret[b.first] = RDom(min_extent_bounds);
         }

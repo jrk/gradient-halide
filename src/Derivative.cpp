@@ -70,7 +70,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
     std::vector<std::string> order = realization_order({output.function()}, env);
     std::vector<Func> funcs;
     funcs.reserve(order.size());
-    Internal::debug(0) << "Propagate: Sorted Func list:" << "\n";
+    Internal::debug(0) << "Sorted Func list:" << "\n";
     for (const auto &func_name : order) {
         Internal::debug(0) << "  . " << func_name << "\n";
     }
@@ -89,8 +89,9 @@ void ReverseAccumulationVisitor::propagate_adjoints(
         return;
     }
 
-    debug(0) << "ReverseAccumulationVisitor: infering bounds.\n";
+    debug(0) << "ReverseAccumulationVisitor: infering bounds...";
     func_bounds = inference_bounds(output, output_bounds);
+    debug(0) << "done\n";
 
     // Create a stub for each function to accumulate adjoints
     for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
@@ -156,9 +157,10 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             std::vector<Expr> expr_list =
                 update_id >= 0 ? sort_expressions(func.update_value(update_id)) :
                                  sort_expressions(func.value());
+
+            // Gather let variables
             let_var_mapping.clear();
             let_variables.clear();
-            // Gather let variables
             for (auto it = expr_list.begin(); it != expr_list.end(); it++) {
                 Expr expr = *it;
                 if (expr.get()->node_type == IRNodeType::Let) {
@@ -195,6 +197,7 @@ void ReverseAccumulationVisitor::accumulate(const Expr &stub, const Expr &adjoin
 }
 
 void ReverseAccumulationVisitor::visit(const Cast *op) {
+    debug(0) << "visit cast: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -203,6 +206,7 @@ void ReverseAccumulationVisitor::visit(const Cast *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Variable *op) {
+    debug(0) << "visit variable: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -213,6 +217,7 @@ void ReverseAccumulationVisitor::visit(const Variable *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Add *op) {
+    debug(0) << "visit add: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -223,6 +228,7 @@ void ReverseAccumulationVisitor::visit(const Add *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Sub *op) {
+    debug(0) << "visit sub: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -233,6 +239,7 @@ void ReverseAccumulationVisitor::visit(const Sub *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Mul *op) {
+    debug(0) << "visit mul: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -243,6 +250,7 @@ void ReverseAccumulationVisitor::visit(const Mul *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Div *op) {
+    debug(0) << "visit div: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -253,6 +261,7 @@ void ReverseAccumulationVisitor::visit(const Div *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Min *op) {
+    debug(0) << "visit min: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -263,6 +272,7 @@ void ReverseAccumulationVisitor::visit(const Min *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Max *op) {
+    debug(0) << "visit max: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -273,12 +283,25 @@ void ReverseAccumulationVisitor::visit(const Max *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Call *op) {
+    debug(0) << "visit call " << op->name << " " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
     if (op->name == "exp_f32") {
         // d/dx exp(x) = exp(x)
         for (size_t i = 0; i < op->args.size(); i++) {
             accumulate(op->args[i], adjoint * exp(op->args[i]));
+        }
+    } else if (op->name == "ceil_f32") {
+        // TODO: d/dx = dirac(n) for n in Z ...
+        debug(0) << "ceil\n";
+        for (size_t i = 0; i < op->args.size(); i++) {
+            accumulate(op->args[i], 0.0f);
+        }
+    } else if (op->name == "floor_f32") {
+        // TODO: d/dx = dirac(n) for n in Z ...
+        debug(0) << "floor\n";
+        for (size_t i = 0; i < op->args.size(); i++) {
+            accumulate(op->args[i], 0.0f);
         }
     }
 
@@ -290,6 +313,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         if (func.args().size() > 0 && Var::is_implicit(func.args()[0])) {
             return;
         }
+
         // We are scattering to this function
         debug(0) << "Scattering to " << func.name() << "\n";
 
@@ -300,12 +324,13 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             lhs[i] = add_let_expression(lhs[i], let_var_mapping, let_variables);
         }
 
-        debug(0) << "lhs is:";
-        for (const auto &arg : lhs) {
-            debug(0) << " " << arg;
-        }
-        debug(0) << "\n";
-        debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
+        // debug(0) << "lhs is:";
+        // for (const auto &arg : lhs) {
+        //     debug(0) << " " << arg;
+        // }
+        // debug(0) << "\n";
+        // debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
+        
         // If referring to the current function itself, send to previous update
         FuncKey func_key = func.name() != current_func.name() ?
                            FuncKey{func.name(), func.updates().size() - 1} :
@@ -360,11 +385,35 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
             // Let new_args[i] == op->args[i]
             SolverResult result = solve_expression(new_args[i] == lhs[i], variables[0]);
+            debug(0) << "solving " << new_args[i] << " " << lhs[i] << " for " << variables[0] << "\n";
             if (!result.fully_solved) {
+                debug(0) << "expression not fully solved";
                 continue;
             }
-            assert(result.result.as<EQ>() != nullptr);
-            Expr result_rhs = result.result.as<EQ>()->b;
+
+            Expr result_rhs;
+            if (result.result.as<Let>() != nullptr) {
+              const Let *let_expr = result.result.as<Let>();
+              debug(0) << "we have a let " << result.result << "\n";
+              debug(0) << let_expr->value << " " << let_expr->body << "\n";
+              result_rhs = substitute(let_expr->name, let_expr->value, let_expr->body);
+              if (result_rhs.as<And>() != nullptr) {
+                // TODO(mgharbi): this is quite dirty and brittle, what's the right solution?
+                const And *and_expr = result_rhs.as<And>();
+                debug(0) << "we have an And clause " << and_expr << "\n";
+                result_rhs = and_expr->a;
+              }
+            } else {
+              result_rhs = result.result;
+            }
+
+            if (result_rhs.as<EQ>() != nullptr) {
+              result_rhs = result_rhs.as<EQ>()->a;
+            } else {
+              internal_error << "coult not solve expression\n";
+            }
+            debug(0) << "result : " << result_rhs << "\n";
+
             // Replace pure variable with the reverse
             adjoint = substitute(variables[0], result_rhs, adjoint);
 
@@ -406,6 +455,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 arg_id_to_substitute.push_back(i);
             }
         }
+
         // Create a new RDom to loop over all free variables
         if (arg_id_to_substitute.size() > 0) {
             RDom r(bounds_subset);
@@ -449,12 +499,12 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
 
         // Add definition for all let variables
-        debug(0) << "lhs after canonicalization:";
-        for (const auto &arg : lhs) {
-            debug(0) << " " << arg;
-        }
-        debug(0) << "\n";
-        debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
+        // debug(0) << "lhs after canonicalization:";
+        // for (const auto &arg : lhs) {
+        //     debug(0) << " " << arg;
+        // }
+        // debug(0) << "\n";
+        // debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
         func_to_update(lhs) += adjoint;
 
         // print_func(func_to_update);
@@ -462,6 +512,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Let *op) {
+    debug(0) << "visit let: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
