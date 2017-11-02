@@ -157,6 +157,12 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             std::vector<Expr> expr_list =
                 update_id >= 0 ? sort_expressions(func.update_value(update_id)) :
                                  sort_expressions(func.value());
+            std::cerr << "update_id:" << update_id << std::endl;
+            if (update_id == -1) {
+            	std::cerr << "func.value():" << func.value() << std::endl;
+            } else {
+            	std::cerr << "func.value():" << func.update_value(update_id) << std::endl;
+            }
 
             // Gather let variables
             let_var_mapping.clear();
@@ -181,6 +187,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             // Traverse the expressions in reverse order
             for (auto it = expr_list.rbegin(); it != expr_list.rend(); it++) {
                 // Propagate adjoints
+                std::cerr << "expr:" << *it << std::endl;
                 it->accept(this);
             }
         }
@@ -391,26 +398,26 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 continue;
             }
 
-            Expr result_rhs;
+            Expr result_rhs = result.result;
             if (result.result.as<Let>() != nullptr) {
-              const Let *let_expr = result.result.as<Let>();
-              debug(0) << "we have a let " << result.result << "\n";
-              debug(0) << let_expr->value << " " << let_expr->body << "\n";
-              result_rhs = substitute(let_expr->name, let_expr->value, let_expr->body);
-              if (result_rhs.as<And>() != nullptr) {
-                // TODO(mgharbi): this is quite dirty and brittle, what's the right solution?
-                const And *and_expr = result_rhs.as<And>();
-                debug(0) << "we have an And clause " << and_expr << "\n";
-                result_rhs = and_expr->a;
-              }
+                const Let *let_expr = result.result.as<Let>();
+                debug(0) << "we have a let " << result.result << "\n";
+                debug(0) << let_expr->value << " " << let_expr->body << "\n";
+                result_rhs = substitute(let_expr->name, let_expr->value, let_expr->body);
+                if (result_rhs.as<And>() != nullptr) {
+	                // TODO(mgharbi): this is quite dirty and brittle, what's the right solution?
+	                const And *and_expr = result_rhs.as<And>();
+	                debug(0) << "we have an And clause " << and_expr << "\n";
+	                result_rhs = and_expr->a;
+                }
             } else {
-              result_rhs = result.result;
+                result_rhs = result.result;
             }
 
             if (result_rhs.as<EQ>() != nullptr) {
-              result_rhs = result_rhs.as<EQ>()->a;
+                result_rhs = result_rhs.as<EQ>()->b;
             } else {
-              internal_error << "coult not solve expression\n";
+                internal_error << "coult not solve expression\n";
             }
             debug(0) << "result : " << result_rhs << "\n";
 
