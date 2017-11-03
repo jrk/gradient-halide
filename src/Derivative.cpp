@@ -157,12 +157,6 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             std::vector<Expr> expr_list =
                 update_id >= 0 ? sort_expressions(func.update_value(update_id)) :
                                  sort_expressions(func.value());
-            std::cerr << "update_id:" << update_id << std::endl;
-            if (update_id == -1) {
-            	std::cerr << "func.value():" << func.value() << std::endl;
-            } else {
-            	std::cerr << "func.value():" << func.update_value(update_id) << std::endl;
-            }
 
             // Gather let variables
             let_var_mapping.clear();
@@ -187,7 +181,6 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             // Traverse the expressions in reverse order
             for (auto it = expr_list.rbegin(); it != expr_list.rend(); it++) {
                 // Propagate adjoints
-                std::cerr << "expr:" << *it << std::endl;
                 it->accept(this);
             }
         }
@@ -1087,7 +1080,6 @@ void test_repeat_edge() {
     // loss = (i0 + i1) + (i1 + i1) + (i1 + i1) = i0 + 5 * i1
 
     Buffer<float> d_blur_buf = blur.realize(3);
-    std::cerr << "d_blur_buf:" << d_blur_buf(0) << ", " << d_blur_buf(1) << ", " << d_blur_buf(2) << std::endl;
     Buffer<float> d_input_buf = adjoints[FuncKey{f_input.name(), -1}].realize(2);
     const float eps = 1e-6;
 #define CMP(x, target) \

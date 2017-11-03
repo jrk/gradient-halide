@@ -293,11 +293,14 @@ public:
     std::vector<Expr> sort(const Expr &expr);
 
     void visit(const Call *op);
+    void visit(const Let *op);
+    void visit(const Variable *op);
 protected:
     void include(const Expr &e);
 private:
     std::set<const IRNode *> visited_exprs;
     std::vector<Expr> expr_list;
+    std::map<std::string, Expr> let_var_mapping;
 };
 
 std::vector<Expr> ExpressionSorter::sort(const Expr &e) {
@@ -312,11 +315,24 @@ void ExpressionSorter::visit(const Call *op) {
         return;
     }
 
-    for (size_t i = 0; i < op->args.size(); i++) {
-        include(op->args[i]);
+    for (const auto &arg : op->args) {
+        include(arg);
     }
 }
 
+void ExpressionSorter::visit(const Let *op) {
+    assert(let_var_mapping.find(op->name) == let_var_mapping.end());
+    let_var_mapping[op->name] = op->value;
+
+    include(op->body);
+}
+
+void ExpressionSorter::visit(const Variable *op) {
+    auto it = let_var_mapping.find(op->name);
+    if (it != let_var_mapping.end()) {
+        include(it->second);
+    }
+}
 
 void ExpressionSorter::include(const Expr &e) {
     IRGraphVisitor::include(e);
