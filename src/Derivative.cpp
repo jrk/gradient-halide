@@ -315,7 +315,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
 
         // We are scattering to this function
-        debug(0) << "Scattering to " << func.name() << "\n";
+        // debug(0) << "Scattering to " << func.name() << "\n";
 
         // Add Let expressions
         adjoint = add_let_expression(adjoint, let_var_mapping, let_variables);
@@ -324,12 +324,12 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             lhs[i] = add_let_expression(lhs[i], let_var_mapping, let_variables);
         }
 
-        debug(0) << "lhs is:";
-        for (const auto &arg : lhs) {
-            debug(0) << " " << arg;
-        }
-        debug(0) << "\n";
-        debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
+        // debug(0) << "lhs is:";
+        // for (const auto &arg : lhs) {
+        //     debug(0) << " " << arg;
+        // }
+        // debug(0) << "\n";
+        // debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
         
         // If referring to the current function itself, send to previous update
         FuncKey func_key = func.name() != current_func.name() ?
@@ -498,16 +498,16 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             adjoint = substitute(new_args[i].name(), func_to_update_args[i], adjoint);
         }
 
-        // Add definition for all let variables
-        debug(0) << "lhs after canonicalization:";
-        for (const auto &arg : lhs) {
-            debug(0) << " " << arg;
-        }
-        debug(0) << "\n";
-        debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
+
         func_to_update(lhs) += adjoint;
 
-        print_func(func_to_update);
+        // debug(0) << "lhs after canonicalization:";
+        // for (const auto &arg : lhs) {
+        //     debug(0) << " " << arg;
+        // }
+        // debug(0) << "\n";
+        // debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
+        // print_func(func_to_update);
     }
 }
 
