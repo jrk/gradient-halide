@@ -315,7 +315,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
 
         // We are scattering to this function
-        // debug(0) << "Scattering to " << func.name() << "\n";
+        debug(0) << "Scattering to " << func.name() << "\n";
 
         // Add Let expressions
         adjoint = add_let_expression(adjoint, let_var_mapping, let_variables);
@@ -324,12 +324,12 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             lhs[i] = add_let_expression(lhs[i], let_var_mapping, let_variables);
         }
 
-        // debug(0) << "lhs is:";
-        // for (const auto &arg : lhs) {
-        //     debug(0) << " " << arg;
-        // }
-        // debug(0) << "\n";
-        // debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
+        debug(0) << "lhs is:";
+        for (const auto &arg : lhs) {
+            debug(0) << " " << arg;
+        }
+        debug(0) << "\n";
+        debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
         
         // If referring to the current function itself, send to previous update
         FuncKey func_key = func.name() != current_func.name() ?
@@ -385,7 +385,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
             // Let new_args[i] == op->args[i]
             SolverResult result = solve_expression(new_args[i] == lhs[i], variables[0]);
-            // debug(0) << "solving " << new_args[i] << " " << lhs[i] << " for " << variables[0] << "\n";
+            debug(0) << "solving " << new_args[i] << " " << lhs[i] << " for " << variables[0] << "\n";
             if (!result.fully_solved) {
                 debug(0) << "expression not fully solved";
                 continue;
@@ -408,11 +408,20 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
 
             if (result_rhs.as<EQ>() != nullptr) {
+                // Checking whether the lhs is a single variable
+                Expr result_lhs = result_rhs.as<EQ>()->a;
+                const Variable *lhs_var = result_lhs.as<Variable>();
+                if (lhs_var == nullptr) {
+                    debug(0) << "expression not fully solved";
+                    continue;
+                }
+
+                internal_assert(lhs_var->name == variables[0]);
                 result_rhs = result_rhs.as<EQ>()->b;
             } else {
                 internal_error << "coult not solve expression\n";
             }
-            // debug(0) << "result : " << result_rhs << "\n";
+            debug(0) << "result : " << result_rhs << "\n";
 
             // Replace pure variable with the reverse
             adjoint = substitute(variables[0], result_rhs, adjoint);
@@ -498,16 +507,15 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             adjoint = substitute(new_args[i].name(), func_to_update_args[i], adjoint);
         }
 
-
         func_to_update(lhs) += adjoint;
 
-        // debug(0) << "lhs after canonicalization:";
-        // for (const auto &arg : lhs) {
-        //     debug(0) << " " << arg;
-        // }
-        // debug(0) << "\n";
-        // debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
-        // print_func(func_to_update);
+        debug(0) << "lhs after canonicalization:";
+        for (const auto &arg : lhs) {
+            debug(0) << " " << arg;
+        }
+        debug(0) << "\n";
+        debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
+        print_func(func_to_update);
     }
 }
 
@@ -1001,6 +1009,56 @@ void test_linear_interpolation() {
 #undef CMP
 }
 
+void test_linear_interpolation_2d() {
+    Var x("x"), y("y");
+    float input_data0[] = {0.3f, 1.8f};
+    float input_data1[] = {1.0f, 2.0f, 4.0f};
+    Buffer<float> input0(input_data0, 2, 1, "input0");
+    Buffer<float> input1(input_data1, 3, 1, "input1");
+    Func f_input0("f_input0");
+    Expr clamped_x0 = Halide::clamp(x, 0, input0.width() - 1);
+    Expr clamped_y0 = Halide::clamp(y, 0, input0.height() - 1);
+    f_input0(x, y) = input0(clamped_x0, clamped_y0);
+    Func f_input1("f_input1");
+    Expr clamped_x1 = Halide::clamp(x, 0, input1.width() - 1);
+    Expr clamped_y1 = Halide::clamp(y, 0, input1.height() - 1);
+    f_input1(x,y ) = input1(clamped_x1, clamped_y1);
+    Expr gx = f_input0(x, y);
+    Expr fx = cast<int>(clamp(floor(f_input0(x, y)), 0.f, 1.f));
+    Expr cx = fx + 1;
+    Expr wx = gx - fx;
+    Func f_interpolate("interpolate");
+    Expr f1 = f_input1(fx, y);
+    f_interpolate(x, y) = f_input1(fx, y) * (1.f - wx) + f_input1(cx, y) * wx;
+
+    RDom r(0, 2, 0, 1);
+    Func f_loss("f_loss");
+    f_loss(x) = 0.f;
+    f_loss(x) += f_interpolate(r.x, r.y);
+    Derivative d = propagate_adjoints(f_loss);
+    std::map<FuncKey, Func> adjoints = d.adjoints;
+
+    // Same as test_linear_interpolation()
+    const float eps = 1e-6;
+#define CMP(x, target) \
+    internal_assert(fabs((x) - (target)) < eps) << \
+        "Expected " << (target) << " instead of " << (x) << "\n";
+
+    Buffer<float> interpolate = f_interpolate.realize(2, 1);
+    CMP(interpolate(0, 0), 1.3f);
+    CMP(interpolate(1, 0), 3.6f);
+
+    Buffer<float> d_input_0 = adjoints[FuncKey{f_input0.name(), -1}].realize(2, 1);
+    CMP(d_input_0(0, 0), 1.f);
+    CMP(d_input_0(1, 0), 2.f);
+
+    Buffer<float> d_input_1 = adjoints[FuncKey{f_input1.name(), -1}].realize(3, 1);
+    CMP(d_input_1(0, 0), 0.7f);
+    CMP(d_input_1(1, 0), 0.5f);
+    CMP(d_input_1(2, 0), 0.8f);
+#undef CMP
+}
+
 void test_sparse_update() {
     Var x("x");
     float input_data[] = {1.0f, 2.0f, 3.0f};
@@ -1104,10 +1162,10 @@ void derivative_test() {
     test_rdom_conv();
     test_1d_to_2d();
     test_linear_interpolation();
+    test_linear_interpolation_2d();
     test_sparse_update();
     test_rdom_update();
-    // Doesn't work for now
-    // test_repeat_edge();
+    test_repeat_edge();
     debug(0) << "Derivative test passed\n";
 }
 
