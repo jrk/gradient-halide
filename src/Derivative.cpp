@@ -387,7 +387,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             SolverResult result = solve_expression(new_args[i] == lhs[i], variables[0]);
             debug(0) << "solving " << new_args[i] << " " << lhs[i] << " for " << variables[0] << "\n";
             if (!result.fully_solved) {
-                debug(0) << "expression not fully solved";
+                debug(0) << "expression not fully solved" << "\n";
                 continue;
             }
 
@@ -1022,7 +1022,7 @@ void test_linear_interpolation_2d() {
     Func f_input1("f_input1");
     Expr clamped_x1 = Halide::clamp(x, 0, input1.width() - 1);
     Expr clamped_y1 = Halide::clamp(y, 0, input1.height() - 1);
-    f_input1(x,y ) = input1(clamped_x1, clamped_y1);
+    f_input1(x, y) = input1(clamped_x1, clamped_y1);
     Expr gx = f_input0(x, y);
     Expr fx = cast<int>(clamp(floor(f_input0(x, y)), 0.f, 1.f));
     Expr cx = fx + 1;
