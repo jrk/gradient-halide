@@ -197,7 +197,7 @@ void ReverseAccumulationVisitor::accumulate(const Expr &stub, const Expr &adjoin
 }
 
 void ReverseAccumulationVisitor::visit(const Cast *op) {
-    debug(0) << "visit cast: " << accumulated_adjoints.size() << "\n";
+    // debug(0) << "visit cast: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -206,7 +206,7 @@ void ReverseAccumulationVisitor::visit(const Cast *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Variable *op) {
-    debug(0) << "visit variable: " << accumulated_adjoints.size() << "\n";
+    // debug(0) << "visit variable: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -217,7 +217,7 @@ void ReverseAccumulationVisitor::visit(const Variable *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Add *op) {
-    debug(0) << "visit add: " << accumulated_adjoints.size() << "\n";
+    // debug(0) << "visit add: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -228,7 +228,7 @@ void ReverseAccumulationVisitor::visit(const Add *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Sub *op) {
-    debug(0) << "visit sub: " << accumulated_adjoints.size() << "\n";
+    // debug(0) << "visit sub: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -239,7 +239,7 @@ void ReverseAccumulationVisitor::visit(const Sub *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Mul *op) {
-    debug(0) << "visit mul: " << accumulated_adjoints.size() << "\n";
+    // debug(0) << "visit mul: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -250,7 +250,7 @@ void ReverseAccumulationVisitor::visit(const Mul *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Div *op) {
-    debug(0) << "visit div: " << accumulated_adjoints.size() << "\n";
+    // debug(0) << "visit div: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -261,7 +261,7 @@ void ReverseAccumulationVisitor::visit(const Div *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Min *op) {
-    debug(0) << "visit min: " << accumulated_adjoints.size() << "\n";
+    // debug(0) << "visit min: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -272,7 +272,7 @@ void ReverseAccumulationVisitor::visit(const Min *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Max *op) {
-    debug(0) << "visit max: " << accumulated_adjoints.size() << "\n";
+    // debug(0) << "visit max: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 
@@ -283,7 +283,7 @@ void ReverseAccumulationVisitor::visit(const Max *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Call *op) {
-    debug(0) << "visit call " << op->name << " " << accumulated_adjoints.size() << "\n";
+    // debug(0) << "visit call " << op->name << " " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
     if (op->name == "exp_f32") {
@@ -293,13 +293,13 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
     } else if (op->name == "ceil_f32") {
         // TODO: d/dx = dirac(n) for n in Z ...
-        debug(0) << "ceil\n";
+        // debug(0) << "ceil\n";
         for (size_t i = 0; i < op->args.size(); i++) {
             accumulate(op->args[i], 0.0f);
         }
     } else if (op->name == "floor_f32") {
         // TODO: d/dx = dirac(n) for n in Z ...
-        debug(0) << "floor\n";
+        // debug(0) << "floor\n";
         for (size_t i = 0; i < op->args.size(); i++) {
             accumulate(op->args[i], 0.0f);
         }
@@ -324,12 +324,12 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             lhs[i] = add_let_expression(lhs[i], let_var_mapping, let_variables);
         }
 
-        // debug(0) << "lhs is:";
-        // for (const auto &arg : lhs) {
-        //     debug(0) << " " << arg;
-        // }
-        // debug(0) << "\n";
-        // debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
+        debug(0) << "lhs is:";
+        for (const auto &arg : lhs) {
+            debug(0) << " " << arg;
+        }
+        debug(0) << "\n";
+        debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
         
         // If referring to the current function itself, send to previous update
         FuncKey func_key = func.name() != current_func.name() ?
@@ -385,7 +385,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
             // Let new_args[i] == op->args[i]
             SolverResult result = solve_expression(new_args[i] == lhs[i], variables[0]);
-            debug(0) << "solving " << new_args[i] << " " << lhs[i] << " for " << variables[0] << "\n";
+            // debug(0) << "solving " << new_args[i] << " " << lhs[i] << " for " << variables[0] << "\n";
             if (!result.fully_solved) {
                 debug(0) << "expression not fully solved";
                 continue;
@@ -394,8 +394,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             Expr result_rhs = result.result;
             if (result.result.as<Let>() != nullptr) {
                 const Let *let_expr = result.result.as<Let>();
-                debug(0) << "we have a let " << result.result << "\n";
-                debug(0) << let_expr->value << " " << let_expr->body << "\n";
+                // debug(0) << "we have a let " << result.result << "\n";
+                // debug(0) << let_expr->value << " " << let_expr->body << "\n";
                 result_rhs = substitute(let_expr->name, let_expr->value, let_expr->body);
                 if (result_rhs.as<And>() != nullptr) {
 	                // TODO(mgharbi): this is quite dirty and brittle, what's the right solution?
@@ -412,7 +412,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             } else {
                 internal_error << "coult not solve expression\n";
             }
-            debug(0) << "result : " << result_rhs << "\n";
+            // debug(0) << "result : " << result_rhs << "\n";
 
             // Replace pure variable with the reverse
             adjoint = substitute(variables[0], result_rhs, adjoint);
@@ -499,20 +499,20 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
 
         // Add definition for all let variables
-        // debug(0) << "lhs after canonicalization:";
-        // for (const auto &arg : lhs) {
-        //     debug(0) << " " << arg;
-        // }
-        // debug(0) << "\n";
-        // debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
+        debug(0) << "lhs after canonicalization:";
+        for (const auto &arg : lhs) {
+            debug(0) << " " << arg;
+        }
+        debug(0) << "\n";
+        debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
         func_to_update(lhs) += adjoint;
 
-        // print_func(func_to_update);
+        print_func(func_to_update);
     }
 }
 
 void ReverseAccumulationVisitor::visit(const Let *op) {
-    debug(0) << "visit let: " << accumulated_adjoints.size() << "\n";
+    // debug(0) << "visit let: " << accumulated_adjoints.size() << "\n";
     assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
     Expr adjoint = accumulated_adjoints[op];
 

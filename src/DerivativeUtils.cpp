@@ -235,8 +235,8 @@ std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
                 return {bounds.first, bounds.second};
             }
         } else if (op->call_type == Call::Halide) {
-            return {std::numeric_limits<float>::min(),
-                    std::numeric_limits<float>::max()};
+            return {-std::numeric_limits<float>::infinity(),
+                     std::numeric_limits<float>::infinity()};
         }
     } else if (expr.get()->node_type == IRNodeType::Let) {
         //const Let *op = expr.as<Let>();
@@ -367,14 +367,14 @@ public:
         std::map<FuncKey, RDom> ret;
         // Convert to an Rdom
         for(auto b: func_bounds) { 
-            // debug(0) << "Computed bounds for " << b.first.first << "[" << b.first.second << "]" << ":\n";
+            debug(0) << "Computed bounds for " << b.first.first << "[" << b.first.second << "]" << ":\n";
             FuncBounds min_extent_bounds;
             min_extent_bounds.reserve(b.second.size());
             for (int i = 0; i < (int)b.second.size(); ++i) {
                 Expr lower_bound = simplify(b.second[i].first);
                 Expr extent = simplify(b.second[i].second - lower_bound+1);
                 min_extent_bounds.push_back(std::make_pair(lower_bound, extent));
-                // debug(0) << "  arg" << i << " ("  << lower_bound << ", " << extent << ")\n";
+                debug(0) << "  arg" << i << " ("  << lower_bound << ", " << extent << ")\n";
             }
             ret[b.first] = RDom(min_extent_bounds);
         }
