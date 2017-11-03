@@ -330,7 +330,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
         debug(0) << "\n";
         debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
-        
+
         // If referring to the current function itself, send to previous update
         FuncKey func_key = func.name() != current_func.name() ?
                            FuncKey{func.name(), func.updates().size() - 1} :
@@ -374,12 +374,30 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
         std::vector<bool> canonicalized(lhs.size(), false);
         // We canonicalize the left hand side arguments (op->args) so that it's always x, y, z, ...
+        // First gather all arguments that contains multiple pure variables
+        // we don't want to mess with system solving yet, so we invalidate all of them
+        std::set<std::string> invalidated_variables;
+        for (int i = 0; i < (int)lhs.size(); i++) {
+            std::vector<std::string> variables =
+                gather_variables(lhs[i], vars_to_strings(current_args));
+            if (variables.size() != 1) {
+                for (const auto &var : variables) {
+                    invalidated_variables.insert(var);
+                }
+                continue;
+            }
+        }
         for (int i = 0; i < (int)lhs.size(); i++) {
             // Gather all pure variables at op->args[i], substitute them with new_args
             // For now only support single pure variable
             std::vector<std::string> variables =
                 gather_variables(lhs[i], vars_to_strings(current_args));
             if (variables.size() != 1) {
+                continue;
+            }
+
+            // If it appeared in other argument we should also fail
+            if (invalidated_variables.find(variables[0]) != invalidated_variables.end()) {
                 continue;
             }
 
@@ -432,23 +450,26 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
         // Sometimes the canonicalization above doesn't work.
         // We replace the pure variables inside lhs with RDoms for general scattering
+        // First find the corresponding current argument to obtain the bound
+        std::vector<std::pair<Expr, Expr>> bounds;
+        for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
+            bounds.push_back({current_bounds[arg_id].min(),
+                              current_bounds[arg_id].extent()});
+        }
+        RDom r_bounds(bounds);
         for (int lhs_id = 0; lhs_id < (int)lhs.size(); lhs_id++) {
             Expr lhs_arg = lhs[lhs_id];
             if (!canonicalized[lhs_id]) {
                 std::vector<std::string> variables = gather_variables(lhs_arg, func.args());
-                // Find the corresponding current argument to obtain the bound
-                std::vector<std::pair<Expr, Expr>> bounds;
-                for (const auto &var : variables) {
-                    for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
-                        if (current_args[arg_id].name() == var) {
-                            bounds.push_back({current_bounds[arg_id].min(), current_bounds[arg_id].extent()});
-                        }
-                    }
-                }
                 RDom r(bounds);
                 for (int var_id = 0; var_id < (int)variables.size(); var_id++) {
-                    lhs[lhs_id] = substitute(variables[var_id], r[var_id], lhs[lhs_id]);
-                    adjoint = substitute(variables[var_id], r[var_id], adjoint);
+                    for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
+                        if (current_args[arg_id].name() == variables[var_id]) {
+                            lhs[lhs_id] = substitute(variables[var_id], r_bounds[arg_id], lhs[lhs_id]);
+                            adjoint = substitute(variables[var_id], r_bounds[arg_id], adjoint);
+                            break;
+                        }
+                    }
                 }
             }
         }
