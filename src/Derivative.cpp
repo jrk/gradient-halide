@@ -76,7 +76,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
     }
     for (const auto &func_name : order) {
         Func func(env[func_name]);
-        // Avoid implicit functions
+        // Avoid implicit variables
         // TODO: FIX THIS
         if (func.args().size() > 0 && func.args()[0].is_implicit()) {
             continue;
@@ -134,10 +134,15 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                     adjoint_func, 0.f, rdom_to_vector(bounds));
                 // Give it a better name
                 Func tmp(func.name() + "_" + std::to_string(update_id + 1) + "_d__");
+                // XXX: should compute_root here?
                 tmp(adjoint_func.args()) = adjoint_func(adjoint_func.args());
                 adjoint_funcs[func_key] = tmp;
             }
 
+            // TODO: write a better comment
+            // f(x) = ...
+            // f(1) = ...
+            // Need to propagate back to all x while masking 1
             // Propagate adjoints to next update
             if (update_id >= 0) {
                 FuncKey next_func_key{func.name(), update_id - 1};
@@ -158,6 +163,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 update_id >= 0 ? sort_expressions(func.update_value(update_id)) :
                                  sort_expressions(func.value());
 
+            // TODO: replace let_var_mapping to Scope
             // Gather let variables
             let_var_mapping.clear();
             let_variables.clear();
@@ -317,6 +323,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // We are scattering to this function
         debug(0) << "Scattering to " << func.name() << "\n";
 
+        // TODO: check if we need this elsewhere
         // Add Let expressions
         adjoint = add_let_expression(adjoint, let_var_mapping, let_variables);
         std::vector<Expr> lhs = op->args;
@@ -364,6 +371,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                                 current_update_args[arg_id], adjoint);
         }
 
+        // Then we try to do the canonicalization
         // Create a set of new substitution variables
         std::vector<Var> new_args;
         std::set<std::string> new_args_set;
@@ -376,10 +384,23 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // We canonicalize the left hand side arguments (op->args) so that it's always x, y, z, ...
         // First gather all arguments that contains multiple pure variables
         // we don't want to mess with system solving yet, so we invalidate all of them
+        // 
+        // Given:
+        // g(x, y, z) = f(x, y-1, z+1)
+        // we get:
+        // d_f(x, y - 1, z + 1) += d_g(x,y,z)
+        // Goal: rewrite to
+        //  ==> d_f(x,y,z) += d_g(x,y+1,z-1)
+        // 
+        // This is currently simple and conservative, solving each dimension independently, so 
+        // inter-dependencies like:
+        // g(x, y) = f(x*y, x+y)
+        // can't be simplified. In principle this can be inverted by solving a system of equations.
         std::set<std::string> invalidated_variables;
         for (int i = 0; i < (int)lhs.size(); i++) {
             std::vector<std::string> variables =
                 gather_variables(lhs[i], vars_to_strings(current_args));
+            // skip cases where there are cross-dimension dependencies
             if (variables.size() != 1) {
                 for (const auto &var : variables) {
                     invalidated_variables.insert(var);
@@ -402,6 +423,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
 
             // Let new_args[i] == op->args[i]
+            // e.g. u_1 == y - 1 in the above example
             SolverResult result = solve_expression(new_args[i] == lhs[i], variables[0]);
             debug(0) << "solving " << new_args[i] << " " << lhs[i] << " for " << variables[0] << "\n";
             if (!result.fully_solved) {
@@ -416,15 +438,16 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 // debug(0) << let_expr->value << " " << let_expr->body << "\n";
                 result_rhs = substitute(let_expr->name, let_expr->value, let_expr->body);
                 if (result_rhs.as<And>() != nullptr) {
-	                // TODO(mgharbi): this is quite dirty and brittle, what's the right solution?
-	                const And *and_expr = result_rhs.as<And>();
-	                debug(0) << "we have an And clause " << and_expr << "\n";
-	                result_rhs = and_expr->a;
+                    // TODO(mgharbi): this is quite dirty and brittle, what's the right solution?
+                    const And *and_expr = result_rhs.as<And>();
+                    debug(0) << "we have an And clause " << and_expr << "\n";
+                    result_rhs = and_expr->a;
                 }
             } else {
                 result_rhs = result.result;
             }
 
+            // y == u_1 + 1
             if (result_rhs.as<EQ>() != nullptr) {
                 // Checking whether the lhs is a single variable
                 Expr result_lhs = result_rhs.as<EQ>()->a;
@@ -447,6 +470,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             lhs[i] = func_to_update.args()[i];
             canonicalized[i] = true;
         }
+
+        // TODO: shouldn't subsitute if even one canocanlized is false
 
         // Sometimes the canonicalization above doesn't work.
         // We replace the pure variables inside lhs with RDoms for general scattering
@@ -495,6 +520,21 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
         }
 
+        std::vector<Var> func_to_update_args = func_to_update.args();
+        // For each variable in lhs, check if it is a single rvar
+        // if so we can rewrite it back to pure variables
+        // TODO: is this the best way?
+        for (int i = 0; i < (int)lhs.size(); i++) {
+            auto &lhs_arg = lhs[i];
+            const Variable *var = lhs_arg.as<Variable>();
+            if (var != nullptr) {
+                if (var->reduction_domain.defined()) {
+                    lhs_arg = substitute(var->name, func_to_update_args[i], lhs_arg);
+                    adjoint = substitute(var->name, func_to_update_args[i], adjoint);
+                }
+            }
+        }
+
         // Merge RDoms on both lhs and rhs
         std::map<std::string, std::pair<Expr, Expr>> rvar_maps =
             gather_rvariables(adjoint);
@@ -522,7 +562,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             reductions[FuncKey{func_to_update.name(), func_to_update.num_update_definitions()}] = RDom();
         }
 
-        std::vector<Var> func_to_update_args = func_to_update.args();
         for (int i = 0; i < (int)func_to_update_args.size(); i++) {
             // substitute the new_args back to original variables
             adjoint = substitute(new_args[i].name(), func_to_update_args[i], adjoint);
@@ -563,8 +602,7 @@ Derivative propagate_adjoints(const Func &output,
 
 Derivative propagate_adjoints(const Func &output) {
     Func adjoint("adjoint");
-    Var x("x");
-    adjoint(x) = 1.f;
+    adjoint(output.args()) = 1.f;
     std::vector<std::pair<Expr, Expr>> output_bounds;
     output_bounds.reserve(output.dimensions());
     for (int i = 0; i < output.dimensions(); i++) {
