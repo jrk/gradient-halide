@@ -91,7 +91,6 @@ protected:
     EXPORT virtual void visit(const Prefetch *);
 };
 
-
 /**
  * Deprecated for new use: please use IRGraphMutator2 instead.
  * Existing usage of IRGraphMutator will be migrated to IRGraphMutator2 and
@@ -132,7 +131,10 @@ public:
     EXPORT virtual Expr mutate(const Expr &expr);
     EXPORT virtual Stmt mutate(const Stmt &stmt);
 
-public:
+protected:
+    // ExprNode<> and StmtNode<> are allowed to call visit (to implement mutate_expr/mutate_stmt())
+    template<typename T> friend struct ExprNode;
+    template<typename T> friend struct StmtNode;
 
     EXPORT virtual Expr visit(const IntImm *);
     EXPORT virtual Expr visit(const UIntImm *);
