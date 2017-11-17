@@ -56,7 +56,7 @@ private:
     std::map<FuncKey, RDom> reductions;
     std::map<std::string, Expr> let_var_mapping;
     std::vector<std::string> let_variables;
-    std::map<FuncKey, RDom> func_bounds;
+    std::map<std::string, Box> func_bounds;
     Func current_func;
     int current_update_id;
 };
@@ -120,18 +120,16 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 update_id >= -1; update_id--) {
             current_update_id = update_id;
             FuncKey func_key{func.name(), update_id};
-            internal_assert(func_bounds.find(func_key) != func_bounds.end());
+            internal_assert(func_bounds.find(func.name()) != func_bounds.end());
 
             // Set up boundary condition
-            const RDom &bounds = func_bounds[func_key];
+            const Box &bounds = func_bounds[func.name()];
             FuncKey prev_func_key{func.name(), update_id + 1};
-            // Optimization: if this function has the same bounds as the previous updates,
-            // don't need to apply boundary condition
-            if (update_id == func.num_update_definitions() - 1 ||
-                    !equal(bounds, func_bounds[prev_func_key])) {
+            // Apply boundary condition if this is the first visit
+            if (update_id == func.num_update_definitions() - 1) {
                 Func adjoint_func = adjoint_funcs[func_key];
                 adjoint_func = BoundaryConditions::constant_exterior(
-                    adjoint_func, 0.f, rdom_to_vector(bounds));
+                    adjoint_func, 0.f, box_to_vector(bounds));
                 // Give it a better name
                 Func tmp(func.name() + "_" + std::to_string(update_id + 1) + "_d__");
                 // XXX: should compute_root here?
@@ -356,10 +354,10 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 current_update_args.push_back(var);
             }
         }
-        RDom current_bounds = func_bounds[FuncKey{current_func.name(), current_update_id}];
+        const Box &current_bounds = func_bounds[current_func.name()];
 
         // We want to do this:
-        // func_to_update(op->args) += adjoint(current_args);
+        // func_to_update(op->args) += adjoint(current_update_args);
         // But 1. the pure variables inside adjoint should be replaced by current_update_args
         //     2. op->args can be invalid lhs, need to canonicalize
         //        we canonicalize by first try to subsitute with pure variables
@@ -478,8 +476,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // First find the corresponding current argument to obtain the bound
         std::vector<std::pair<Expr, Expr>> bounds;
         for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
-            bounds.push_back({current_bounds[arg_id].min(),
-                              current_bounds[arg_id].extent()});
+            bounds.push_back({current_bounds[arg_id].min,
+                              current_bounds[arg_id].max - current_bounds[arg_id].min + 1});
         }
         RDom r_bounds(bounds);
         for (int lhs_id = 0; lhs_id < (int)lhs.size(); lhs_id++) {
@@ -505,8 +503,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         std::vector<int> arg_id_to_substitute;
         for (int i = 0; i < (int)current_args.size(); i++) {
             if (has_variable(adjoint, current_args[i].name())) {
-                const RVar &rvar = current_bounds[i];
-                bounds_subset.emplace_back(rvar.min(), rvar.extent());
+                const Interval &interval = current_bounds[i];
+                bounds_subset.emplace_back(interval.min, interval.max - interval.min + 1);
                 arg_id_to_substitute.push_back(i);
             }
         }
@@ -684,37 +682,34 @@ void test_simple_bounds_inference() {
     f_loss(x) = 0.f;
     f_loss(x) += blur_y(r.x, r.y);
 
-    std::map<FuncKey, RDom> bounds = inference_bounds(f_loss, {{0, 0}});
+    std::map<std::string, Box> bounds = inference_bounds(f_loss, {{0, 0}});
 
-    FuncKey blur_y_key{blur_y.name(), -1};
-    internal_assert(equal(bounds[blur_y_key][0].min(), 0))
-        << "Expected 0 instead of " << bounds[blur_y_key][0].min() << "\n" ;
-    internal_assert(equal(bounds[blur_y_key][0].extent(), width-2))
-        << "Expected " << width-2  << " instead of " << bounds[blur_y_key][0].extent() << "\n" ;
-    internal_assert(equal(bounds[blur_y_key][1].min(), 0))
-        << "Expected 0 instead of " << bounds[blur_y_key][1].min() << "\n" ;
-    internal_assert(equal(bounds[blur_y_key][1].extent(), height-2))
-        << "Expected " << height-2  << " instead of " << bounds[blur_y_key][1].extent() << "\n" ;
+    internal_assert(equal(bounds[blur_y.name()][0].min, 0))
+        << "Expected 0 instead of " << bounds[blur_y.name()][0].min << "\n" ;
+    internal_assert(equal(bounds[blur_y.name()][0].max, width-3))
+        << "Expected " << width-3  << " instead of " << bounds[blur_y.name()][0].max << "\n" ;
+    internal_assert(equal(bounds[blur_y.name()][1].min, 0))
+        << "Expected 0 instead of " << bounds[blur_y.name()][1].min << "\n" ;
+    internal_assert(equal(bounds[blur_y.name()][1].max, height-3))
+        << "Expected " << height-3  << " instead of " << bounds[blur_y.name()][1].max << "\n" ;
 
-    FuncKey blur_x_key{blur_x.name(), -1};
-    internal_assert(equal(bounds[blur_x_key][0].min(), 0))
-        << "Expected 0 instead of " << bounds[blur_x_key][0].min() << "\n" ;
-    internal_assert(equal(bounds[blur_x_key][0].extent(), width-2))
-        << "Expected " << width-2  << " instead of " << bounds[blur_x_key][0].extent() << "\n" ;
-    internal_assert(equal(bounds[blur_x_key][1].min(), 0))
-        << "Expected 0 instead of " << bounds[blur_x_key][1].min() << "\n" ;
-    internal_assert(equal(bounds[blur_x_key][1].extent(), height))
-        << "Expected " << height  << " instead of " << bounds[blur_x_key][1].extent() << "\n" ;
+    internal_assert(equal(bounds[blur_x.name()][0].min, 0))
+        << "Expected 0 instead of " << bounds[blur_x.name()][0].min << "\n" ;
+    internal_assert(equal(bounds[blur_x.name()][0].max, width-3))
+        << "Expected " << width-3 << " instead of " << bounds[blur_x.name()][0].max << "\n" ;
+    internal_assert(equal(bounds[blur_x.name()][1].min, 0))
+        << "Expected 0 instead of " << bounds[blur_x.name()][1].min << "\n" ;
+    internal_assert(equal(bounds[blur_x.name()][1].max, height-1))
+        << "Expected " << height-1 << " instead of " << bounds[blur_x.name()][1].max << "\n" ;
 
-    FuncKey input_key{input.name(), -1};
-    internal_assert(equal(bounds[input_key][0].min(), 0))
-        << "Expected 0 instead of " << bounds[input_key][0].min() << "\n" ;
-    internal_assert(equal(bounds[input_key][0].extent(), width))
-        << "Expected " << width  << " instead of " << bounds[input_key][0].extent() << "\n" ;
-    internal_assert(equal(bounds[input_key][1].min(), 0))
-        << "Expected 0 instead of " << bounds[input_key][1].min() << "\n" ;
-    internal_assert(equal(bounds[input_key][1].extent(), height))
-        << "Expected " << height  << " instead of " << bounds[input_key][1].extent() << "\n" ;
+    internal_assert(equal(bounds[input.name()][0].min, 0))
+        << "Expected 0 instead of " << bounds[input.name()][0].min << "\n" ;
+    internal_assert(equal(bounds[input.name()][0].max, width-1))
+        << "Expected " << width-1 << " instead of " << bounds[input.name()][0].max << "\n" ;
+    internal_assert(equal(bounds[input.name()][1].min, 0))
+        << "Expected 0 instead of " << bounds[input.name()][1].min << "\n" ;
+    internal_assert(equal(bounds[input.name()][1].max, height-1))
+        << "Expected " << height-1 << " instead of " << bounds[input.name()][1].max << "\n" ;
 }
 
 void test_simple_bounds_inference_update() {
@@ -729,23 +724,16 @@ void test_simple_bounds_inference_update() {
     f_loss(x) = 0.f;
     f_loss(x) += blur(r.x);
 
-    std::map<FuncKey, RDom> bounds = inference_bounds(f_loss, {{0, 0}});
+    std::map<std::string, Box> bounds = inference_bounds(f_loss, {{0, 0}});
 
-    FuncKey blur_key_1{blur.name(), 0};
-    internal_assert(equal(bounds[blur_key_1][0].min(), 0))
-        << "Expected 0 instead of " << bounds[blur_key_1][0].min() << "\n" ;
-    internal_assert(equal(bounds[blur_key_1][0].extent(), 2))
-        << "Expected 2 instead of " << bounds[blur_key_1][0].extent() << "\n" ;
-    FuncKey blur_key_0{blur.name(), -1};
-    internal_assert(equal(bounds[blur_key_0][0].min(), 0))
-        << "Expected 0 instead of " << bounds[blur_key_0][0].min() << "\n" ;
-    internal_assert(equal(bounds[blur_key_0][0].extent(), 2))
-        << "Expected 2 instead of " << bounds[blur_key_0][0].extent() << "\n" ;
-    FuncKey input_key{input.name(), -1};
-    internal_assert(equal(bounds[input_key][0].min(), 0))
-        << "Expected 0 instead of " << bounds[input_key][0].min() << "\n" ;
-    internal_assert(equal(bounds[input_key][0].extent(), 3))
-        << "Expected 3 instead of " << bounds[input_key][0].extent() << "\n" ;
+    internal_assert(equal(bounds[blur.name()][0].min, 0))
+        << "Expected 0 instead of " << bounds[blur.name()][0].min << "\n" ;
+    internal_assert(equal(bounds[blur.name()][0].max, 1))
+        << "Expected 1 instead of " << bounds[blur.name()][0].max << "\n" ;
+    internal_assert(equal(bounds[input.name()][0].min, 0))
+        << "Expected 0 instead of " << bounds[input.name()][0].min << "\n" ;
+    internal_assert(equal(bounds[input.name()][0].max, 2))
+        << "Expected 2 instead of " << bounds[input.name()][0].max << "\n" ;
 }
 
 void test_simple_1d_blur() {

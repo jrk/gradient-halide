@@ -5,6 +5,8 @@
 #include "IROperator.h"
 #include "IREquality.h"
 #include "Simplify.h"
+#include "FindCalls.h"
+#include "RealizationOrder.h"
 
 namespace Halide {
 namespace Internal {
@@ -141,127 +143,6 @@ std::map<std::string, std::pair<Expr, Expr>> gather_rvariables(const Expr &expr)
 	return gatherer.gather(expr);
 }
 
-
-std::pair<Expr, Expr> get_min_max_bounds(const Expr &expr,
-                                         const std::vector<Var> &current_args,
-                                         const RDom &current_bounds,
-                                         const int index,
-                                         const Scope<Expr> &scope) {
-    if (expr.get()->node_type == IRNodeType::Add) {
-        const Add *op = expr.as<Add>();
-        const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
-        const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        return {a_bounds.first + b_bounds.first, a_bounds.second + b_bounds.second};
-    } else if (expr.get()->node_type == IRNodeType::Sub) {
-        const Sub *op = expr.as<Sub>();
-        const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
-        const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        return {a_bounds.first - b_bounds.second, a_bounds.second - b_bounds.first};
-    } else if (expr.get()->node_type == IRNodeType::Mul) {
-        // TODO(mgharbi): handle non-pos case
-        const Mul *op = expr.as<Mul>();
-        const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
-        const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        return {a_bounds.first * b_bounds.first, a_bounds.second * b_bounds.second};
-    } else if (expr.get()->node_type == IRNodeType::Variable) {
-        const Variable *var = expr.as<Variable>();
-        if (var->reduction_domain.defined()) {
-            ReductionVariable rvar = var->reduction_domain.domain()[index];
-            return {rvar.min, rvar.min + rvar.extent - 1};
-        } else {
-            for (int i = 0; i < (int)current_args.size(); i++) {
-                if (current_args[i].name() == var->name) {
-                    return {current_bounds[i].min(), current_bounds[i].extent()};
-                }
-            }
-            if (scope.contains(var->name)) {
-                return get_min_max_bounds(scope.get(var->name),
-                                          current_args,
-                                          current_bounds,
-                                          index,
-                                          scope);
-            }
-        }
-        // Treat it as a constant (XXX: is this correct?)
-        return {expr, expr};
-    } else if (expr.get()->node_type == IRNodeType::Max) {
-        const Max *op = expr.as<Max>();
-        const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
-        const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        return {max(a_bounds.first, b_bounds.first), max(a_bounds.second, b_bounds.second)};
-    } else if (expr.get()->node_type == IRNodeType::Min) {
-        const Min *op = expr.as<Min>();
-        const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
-        const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        return {min(a_bounds.first, b_bounds.first), min(a_bounds.second, b_bounds.second)};
-    } else if (expr.get()->node_type == IRNodeType::IntImm) {
-        return {expr, expr};
-    } else if (expr.get()->node_type == IRNodeType::FloatImm) {
-        return {expr, expr};
-    } else if (expr.get()->node_type == IRNodeType::Cast) {
-        const Cast *op = expr.as<Cast>();
-        const std::pair<Expr, Expr> bounds =
-            get_min_max_bounds(op->value, current_args, current_bounds, index, scope);
-        return {cast(op->type, bounds.first), cast(op->type, bounds.second)};
-    } else if (expr.get()->node_type == IRNodeType::Call) {
-        const Call *op = expr.as<Call>();
-        if (op->call_type == Call::PureExtern) {
-            if (op->name == "floor_f32") {
-                internal_assert(op->args.size() == 1);
-                const std::pair<Expr, Expr> bounds =
-                    get_min_max_bounds(op->args[0], current_args, current_bounds, index, scope);;
-                return {floor(bounds.first), floor(bounds.second)};
-            } else if (op->name == "ceil_f32") {
-                internal_assert(op->args.size() == 1);
-                const std::pair<Expr, Expr> bounds =
-                    get_min_max_bounds(op->args[0], current_args, current_bounds, index, scope);;
-                return {ceil(bounds.first), ceil(bounds.second)};
-            }
-        } else if (op->call_type == Call::PureIntrinsic) {
-            if (op->name == "likely") {
-                internal_assert(op->args.size() == 1);
-                const std::pair<Expr, Expr> bounds =
-                    get_min_max_bounds(op->args[0], current_args, current_bounds, index, scope);
-                return {bounds.first, bounds.second};
-            }
-        } else if (op->call_type == Call::Halide) {
-            return {-std::numeric_limits<float>::infinity(),
-                     std::numeric_limits<float>::infinity()};
-        }
-    } else if (expr.get()->node_type == IRNodeType::Let) {
-        //const Let *op = expr.as<Let>();
-        internal_error << "Let\n";
-    } else if (expr.get()->node_type == IRNodeType::Div) {
-        // TODO(mgharbi): handle non-positive case
-        const Div *op = expr.as<Div>();
-        const std::pair<Expr, Expr> a_bounds =
-            get_min_max_bounds(op->a, current_args, current_bounds, index, scope);
-        const std::pair<Expr, Expr> b_bounds =
-            get_min_max_bounds(op->b, current_args, current_bounds, index, scope);
-        return {a_bounds.first/b_bounds.second, a_bounds.second/b_bounds.first};
-        // internal_error << "Div\n";
-    }
-
-    internal_error << "Can't infer bounds, Expr type not handled\n";
-    return std::pair<Expr, Expr>();
-}
-
-std::pair<Expr, Expr> merge_bounds(const std::pair<Expr, Expr> &bounds0,
-                                   const std::pair<Expr, Expr> &bounds1) {
-    return {simplify(min(bounds0.first, bounds1.first)),
-            simplify(max(bounds0.second, bounds1.second))};
-};
-
 Expr add_let_expression(const Expr &expr,
                         const std::map<std::string, Expr> &let_var_mapping,
                         const std::vector<std::string> &let_variables) {
@@ -347,160 +228,59 @@ std::vector<Expr> sort_expressions(const Expr &expr) {
 	return sorter.sort(expr);
 }
 
-
-/**
- *  Visit function calls and determine their bounds.
- *  So when we do f(x, y) = ... we know what the loop bounds are
- */
-class BoundsInferencer : public IRVisitor {
-public:
-    using IRVisitor::visit;
-
-    void inference(const Func &func,
-                   const std::vector<std::pair<Expr, Expr>> &output_bounds);
-    void internal_inference(const Func &func);
-
-    void visit(const Call *op);
-    void visit(const Let *op);
-
-    std::map<FuncKey, RDom> get_func_bounds() const {
-        std::map<FuncKey, RDom> ret;
-        // Convert to an Rdom
-        for(auto b: func_bounds) { 
-            // debug(0) << "Computed bounds for " << b.first.first << "[" << b.first.second << "]" << ":\n";
-            FuncBounds min_extent_bounds;
-            min_extent_bounds.reserve(b.second.size());
-            for (int i = 0; i < (int)b.second.size(); ++i) {
-                Expr lower_bound = simplify(b.second[i].first);
-                Expr extent = simplify(b.second[i].second - lower_bound+1);
-                min_extent_bounds.push_back(std::make_pair(lower_bound, extent));
-                // debug(0) << "  arg" << i << " ("  << lower_bound << ", " << extent << ")\n";
+std::map<std::string, Box> inference_bounds(const Func &func,
+                                            const FuncBounds &output_bounds) {
+    Scope<Interval> scope;
+    std::map<std::string, Function> env = find_transitive_calls(func.function());
+    for (const auto &it : env) {
+        Func func = Func(it.second);
+        for (int i = 0; i < func.num_update_definitions(); i++) {
+            std::map<std::string, std::pair<Expr, Expr>> rvars = gather_rvariables(func.update_value(i));
+            for (const auto &it : rvars) {
+                scope.push(it.first, Interval(it.second.first, it.second.first + it.second.second - 1));
             }
-            ret[b.first] = RDom(min_extent_bounds);
         }
-        return ret;
     }
+    std::vector<std::string> order = realization_order({func.function()}, env);
 
-    void update_func_bound();
-
-private:
-    int recursion_depth;
-    std::map<FuncKey, FuncBounds> func_bounds;
-    FuncKey current_func_key;
-    std::vector<Var> current_args;
-    RDom current_bounds;
-    Scope<Expr> scope;
-};
-
-void BoundsInferencer::inference(const Func &func,
-                                 const FuncBounds &output_bounds) {
-    // Initialization
-    func_bounds.clear();
-    recursion_depth = 0;
-    current_func_key = FuncKey{"", -1};
-    current_args.clear();
-    current_bounds = RDom();
-
-    // Bounds of the output is the bounds of the buffer
-    func_bounds[FuncKey{func.name(), func.num_update_definitions() - 1}] =
-        output_bounds;
-
-    internal_inference(func);
-}
-
-void BoundsInferencer::internal_inference(const Func &func) {
-    FuncKey previous_func_key = current_func_key;
-    RDom previous_bounds = current_bounds;
-    std::vector<Var> previous_args = current_args;
-
-    // Traverse from the last update to first
-    for (int update_id = func.num_update_definitions() - 1; update_id >= -1; update_id--) {
-        current_func_key = FuncKey{func.name(), update_id};
-        current_bounds = RDom(func_bounds[current_func_key]);
-        current_args = func.args();
-        if (update_id >= 0) {
-            func.update_value(update_id).accept(this);
-        } else {
-            func.value().accept(this);
+    std::map<std::string, Box> bounds;
+    std::vector<Interval> output_bounds_interval;
+    for (const auto &b : output_bounds) {
+        output_bounds_interval.push_back(Interval(b.first, b.second));
+    }
+    Box output_bounds_box(output_bounds_interval);
+    bounds[func.name()] = output_bounds_box;
+    for (auto it = order.rbegin(); it != order.rend(); it++) {
+        Func func = Func(env[*it]);
+        const Box &current_bounds = bounds[*it];
+        for (int i = 0; i < (int)current_bounds.size(); i++) {
+            scope.push(func.args()[i].name(), current_bounds[i]);
         }
-
-        if (update_id >= 0) {
-            // Update function bounds for next update
-            FuncBounds bounds = func_bounds[current_func_key];
-            FuncKey next_key{func.name(), current_func_key.second - 1};
-            if (func_bounds.find(next_key) != func_bounds.end()) {
-                FuncBounds next_bounds = func_bounds[next_key];
-                assert(bounds.size() == next_bounds.size());
-                for (int i = 0; i < (int)bounds.size(); i++) {
-                    bounds[i] = merge_bounds(bounds[i], next_bounds[i]);
+        for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
+            std::map<std::string, Box> update_bounds =
+                boxes_required(update_id == -1 ? func.value() : func.update_value(update_id), scope);
+            for (const auto &it : update_bounds) {
+                auto found = bounds.find(it.first);
+                if (found == bounds.end()) {
+                    bounds[it.first] = it.second;
+                } else {
+                    Box new_box = box_union(found->second, it.second);
+                    bounds[it.first] = new_box;
                 }
             }
-            func_bounds[next_key] = bounds;
+        }
+        for (int i = 0; i < (int)current_bounds.size(); i++) {
+            scope.pop(func.args()[i].name());
         }
     }
-
-    current_func_key = previous_func_key;
-    current_args = previous_args;
-    current_bounds = previous_bounds;
-}
-
-void BoundsInferencer::visit(const Call *op) {
-    if (op->call_type == Call::Halide) {
-        Func func(Function(op->func));
-        // Avoid implicit functions
-        // TODO: FIX THIS
-        if (func.args().size() > 0 && func.args()[0].is_implicit()) {
-            return;
-        }
-
-        FuncBounds arg_bounds;
-        arg_bounds.reserve(op->args.size());
-        for (int i = 0; i < (int)op->args.size(); i++) {
-            std::pair<Expr, Expr> min_max_bounds =
-                get_min_max_bounds(op->args[i], current_args, current_bounds, i, scope);
-            arg_bounds.push_back(min_max_bounds);
-        }
-
-        // Update function bounds
-        FuncKey key = current_func_key.first == func.name() ?
-            FuncKey{func.name(), current_func_key.second - 1} :
-            FuncKey{func.name(), func.num_update_definitions() - 1};
-
-        if (func_bounds.find(key) != func_bounds.end()) {
-            FuncBounds prev_bounds = func_bounds[key];
-            assert(arg_bounds.size() == prev_bounds.size());
-            for (int i = 0; i < (int)arg_bounds.size(); i++) {
-                arg_bounds[i] = merge_bounds(prev_bounds[i], arg_bounds[i]);
-            }
-        }
-
-        func_bounds[key] = arg_bounds;
-
-        // Don't recurse if the target is the same function
-        if (current_func_key.first != func.name()) {
-            recursion_depth += 1;
-            internal_inference(func);
-            recursion_depth -= 1;
+    for (auto &it : bounds) {
+        auto &bound = it.second;
+        for (int i = 0; i < (int)bound.size(); i++) {
+            bound[i].min = simplify(bound[i].min);
+            bound[i].max = simplify(bound[i].max);
         }
     }
-
-    for (size_t i = 0; i < op->args.size(); i++) {
-        op->args[i].accept(this);
-    }
-}
-
-void BoundsInferencer::visit(const Let *op) {
-    op->value.accept(this);
-    scope.push(op->name, op->value);
-    op->body.accept(this);
-    scope.pop(op->name);
-}
-
-std::map<FuncKey, RDom> inference_bounds(const Func &func,
-                                         const FuncBounds &output_bounds) {
-	BoundsInferencer inferencer;
-	inferencer.inference(func, output_bounds);
-	return inferencer.get_func_bounds();
+    return bounds;
 }
 
 std::vector<std::pair<Expr, Expr>> rdom_to_vector(const RDom &bounds) {
@@ -508,6 +288,15 @@ std::vector<std::pair<Expr, Expr>> rdom_to_vector(const RDom &bounds) {
     ret.reserve(bounds.domain().domain().size());
     for (const auto &rvar : bounds.domain().domain()) {
         ret.push_back({rvar.min, rvar.extent});
+    }
+    return ret;
+}
+
+std::vector<std::pair<Expr, Expr>> box_to_vector(const Box &bounds) {
+    std::vector<std::pair<Expr, Expr>> ret;
+    ret.reserve(bounds.size());
+    for (const auto &b : bounds.bounds) {
+        ret.push_back({b.min, b.max - b.min + 1});
     }
     return ret;
 }
