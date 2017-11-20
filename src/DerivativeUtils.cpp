@@ -176,6 +176,7 @@ public:
     void visit(const Call *op);
     void visit(const Let *op);
     void visit(const Variable *op);
+    void visit(const Select *op);
 protected:
     void include(const Expr &e);
 private:
@@ -206,6 +207,12 @@ void ExpressionSorter::visit(const Let *op) {
     let_var_mapping[op->name] = op->value;
 
     include(op->body);
+}
+
+void ExpressionSorter::visit(const Select *op) {
+    // Ignore the condition since the derivative is zero
+    include(op->true_value);
+    include(op->false_value);
 }
 
 void ExpressionSorter::visit(const Variable *op) {

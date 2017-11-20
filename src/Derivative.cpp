@@ -45,13 +45,14 @@ protected:
     void visit(const Div *op);
     void visit(const Min *op);
     void visit(const Max *op);
-    void visit(const Call *op);
     void visit(const Let *op);
+    void visit(const Select *op);
+    void visit(const Call *op);
 
 private:
     void accumulate(const Expr &stub, const Expr &adjoint);
 
-    std::map<const BaseExprNode *, Expr> accumulated_adjoints;
+    std::map<const BaseExprNode *, Expr> expr_adjoints;
     std::map<FuncKey, Func> adjoint_funcs;
     std::map<FuncKey, RDom> reductions;
     std::map<std::string, Expr> let_var_mapping;
@@ -84,10 +85,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
         funcs.push_back(Func(env[func_name]));
     }
 
-    if (funcs.size() == 0) {
-        debug(0) << "ReverseAccumulationVisitor: no functions to backpropagate to.\n";
-        return;
-    }
+    internal_assert(funcs.size() > 0);
 
     debug(0) << "ReverseAccumulationVisitor: infering bounds...";
     func_bounds = inference_bounds(output, output_bounds);
@@ -110,7 +108,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
         }
     }
 
-    // Traverse functions from back to front
+    // Traverse functions from back to front for reverse accumulation
     for (int func_id = funcs.size() - 1; func_id >=  0; func_id--) {
         const Func &func = funcs[func_id];
         current_func = func;
@@ -124,7 +122,6 @@ void ReverseAccumulationVisitor::propagate_adjoints(
 
             // Set up boundary condition
             const Box &bounds = func_bounds[func.name()];
-            FuncKey prev_func_key{func.name(), update_id + 1};
             // Apply boundary condition if this is the first visit
             if (update_id == func.num_update_definitions() - 1) {
                 Func adjoint_func = adjoint_funcs[func_key];
@@ -132,27 +129,21 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                     adjoint_func, 0.f, box_to_vector(bounds));
                 // Give it a better name
                 Func tmp(func.name() + "_" + std::to_string(update_id + 1) + "_d__");
-                // XXX: should compute_root here?
                 tmp(adjoint_func.args()) = adjoint_func(adjoint_func.args());
                 adjoint_funcs[func_key] = tmp;
             }
 
-            // TODO: write a better comment
+            // Propagate the adjoints to next update
+            // Example:
             // f(x) = ...
             // f(1) = ...
             // Need to propagate back to all x while masking 1
-            // Propagate adjoints to next update
             if (update_id >= 0) {
                 FuncKey next_func_key{func.name(), update_id - 1};
                 Func next_adjoint_func = adjoint_funcs[next_func_key];
+                // TODO: create new functions if left hand side is pure
                 next_adjoint_func(next_adjoint_func.args()) =
                     adjoint_funcs[func_key](next_adjoint_func.args());
-            }
-
-            // Mask next update
-            if (update_id >= 0) {
-                FuncKey next_func_key{func.name(), update_id - 1};
-                Func next_adjoint_func = adjoint_funcs[next_func_key];
                 next_adjoint_func(func.update_args(update_id)) = 0.f;
             }
 
@@ -161,7 +152,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 update_id >= 0 ? sort_expressions(func.update_value(update_id)) :
                                  sort_expressions(func.value());
 
-            // TODO: replace let_var_mapping to Scope
+            // TODO: replace let_var_mapping with Scope
             // Gather let variables
             let_var_mapping.clear();
             let_variables.clear();
@@ -174,13 +165,18 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 }
             }
 
-            // Retrieve previously propagated adjoint
-            std::vector<Expr> args;
-            for (const auto &arg : func.args()) {
-                args.push_back(arg);
+            // Retrieve previously propagated adjoint for the Func, apply it to expression adjoints
+            std::vector<Expr> update_args;
+            if (update_id >= 0) {
+                update_args = func.update_args(update_id);
+            } else {
+                update_args.reserve(func.args().size());
+                for (const auto &var : func.args()) {
+                    update_args.push_back(var);
+                }
             }
-            accumulated_adjoints[(const BaseExprNode *)expr_list.back().get()] =
-                Call::make(adjoint_funcs[func_key].function(), args);
+            expr_adjoints[(const BaseExprNode *)expr_list.back().get()] =
+                Call::make(adjoint_funcs[func_key].function(), update_args);
 
             // Traverse the expressions in reverse order
             for (auto it = expr_list.rbegin(); it != expr_list.rend(); it++) {
@@ -193,26 +189,24 @@ void ReverseAccumulationVisitor::propagate_adjoints(
 
 void ReverseAccumulationVisitor::accumulate(const Expr &stub, const Expr &adjoint) {
     const BaseExprNode *stub_ptr = (const BaseExprNode *)stub.get();
-    if (accumulated_adjoints.find(stub_ptr) == accumulated_adjoints.end()) {
-        accumulated_adjoints[stub_ptr] = adjoint;
+    if (expr_adjoints.find(stub_ptr) == expr_adjoints.end()) {
+        expr_adjoints[stub_ptr] = adjoint;
     } else {
-        accumulated_adjoints[stub_ptr] += adjoint;
+        expr_adjoints[stub_ptr] += adjoint;
     }
 }
 
 void ReverseAccumulationVisitor::visit(const Cast *op) {
-    // debug(0) << "visit cast: " << accumulated_adjoints.size() << "\n";
-    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
-    Expr adjoint = accumulated_adjoints[op];
+    assert(expr_adjoints.find(op) != expr_adjoints.end());
+    Expr adjoint = expr_adjoints[op];
 
     // d/dx cast(x) = 1
     accumulate(op->value, adjoint);
 }
 
 void ReverseAccumulationVisitor::visit(const Variable *op) {
-    // debug(0) << "visit variable: " << accumulated_adjoints.size() << "\n";
-    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
-    Expr adjoint = accumulated_adjoints[op];
+    assert(expr_adjoints.find(op) != expr_adjoints.end());
+    Expr adjoint = expr_adjoints[op];
 
     auto it = let_var_mapping.find(op->name);
     if (it != let_var_mapping.end()) {
@@ -221,9 +215,8 @@ void ReverseAccumulationVisitor::visit(const Variable *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Add *op) {
-    // debug(0) << "visit add: " << accumulated_adjoints.size() << "\n";
-    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
-    Expr adjoint = accumulated_adjoints[op];
+    assert(expr_adjoints.find(op) != expr_adjoints.end());
+    Expr adjoint = expr_adjoints[op];
 
     // d/da a + b = 1
     accumulate(op->a, adjoint);
@@ -232,9 +225,8 @@ void ReverseAccumulationVisitor::visit(const Add *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Sub *op) {
-    // debug(0) << "visit sub: " << accumulated_adjoints.size() << "\n";
-    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
-    Expr adjoint = accumulated_adjoints[op];
+    assert(expr_adjoints.find(op) != expr_adjoints.end());
+    Expr adjoint = expr_adjoints[op];
 
     // d/da a - b = 1
     accumulate(op->a, adjoint);
@@ -243,9 +235,8 @@ void ReverseAccumulationVisitor::visit(const Sub *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Mul *op) {
-    // debug(0) << "visit mul: " << accumulated_adjoints.size() << "\n";
-    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
-    Expr adjoint = accumulated_adjoints[op];
+    assert(expr_adjoints.find(op) != expr_adjoints.end());
+    Expr adjoint = expr_adjoints[op];
 
     // d/da a * b = b
     accumulate(op->a, adjoint * op->b);
@@ -254,9 +245,8 @@ void ReverseAccumulationVisitor::visit(const Mul *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Div *op) {
-    // debug(0) << "visit div: " << accumulated_adjoints.size() << "\n";
-    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
-    Expr adjoint = accumulated_adjoints[op];
+    assert(expr_adjoints.find(op) != expr_adjoints.end());
+    Expr adjoint = expr_adjoints[op];
 
     // d/da a / b = 1 / b
     accumulate(op->a, adjoint / op->b);
@@ -265,9 +255,8 @@ void ReverseAccumulationVisitor::visit(const Div *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Min *op) {
-    // debug(0) << "visit min: " << accumulated_adjoints.size() << "\n";
-    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
-    Expr adjoint = accumulated_adjoints[op];
+    assert(expr_adjoints.find(op) != expr_adjoints.end());
+    Expr adjoint = expr_adjoints[op];
 
     // d/da min(a, b) = a <= b ? 1 : 0
     accumulate(op->a, select(op->a <= op->b, adjoint, 0.f));
@@ -276,9 +265,8 @@ void ReverseAccumulationVisitor::visit(const Min *op) {
 }
 
 void ReverseAccumulationVisitor::visit(const Max *op) {
-    // debug(0) << "visit max: " << accumulated_adjoints.size() << "\n";
-    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
-    Expr adjoint = accumulated_adjoints[op];
+    assert(expr_adjoints.find(op) != expr_adjoints.end());
+    Expr adjoint = expr_adjoints[op];
 
     // d/da max(a, b) = a >= b ? 1 : 0
     accumulate(op->a, select(op->a >= op->b, adjoint, 0.f));
@@ -286,10 +274,27 @@ void ReverseAccumulationVisitor::visit(const Max *op) {
     accumulate(op->b, select(op->b >= op->a, adjoint, 0.f));
 }
 
+void ReverseAccumulationVisitor::visit(const Let *op) {
+    assert(expr_adjoints.find(op) != expr_adjoints.end());
+    Expr adjoint = expr_adjoints[op];
+
+    accumulate(op->body, adjoint);
+}
+
+void ReverseAccumulationVisitor::visit(const Select *op) {
+    assert(expr_adjoints.find(op) != expr_adjoints.end());
+    Expr adjoint = expr_adjoints[op];
+
+    // d/db select(a, b, c) = select(a, 1, 0)
+    accumulate(op->true_value, select(op->condition, adjoint, 0.f));
+    // d/dc select(a, b, c) = select(a, 0, 1)
+    accumulate(op->false_value, select(op->condition, 0.f, adjoint));
+}
+
 void ReverseAccumulationVisitor::visit(const Call *op) {
-    // debug(0) << "visit call " << op->name << " " << accumulated_adjoints.size() << "\n";
-    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
-    Expr adjoint = accumulated_adjoints[op];
+    assert(expr_adjoints.find(op) != expr_adjoints.end());
+    Expr adjoint = expr_adjoints[op];
+    // Math functions
     if (op->name == "exp_f32") {
         // d/dx exp(x) = exp(x)
         for (size_t i = 0; i < op->args.size(); i++) {
@@ -297,20 +302,18 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
     } else if (op->name == "ceil_f32") {
         // TODO: d/dx = dirac(n) for n in Z ...
-        // debug(0) << "ceil\n";
         for (size_t i = 0; i < op->args.size(); i++) {
             accumulate(op->args[i], 0.0f);
         }
     } else if (op->name == "floor_f32") {
         // TODO: d/dx = dirac(n) for n in Z ...
-        // debug(0) << "floor\n";
         for (size_t i = 0; i < op->args.size(); i++) {
             accumulate(op->args[i], 0.0f);
         }
     }
 
+    // Halide function call
     if (op->func.defined()) {
-        // This is a Halide function call
         Function func(op->func);
         // Avoid implicit functions
         // TODO: FIX THIS
@@ -336,7 +339,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         debug(0) << "\n";
         debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
 
-        // If referring to the current function itself, send to previous update
+        // If target is the current function itself, send to previous update
         FuncKey func_key = func.name() != current_func.name() ?
                            FuncKey{func.name(), func.updates().size() - 1} :
                            FuncKey{func.name(), current_update_id - 1};
@@ -358,18 +361,11 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
         // We want to do this:
         // func_to_update(op->args) += adjoint(current_update_args);
-        // But 1. the pure variables inside adjoint should be replaced by current_update_args
-        //     2. op->args can be invalid lhs, need to canonicalize
-        //        we canonicalize by first try to subsitute with pure variables
-        //        if that fails we will replace variables on lhs with RDoms
+        // But op->args can be invalid lhs, need to canonicalize
+        // we canonicalize by first try to subsitute with pure variables
+        // if that fails we will replace variables on lhs with RDoms
 
-        // Perform 1. here
-        for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
-            adjoint = substitute(current_args[arg_id].name(),
-                                current_update_args[arg_id], adjoint);
-        }
-
-        // Then we try to do the canonicalization
+        // Try to do the canonicalization
         // Create a set of new substitution variables
         std::vector<Var> new_args;
         std::set<std::string> new_args_set;
@@ -468,8 +464,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             lhs[i] = func_to_update.args()[i];
             canonicalized[i] = true;
         }
-
-        // TODO: shouldn't subsitute if even one canocanlized is false
 
         // Sometimes the canonicalization above doesn't work.
         // We replace the pure variables inside lhs with RDoms for general scattering
@@ -575,14 +569,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
         print_func(func_to_update);
     }
-}
-
-void ReverseAccumulationVisitor::visit(const Let *op) {
-    // debug(0) << "visit let: " << accumulated_adjoints.size() << "\n";
-    assert(accumulated_adjoints.find(op) != accumulated_adjoints.end());
-    Expr adjoint = accumulated_adjoints[op];
-
-    accumulate(op->body, adjoint);
 }
 
 } // namespace Internal
@@ -1199,6 +1185,36 @@ void test_repeat_edge() {
 #undef CMP
 }
 
+void test_second_order() {
+    Var x("x");
+    float input_data[] = {1.f};
+    Buffer<float> input(input_data, 1, "input");
+    Func f_input("f_input");
+    f_input(x) = input(x);
+    Func polynomial("polynomial");
+    // x^2 + 3x + 4.f
+    polynomial(x) = f_input(x) * f_input(x) + 3.f * f_input(x) + 4.f;
+    Derivative d = propagate_adjoints(polynomial);
+    Func d_input = d.adjoints[FuncKey{f_input.name(), -1}];
+    Derivative d2 = propagate_adjoints(d_input);
+    Func d2_input = d2.adjoints[FuncKey{f_input.name(), -1}];
+
+    Buffer<float> buf = d_input.realize(1);
+    Buffer<float> buf2 = d2_input.realize(1);
+
+    const float eps = 1e-6;
+#define CMP(x, target) \
+    internal_assert(fabs((x) - (target)) < eps) << \
+        "Expected " << (target) << " instead of " << (x) << "\n";
+
+    // d/dx = 2x + 3
+    CMP(buf(0), 5.f);
+
+    // d^2/dx^2 = 2
+    CMP(buf2(0), 2.f);
+#undef CMP
+}
+
 void derivative_test() {
     test_simple_bounds_inference();
     test_simple_bounds_inference_update();
@@ -1213,6 +1229,7 @@ void derivative_test() {
     test_sparse_update();
     test_rdom_update();
     test_repeat_edge();
+    test_second_order();
     debug(0) << "Derivative test passed\n";
 }
 
