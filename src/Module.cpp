@@ -5,6 +5,7 @@
 #include <future>
 
 #include "CodeGen_C.h"
+#include "CodeGen_PyTorch.h"
 #include "CodeGen_Internal.h"
 #include "Debug.h"
 #include "HexagonOffload.h"
@@ -423,6 +424,12 @@ void Module::compile(const Outputs &output_files_arg) const {
         } else {
            file << contents->auto_schedule;
         }
+    }
+    if (!output_files.pytorch_wrapper_name.empty()) {
+      std::cerr << "Module.compile(): pytorch_wrapper_name " << output_files.pytorch_wrapper_name << "\n" ;
+      std::ofstream file(output_files.pytorch_wrapper_name);
+      Internal::CodeGen_PyTorch cg(file, target());
+      cg.compile(*this);
     }
 }
 
