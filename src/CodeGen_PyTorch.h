@@ -21,7 +21,14 @@ namespace Internal {
  */
 class CodeGen_PyTorch : public IRPrinter{
 public:
-    CodeGen_PyTorch(std::ostream &dest, Target target);
+    enum OutputKind {
+        PyTorchHeader,
+        PyTorchImplementation,
+    };
+
+    CodeGen_PyTorch(
+        std::ostream &dest, Target target,
+        OutputKind output_kind);
     ~CodeGen_PyTorch();
 
     /** Emit the declarations contained in the module as C code. */
@@ -33,9 +40,19 @@ public:
     // EXPORT static void test();
 
 protected:
+    virtual void compile(const LoweredFunc &func);
+    virtual std::string print_name(const std::string &);
 
     /** The target being generated for. */
     Target target;
+
+    /** Controls whether this instance is generating declarations or
+     * definitions. */
+    OutputKind output_kind;
+
+    bool is_header() {
+        return output_kind == PyTorchHeader;
+    }
 
 };
 

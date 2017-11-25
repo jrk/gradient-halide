@@ -427,9 +427,13 @@ void Module::compile(const Outputs &output_files_arg) const {
     }
     if (!output_files.pytorch_wrapper_name.empty()) {
       std::cerr << "Module.compile(): pytorch_wrapper_name " << output_files.pytorch_wrapper_name << "\n" ;
-      std::ofstream file(output_files.pytorch_wrapper_name);
-      Internal::CodeGen_PyTorch cg(file, target());
+      std::ofstream file(output_files.pytorch_wrapper_name+".cpp");
+      Internal::CodeGen_PyTorch cg(file, target(), Internal::CodeGen_PyTorch::PyTorchImplementation);
       cg.compile(*this);
+
+      std::ofstream file_header(output_files.pytorch_wrapper_name+".h");
+      Internal::CodeGen_PyTorch cg_header(file_header, target(), Internal::CodeGen_PyTorch::PyTorchHeader);
+      cg_header.compile(*this);
     }
 }
 
