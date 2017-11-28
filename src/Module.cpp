@@ -428,11 +428,15 @@ void Module::compile(const Outputs &output_files_arg) const {
     if (!output_files.pytorch_wrapper_name.empty()) {
       std::cerr << "Module.compile(): pytorch_wrapper_name " << output_files.pytorch_wrapper_name << "\n" ;
       std::ofstream file(output_files.pytorch_wrapper_name+".cpp");
-      Internal::CodeGen_PyTorch cg(file, target(), Internal::CodeGen_PyTorch::PyTorchImplementation);
+      Internal::CodeGen_PyTorch cg(
+          file, target(), Internal::CodeGen_PyTorch::PyTorchImplementation,
+          output_files.c_header_name);
       cg.compile(*this);
 
       std::ofstream file_header(output_files.pytorch_wrapper_name+".h");
-      Internal::CodeGen_PyTorch cg_header(file_header, target(), Internal::CodeGen_PyTorch::PyTorchHeader);
+      Internal::CodeGen_PyTorch cg_header(
+          file_header, target(), Internal::CodeGen_PyTorch::PyTorchHeader,
+          output_files.c_header_name);
       cg_header.compile(*this);
     }
 }
@@ -619,6 +623,7 @@ void compile_multitarget(const std::string &fn_name,
         wrapper_module.append(LoweredFunc(fn_name, base_target_args, wrapper_body, LoweredFunc::ExternalPlusMetadata));
 
         // Add a wrapper to accept old buffer_ts
+        std::cerr << "needs wrapper: adding old buffer t wrapper\n";
         add_legacy_wrapper(wrapper_module, wrapper_module.functions().back());
 
         Outputs wrapper_out = Outputs().object(
@@ -633,6 +638,7 @@ void compile_multitarget(const std::string &fn_name,
         Module header_module(fn_name, base_target);
         header_module.append(LoweredFunc(fn_name, base_target_args, {}, LoweredFunc::ExternalPlusMetadata));
         // Add a wrapper to accept old buffer_ts
+        std::cerr << "c header: adding old buffer t wrapper\n";
         add_legacy_wrapper(header_module, header_module.functions().back());
         Outputs header_out = Outputs().c_header(output_files.c_header_name);
         futures.emplace_back(pool.async([](Module m, Outputs o) {

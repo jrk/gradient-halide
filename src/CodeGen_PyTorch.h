@@ -28,7 +28,7 @@ public:
 
     CodeGen_PyTorch(
         std::ostream &dest, Target target,
-        OutputKind output_kind);
+        OutputKind output_kind, std::string name);
     ~CodeGen_PyTorch();
 
     /** Emit the declarations contained in the module as C code. */
@@ -49,6 +49,9 @@ protected:
     /** Controls whether this instance is generating declarations or
      * definitions. */
     OutputKind output_kind;
+
+    std::string cpp_header;
+
 
     bool is_header() {
         return output_kind == PyTorchHeader;

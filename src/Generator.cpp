@@ -97,7 +97,7 @@ Outputs compute_outputs(const Target &target,
         output_files.schedule_name = base_path + get_extension(".schedule", options);
     }
     if (options.emit_pytorch_wrapper) {
-        output_files.pytorch_wrapper_name = base_path + get_extension("_pytorch", options);
+        output_files.pytorch_wrapper_name = base_path + get_extension(".pytorch", options);
     }
     return output_files;
 }
