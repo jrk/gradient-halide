@@ -469,6 +469,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // We replace the pure variables inside lhs with RDoms for general scattering
         // First find the corresponding current argument to obtain the bound
         std::vector<std::pair<Expr, Expr>> bounds;
+        bounds.reserve(current_args.size());
         for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
             bounds.push_back({current_bounds[arg_id].min,
                               current_bounds[arg_id].max - current_bounds[arg_id].min + 1});
@@ -495,6 +496,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // First gather all free variables
         FuncBounds bounds_subset;
         std::vector<int> arg_id_to_substitute;
+        bounds_subset.reserve(current_args.size());
+        arg_id_to_substitute.reserve(current_args.size());
         for (int i = 0; i < (int)current_args.size(); i++) {
             if (has_variable(adjoint, current_args[i].name())) {
                 const Interval &interval = current_bounds[i];
