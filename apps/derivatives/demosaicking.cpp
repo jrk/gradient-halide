@@ -9,15 +9,23 @@ using Halide::BoundaryConditions::repeat_edge;
 
 int main(int argc, char **argv) {
     Var x("x"), y("y");
-    Buffer<uint8_t> input = Halide::Tools::load_image("images/gray.png");
+    Buffer<uint8_t> input = Halide::Tools::load_image("images/signs-small.png");
     std::cout << "Loaded image with size " << input.width() << "x" << input.height() << std::endl;
-
-    // Func clamped("clamped");
-    // clamped(x,y) = repeat_edge(input)(x, y);
 
     Func input_float("input_float");
     input_float(x, y) = Halide::cast<float>(input(x, y))/255.0f;
 
+    Func clamped("clamped");
+    clamped(x, y) = repeat_edge(input)(x, y);
+
+    Func weight_param("weight_param");
+
+    Func even_row_g("even_row_g");
+    even_row_g(x, y) = clamped(2 * x, 2 * y);
+    Func even_row_r("even_row_r");
+    even_row_r(x, y) = clamped(2 * x + 1, 2 * y);
+    Func even_row_interpolated_g("even_row_interpolated_g");
+    even_row_g(x, y) =  
 
     Func blur_x("blur_x");
     blur_x(x, y) = (input_float(x, y) + input_float(x+1, y) + input_float(x+2, y))/3.0f;

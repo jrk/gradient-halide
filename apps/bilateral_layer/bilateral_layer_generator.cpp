@@ -64,7 +64,6 @@ public:
         f_output(x, y, co, n) = f_conv(x, y, fz, co, n) * (1.f - wz) +
                                 f_conv(x, y, cz, co, n) * wz;
 
-        RDom r_output(adjoint);
         Derivative d = propagate_adjoints(f_output, adjoint,
                                           {{adjoint.dim(0).min(), adjoint.dim(0).max()},
                                            {adjoint.dim(1).min(), adjoint.dim(1).max()},

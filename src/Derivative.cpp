@@ -725,6 +725,25 @@ void test_simple_bounds_inference_update() {
         << "Expected 2 instead of " << bounds[input.name()][0].max << "\n" ;
 }
 
+void test_scalar() {
+    Func x("x");
+    x() = 5.f;
+    Func y("y");
+    y() = x() * x() + 2.f * x() + 5.f;
+    Derivative d = propagate_adjoints(y);
+    std::map<FuncKey, Func> adjoints = d.adjoints;
+
+    Buffer<float> dydx = adjoints[FuncKey{x.name(), -1}].realize();
+    const float eps = 1e-6;
+#define CMP(x, target) \
+    internal_assert(fabs((x) - (target)) < eps) << \
+        "Expected " << (target) << " instead of " << (x) << "\n";
+
+    // dydx = 2x + 2 = 12
+    CMP(dydx(0), 12.f);
+#undef CMP
+}
+
 void test_simple_1d_blur() {
     Var x("x");
     float input_data[] = {1.f, 2.f};
@@ -736,8 +755,8 @@ void test_simple_1d_blur() {
     blur(x) = clamped(x) + clamped(x + 1);
     RDom r(0, 2);
     Func f_loss("f_loss");
-    f_loss(x) = 0.f;
-    f_loss(x) += blur(r.x) * blur(r.x);
+    f_loss() = 0.f;
+    f_loss() += blur(r.x) * blur(r.x);
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
@@ -768,8 +787,8 @@ void test_simple_1d_blur_no_clamp() {
     blur(x) = f_input(x) + f_input(x + 1);
     RDom r(0, 1);
     Func f_loss("f_loss");
-    f_loss(x) = 0.f;
-    f_loss(x) += blur(r.x) * blur(r.x);
+    f_loss() = 0.f;
+    f_loss() += blur(r.x) * blur(r.x);
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
@@ -809,8 +828,8 @@ void test_simple_2d_blur() {
 
     RDom r(0, 5, 0, 5);
     Func f_loss("f_loss");
-    f_loss(x) = 0.f;
-    f_loss(x) += blur_y(r.x, r.y) * blur_y(r.x, r.y);
+    f_loss() = 0.f;
+    f_loss() += blur_y(r.x, r.y) * blur_y(r.x, r.y);
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
@@ -875,8 +894,8 @@ void test_update() {
     blur(x) += clamped(x + 1);
     RDom r(0, 2);
     Func f_loss("f_loss");
-    f_loss(x) = 0.f;
-    f_loss(x) += blur(r.x) * blur(r.x);
+    f_loss() = 0.f;
+    f_loss() += blur(r.x) * blur(r.x);
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
@@ -914,8 +933,8 @@ void test_rdom_conv() {
     convolved(x) += clamped(x + support.x) * kernel_func(support.x);
     RDom r(0, 4);
     Func f_loss("f_loss");
-    f_loss(x) = 0.f;
-    f_loss(x) += convolved(r.x) * convolved(r.x);
+    f_loss() = 0.f;
+    f_loss() += convolved(r.x) * convolved(r.x);
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
     Buffer<float> convolved_buf = convolved.realize(4);
@@ -961,8 +980,8 @@ void test_1d_to_2d() {
 
     RDom r(0, 2, 0, 2);
     Func f_loss("f_loss");
-    f_loss(x) = 0.f;
-    f_loss(x) += f_output(r.x, r.y) * f_output(r.x, r.y);
+    f_loss() = 0.f;
+    f_loss() += f_output(r.x, r.y) * f_output(r.x, r.y);
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
@@ -1009,8 +1028,8 @@ void test_linear_interpolation() {
 
     RDom r(0, 2);
     Func f_loss("f_loss");
-    f_loss(x) = 0.f;
-    f_loss(x) += f_interpolate(r.x);
+    f_loss() = 0.f;
+    f_loss() += f_interpolate(r.x);
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
@@ -1069,8 +1088,8 @@ void test_linear_interpolation_2d() {
 
     RDom r(0, 2, 0, 1);
     Func f_loss("f_loss");
-    f_loss(x) = 0.f;
-    f_loss(x) += f_interpolate(r.x, r.y);
+    f_loss() = 0.f;
+    f_loss() += f_interpolate(r.x, r.y);
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
@@ -1108,8 +1127,8 @@ void test_sparse_update() {
 
     Func f_loss("f_loss");
     RDom r(0, 3);
-    f_loss(x) = 0.f;
-    f_loss(x) += f_output(r.x);
+    f_loss() = 0.f;
+    f_loss() += f_output(r.x);
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
@@ -1139,8 +1158,8 @@ void test_rdom_update() {
 
     Func f_loss("f_loss");
     RDom r_target(0, 5);
-    f_loss(x) = 0.f;
-    f_loss(x) += f_output(r_target);
+    f_loss() = 0.f;
+    f_loss() += f_output(r_target);
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
@@ -1167,8 +1186,8 @@ void test_repeat_edge() {
     blur(x) = clamped(x) + clamped(x + 1);
     RDom r(0, 3);
     Func f_loss("f_loss");
-    f_loss(x) = 0.f;
-    f_loss(x) += blur(r.x);
+    f_loss() = 0.f;
+    f_loss() += blur(r.x);
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
     // loss = (i0 + i1) + (i1 + i1) + (i1 + i1) = i0 + 5 * i1
@@ -1221,6 +1240,7 @@ void test_second_order() {
 void derivative_test() {
     test_simple_bounds_inference();
     test_simple_bounds_inference_update();
+    test_scalar();
     test_simple_1d_blur();
     test_simple_1d_blur_no_clamp();
     test_simple_2d_blur();
