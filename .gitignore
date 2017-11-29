@@ -88,3 +88,4 @@ src/.tags_sorted_by_file
 
 compile_commands.json
 build/
+lib
