@@ -126,18 +126,18 @@ string type_to_c_type(Type type, bool include_space, bool c_plus_plus = true) {
     return oss.str();
 }
 
-string type_to_pytorch_tensor(Type type, Target target) {
+string type_to_pytorch_tensor(Type type, bool isCuda) {
     ostringstream oss;
 
     if (type.is_float()) {
         if (type.bits() == 32) {
-          if(target.has_feature(Target::CUDA)) {
+          if(isCuda) {
             oss << "THCudaTensor";
           } else {
             oss << "THFloatTensor";
           }
         } else if (type.bits() == 64) {
-          if(target.has_feature(Target::CUDA)) {
+          if(isCuda) {
             oss << "THCudaDoubleTensor";
           } else {
             oss << "THDoubleTensor";
@@ -161,11 +161,9 @@ CodeGen_PyTorch::CodeGen_PyTorch(ostream &s, Target t, OutputKind output_kind,
     IRPrinter(s), target(t), output_kind(output_kind), cpp_header(cpp_header)
 {
   if(!is_header()) {
+    stream << "#include <TH/TH.h>\n";
     if(target.has_feature(Target::CUDA)) {
       stream << "#include <THC/THC.h>\n";
-    }
-    else {
-      stream << "#include <TH/TH.h>\n";
     }
     stream << "#include <stdio.h>\n"
               "#include <HalideBuffer.h>\n"
@@ -196,11 +194,15 @@ void CodeGen_PyTorch::compile(const Module &input) {
         debug(1) << "ignoring " << f.name;
         continue;
       }
-      compile(f);
+      if(target.has_feature(Target::CUDA)) {
+        compile(f, true);
+      } else {
+        compile(f, false);
+      }
     }
 }
 
-void CodeGen_PyTorch::compile(const LoweredFunc &f) {
+void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
   // Don't put non-external function declarations in headers.
   std::vector<std::string> namespaces;
   std::string simple_name = extract_namespaces(f.name, namespaces);
@@ -224,7 +226,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f) {
     if (args[i].is_buffer()) {
       buffer_args.push_back(args[i]);
       stream 
-        << type_to_pytorch_tensor(args[i].type, target)
+        << type_to_pytorch_tensor(args[i].type, isCuda)
         << " *"
         << print_name(args[i].name);
     } else {
@@ -249,9 +251,9 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f) {
       stream
         << print_name(buffer_args[i].name) 
         << " = "
-        << type_to_pytorch_tensor(buffer_args[i].type, target)
+        << type_to_pytorch_tensor(buffer_args[i].type, isCuda)
         << "_newContiguous(";
-      if(target.has_feature(Target::CUDA)) {
+      if(isCuda) {
         stream << "state, ";
       }
 
@@ -304,9 +306,9 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f) {
       if (buffer_args[i].is_buffer()) {
         do_indent();
         stream
-          << type_to_pytorch_tensor(buffer_args[i].type, target)
+          << type_to_pytorch_tensor(buffer_args[i].type, isCuda)
           << "_free(";
-        if(target.has_feature(Target::CUDA)) {
+        if(isCuda) {
           stream << "state, ";
         }
         stream

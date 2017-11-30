@@ -40,7 +40,7 @@ public:
     // EXPORT static void test();
 
 protected:
-    virtual void compile(const LoweredFunc &func);
+    virtual void compile(const LoweredFunc &func, bool isCuda);
     virtual std::string print_name(const std::string &);
 
     /** The target being generated for. */
