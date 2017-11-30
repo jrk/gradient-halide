@@ -662,7 +662,8 @@ RUNTIME_EXPORTED_INCLUDES = $(INCLUDE_DIR)/HalideRuntime.h \
                             $(INCLUDE_DIR)/HalideRuntimeOpenGLCompute.h \
                             $(INCLUDE_DIR)/HalideRuntimeMetal.h	\
                             $(INCLUDE_DIR)/HalideRuntimeQurt.h \
-                            $(INCLUDE_DIR)/HalideBuffer.h
+                            $(INCLUDE_DIR)/HalideBuffer.h \
+                            $(INCLUDE_DIR)/HalidePytorchHelpers.h
 
 INITIAL_MODULES = $(RUNTIME_CPP_COMPONENTS:%=$(BUILD_DIR)/initmod.%_32.o) \
                   $(RUNTIME_CPP_COMPONENTS:%=$(BUILD_DIR)/initmod.%_64.o) \
@@ -734,6 +735,11 @@ $(INCLUDE_DIR)/HalideRuntime%: $(SRC_DIR)/runtime/HalideRuntime%
 	cp $< $(INCLUDE_DIR)/
 
 $(INCLUDE_DIR)/HalideBuffer.h: $(SRC_DIR)/runtime/HalideBuffer.h
+	echo Copying $<
+	@mkdir -p $(@D)
+	cp $< $(INCLUDE_DIR)/
+
+$(INCLUDE_DIR)/HalidePytorchHelpers.h: $(SRC_DIR)/runtime/HalidePytorchHelpers.h
 	echo Copying $<
 	@mkdir -p $(@D)
 	cp $< $(INCLUDE_DIR)/
