@@ -599,7 +599,7 @@ Derivative propagate_adjoints(const Func &output) {
 }
 
 void print_func(const Func &func) {
-    // Internal::debug(0) << "Printing function:" << func.name() << "\n";
+    Internal::debug(0) << "Printing function:" << func.name() << "\n";
     // Topologically sort the functions
     std::map<std::string, Internal::Function> env =
         find_transitive_calls(func.function());
@@ -618,34 +618,34 @@ void print_func(const Func &func) {
 
     for (int i = (int)funcs.size() - 1; i >= 0; i--) {
         Func &func = funcs[i];
-        // Internal::debug(0) << "  funcs[" << i << "]: " << func.name() << "\n";
+        Internal::debug(0) << "  funcs[" << i << "]: " << func.name() << "\n";
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
             Internal::ReductionDomain rdom;
             if (update_id >= 0) {
-                // Internal::debug(0) << "    update:" << func.name() << "(" <<
-                    // Internal::simplify(func.update_args(update_id)[0]);
-                // for (int i = 1; i < (int)func.update_args(update_id).size(); i++) {
-                //     Internal::debug(0) << ", " << Internal::simplify(func.update_args()[i]);
-                // }
-                // Internal::debug(0) << ") = " << Internal::simplify(func.update_value(update_id)) << "\n";
+                Internal::debug(0) << "    update:" << func.name() << "(" <<
+                    Internal::simplify(func.update_args(update_id)[0]);
+                for (int i = 1; i < (int)func.update_args(update_id).size(); i++) {
+                    Internal::debug(0) << ", " << Internal::simplify(func.update_args()[i]);
+                }
+                Internal::debug(0) << ") = " << Internal::simplify(func.update_value(update_id)) << "\n";
                 rdom = Internal::extract_rdom(Internal::simplify(func.update_value(update_id)));
             } else {
-                // Internal::debug(0) << "    " << func.name() << "(" << func.args()[0];
-                // for (int i = 1; i < (int)func.args().size(); i++) {
-                //     Internal::debug(0) << ", " << Internal::simplify(func.args()[i]);
-                // }
-                // Internal::debug(0) << ") = " << Internal::simplify(func.value()) << "\n";
+                Internal::debug(0) << "    " << func.name() << "(" << func.args()[0];
+                for (int i = 1; i < (int)func.args().size(); i++) {
+                    Internal::debug(0) << ", " << Internal::simplify(func.args()[i]);
+                }
+                Internal::debug(0) << ") = " << Internal::simplify(func.value()) << "\n";
                 rdom = Internal::extract_rdom(Internal::simplify(func.value()));
             }
 
             if (rdom.defined()) {
-                // Internal::debug(0) << "    RDom:";
-                // for (int i = 0; i < (int)rdom.domain().size(); i++) {
-                //     Internal::debug(0) << " (" <<
-                //         Internal::simplify(rdom.domain()[i].min) << ", " <<
-                //         Internal::simplify(rdom.domain()[i].extent) << ")";
-                // }
-                // Internal::debug(0) << "\n";
+                Internal::debug(0) << "    RDom:";
+                for (int i = 0; i < (int)rdom.domain().size(); i++) {
+                    Internal::debug(0) << " (" <<
+                        Internal::simplify(rdom.domain()[i].min) << ", " <<
+                        Internal::simplify(rdom.domain()[i].extent) << ")";
+                }
+                Internal::debug(0) << "\n";
             }
         }
     }
