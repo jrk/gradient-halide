@@ -22,6 +22,7 @@ struct Derivative {
     std::map<FuncKey, RDom> reductions;
 };
 
+// Bounds are {min, max}
 Derivative propagate_adjoints(const Func &output,
                               const Func &adjoint,
                               const std::vector<std::pair<Expr, Expr>> &output_bounds);

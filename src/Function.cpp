@@ -636,7 +636,6 @@ void Function::define_update(const vector<Expr> &_args, vector<Expr> values) {
             const string &v = rvar.var;
 
             bool pure = can_parallelize_rvar(v, name(), r);
-
             Dim d = {v, ForType::Serial, DeviceAPI::None,
                      pure ? Dim::Type::PureRVar : Dim::Type::ImpureRVar};
             r.schedule().dims().push_back(d);

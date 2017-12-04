@@ -82,9 +82,11 @@ inline NO_INLINE Func func_like_to_func(const T &func_like) {
  */
 // @{
 EXPORT Func constant_exterior(const Func &source, Tuple value,
-                              const std::vector<std::pair<Expr, Expr>> &bounds);
+                              const std::vector<std::pair<Expr, Expr>> &bounds,
+                              const std::string &name = "constant_exterior");
 EXPORT Func constant_exterior(const Func &source, Expr value,
-                              const std::vector<std::pair<Expr, Expr>> &bounds);
+                              const std::vector<std::pair<Expr, Expr>> &bounds,
+                              const std::string &name = "constant_exterior");
 
 template <typename T>
 inline NO_INLINE Func constant_exterior(const T &func_like, Tuple value) {
