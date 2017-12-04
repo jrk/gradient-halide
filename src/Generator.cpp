@@ -96,6 +96,9 @@ Outputs compute_outputs(const Target &target,
     if (options.emit_schedule) {
         output_files.schedule_name = base_path + get_extension(".schedule", options);
     }
+    if (options.emit_pytorch_wrapper) {
+        output_files.pytorch_wrapper_name = base_path + get_extension(".pytorch", options);
+    }
     return output_files;
 }
 
@@ -788,7 +791,7 @@ int generate_filter_main(int argc, char **argv, std::ostream &cerr) {
     const char kUsage[] = "gengen [-g GENERATOR_NAME] [-f FUNCTION_NAME] [-o OUTPUT_DIR] [-r RUNTIME_NAME] [-e EMIT_OPTIONS] [-x EXTENSION_OPTIONS] [-n FILE_BASE_NAME] "
                           "target=target-string[,target-string...] [generator_arg=value [...]]\n\n"
                           "  -e  A comma separated list of files to emit. Accepted values are "
-                          "[assembly, bitcode, cpp, h, html, o, static_library, stmt, cpp_stub, schedule]. If omitted, default value is [static_library, h].\n"
+                          "[assembly, bitcode, cpp, h, html, o, static_library, stmt, cpp_stub, schedule, pytorch_wrapper]. If omitted, default value is [static_library, h].\n"
                           "  -x  A comma separated list of file extension pairs to substitute during file naming, "
                           "in the form [.old=.new[,.old2=.new2]]\n";
 
@@ -800,7 +803,6 @@ int generate_filter_main(int argc, char **argv, std::ostream &cerr) {
                                                       { "-x", "" },
                                                       { "-r", "" }};
     GeneratorParamsMap generator_args;
-
     for (int i = 1; i < argc; ++i) {
         if (argv[i][0] != '-') {
             std::vector<std::string> v = split_string(argv[i], "=");
@@ -905,9 +907,11 @@ int generate_filter_main(int argc, char **argv, std::ostream &cerr) {
                 emit_options.emit_cpp_stub = true;
             } else if (opt == "schedule") {
                 emit_options.emit_schedule = true;
+            } else if (opt == "pytorch_wrapper") {
+                emit_options.emit_pytorch_wrapper = true;
             } else if (!opt.empty()) {
                 cerr << "Unrecognized emit option: " << opt
-                     << " not one of [assembly, bitcode, cpp, h, html, o, static_library, stmt, cpp_stub], ignoring.\n";
+                     << " not one of [assembly, bitcode, cpp, h, html, o, static_library, stmt, cpp_stub, schedule, pytorch_wrapper], ignoring.\n";
             }
         }
     }

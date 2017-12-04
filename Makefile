@@ -18,7 +18,7 @@ ifeq ($(OS), Windows_NT)
     FPIC=
 else
     # let's assume "normal" UNIX such as linux
-    COMMON_LD_FLAGS=-ldl -lpthread -lz
+    COMMON_LD_FLAGS=-ldl -lpthread -lz -lncurses
     FPIC=-fPIC
 ifeq ($(UNAME), Darwin)
     SHARED_EXT=dylib
@@ -30,14 +30,14 @@ endif
 BAZEL ?= $(shell which bazel)
 
 SHELL = bash
-CXX ?= g++
+CXX ?= clang-5.0
 PREFIX ?= /usr/local
 LLVM_CONFIG ?= llvm-config
 LLVM_COMPONENTS= $(shell $(LLVM_CONFIG) --components)
 LLVM_VERSION = $(shell $(LLVM_CONFIG) --version | cut -b 1-3)
 
 LLVM_FULL_VERSION = $(shell $(LLVM_CONFIG) --version)
-CLANG ?= clang
+CLANG ?= clang-5.0
 CLANG_VERSION = $(shell $(CLANG) --version)
 LLVM_BINDIR = $(shell $(LLVM_CONFIG) --bindir | sed -e 's/\\/\//g' -e 's/\([a-zA-Z]\):/\/\1/g')
 LLVM_LIBDIR = $(shell $(LLVM_CONFIG) --libdir | sed -e 's/\\/\//g' -e 's/\([a-zA-Z]\):/\/\1/g')
@@ -112,7 +112,7 @@ HEXAGON_CXX_FLAGS=$(if $(WITH_HEXAGON), -DWITH_HEXAGON=1, )
 HEXAGON_LLVM_CONFIG_LIB=$(if $(WITH_HEXAGON), hexagon, )
 
 CXX_WARNING_FLAGS = -Wall -Werror -Wno-unused-function -Wcast-qual -Wignored-qualifiers -Wno-comment -Wsign-compare -Wno-unknown-warning-option -Wno-psabi
-CXX_FLAGS = $(CXX_WARNING_FLAGS) -fno-rtti -Woverloaded-virtual $(FPIC) $(OPTIMIZE) -fno-omit-frame-pointer -DCOMPILING_HALIDE -fvisibility=hidden
+CXX_FLAGS = $(CXX_WARNING_FLAGS) -g -fno-rtti -Woverloaded-virtual $(FPIC) $(OPTIMIZE) -fno-omit-frame-pointer -DCOMPILING_HALIDE -fvisibility=hidden
 
 CXX_FLAGS += $(LLVM_CXX_FLAGS)
 CXX_FLAGS += $(PTX_CXX_FLAGS)
@@ -305,6 +305,7 @@ SOURCE_FILES = \
   CodeGen_Posix.cpp \
   CodeGen_PowerPC.cpp \
   CodeGen_PTX_Dev.cpp \
+  CodeGen_PyTorch.cpp \
   CodeGen_X86.cpp \
   CPlusPlusMangle.cpp \
   CSE.cpp \
@@ -314,6 +315,8 @@ SOURCE_FILES = \
   DebugToFile.cpp \
   Definition.cpp \
   Deinterleave.cpp \
+  Derivative.cpp \
+  DerivativeUtils.cpp \
   DeviceArgument.cpp \
   DeviceInterface.cpp \
   Dimension.cpp \
@@ -437,6 +440,7 @@ HEADER_FILES = \
   CodeGen_Posix.h \
   CodeGen_PowerPC.h \
   CodeGen_PTX_Dev.h \
+  CodeGen_PyTorch.h \
   CodeGen_X86.h \
   ConciseCasts.h \
   CPlusPlusMangle.h \
@@ -447,6 +451,8 @@ HEADER_FILES = \
   DebugToFile.h \
   Definition.h \
   Deinterleave.h \
+  Derivative.h \
+  DerivativeUtils.h \
   DeviceArgument.h \
   DeviceInterface.h \
   Dimension.h \
@@ -654,7 +660,8 @@ RUNTIME_EXPORTED_INCLUDES = $(INCLUDE_DIR)/HalideRuntime.h \
                             $(INCLUDE_DIR)/HalideRuntimeOpenGLCompute.h \
                             $(INCLUDE_DIR)/HalideRuntimeMetal.h	\
                             $(INCLUDE_DIR)/HalideRuntimeQurt.h \
-                            $(INCLUDE_DIR)/HalideBuffer.h
+                            $(INCLUDE_DIR)/HalideBuffer.h \
+                            $(INCLUDE_DIR)/HalidePytorchHelpers.h
 
 INITIAL_MODULES = $(RUNTIME_CPP_COMPONENTS:%=$(BUILD_DIR)/initmod.%_32.o) \
                   $(RUNTIME_CPP_COMPONENTS:%=$(BUILD_DIR)/initmod.%_64.o) \
@@ -726,6 +733,11 @@ $(INCLUDE_DIR)/HalideRuntime%: $(SRC_DIR)/runtime/HalideRuntime%
 	cp $< $(INCLUDE_DIR)/
 
 $(INCLUDE_DIR)/HalideBuffer.h: $(SRC_DIR)/runtime/HalideBuffer.h
+	echo Copying $<
+	@mkdir -p $(@D)
+	cp $< $(INCLUDE_DIR)/
+
+$(INCLUDE_DIR)/HalidePytorchHelpers.h: $(SRC_DIR)/runtime/HalidePytorchHelpers.h
 	echo Copying $<
 	@mkdir -p $(@D)
 	cp $< $(INCLUDE_DIR)/
@@ -1006,6 +1018,10 @@ $(BIN_DIR)/opengl_%: $(ROOT_DIR)/test/opengl/%.cpp $(BIN_DIR)/libHalide.$(SHARED
 # Auto schedule tests that link against libHalide
 $(BIN_DIR)/auto_schedule_%: $(ROOT_DIR)/test/auto_schedule/%.cpp $(BIN_DIR)/libHalide.$(SHARED_EXT) $(INCLUDE_DIR)/Halide.h
 	$(CXX) $(TEST_CXX_FLAGS) $(OPTIMIZE_FOR_BUILD_TIME) $< -I$(INCLUDE_DIR) $(TEST_LD_FLAGS) -o $@
+	
+# Derivative tests that link against libHalide
+$(BIN_DIR)/derivative_%: $(ROOT_DIR)/test/derivative/%.cpp $(BIN_DIR)/libHalide.$(SHARED_EXT) $(INCLUDE_DIR)/Halide.h
+	$(CXX) $(TEST_CXX_FLAGS) $(OPTIMIZE) $< -I$(INCLUDE_DIR) $(TEST_LD_FLAGS) -o $@
 
 # TODO(srj): this doesn't auto-delete, why not?
 .INTERMEDIATE: $(BIN_DIR)/%.generator

@@ -2532,6 +2532,7 @@ public:
         bool emit_static_library{true};
         bool emit_cpp_stub{false};
         bool emit_schedule{false};
+        bool emit_pytorch_wrapper{true};
         // This is an optional map used to replace the default extensions generated for
         // a file: if an key matches an output extension, emit those files with the
         // corresponding value instead (e.g., ".s" -> ".assembly_text"). This is

@@ -281,6 +281,11 @@ set(HEADER_FILES
   DebugToFile.h
   Definition.h
   Deinterleave.h
+<<<<<<< HEAD
+  Derivative.h
+  DerivativeUtils.h
+=======
+>>>>>>> 9e23eabe4b873bf5aa798602771cba472e6bd992
   DeviceArgument.h
   DeviceInterface.h
   Dimension.h
@@ -440,6 +445,11 @@ add_library(Halide ${HALIDE_LIBRARY_TYPE}
   DebugToFile.cpp
   Definition.cpp
   Deinterleave.cpp
+<<<<<<< HEAD
+  Derivative.cpp
+  DerivativeUtils.cpp
+=======
+>>>>>>> 9e23eabe4b873bf5aa798602771cba472e6bd992
   DeviceArgument.cpp
   DeviceInterface.cpp
   Dimension.cpp

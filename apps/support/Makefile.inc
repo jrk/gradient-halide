@@ -10,7 +10,11 @@ ifeq ($(OS), Windows_NT)
 # Flags for mingw environment
 LDFLAGS += -lole32 -lkernel32 -lpsapi -luuid -Wl,--stack,8388608
 else
+<<<<<<< HEAD
+LDFLAGS += -ldl -lpthread -lz -lcurses
+=======
 LDFLAGS += -ldl -lpthread -lz
+>>>>>>> 9e23eabe4b873bf5aa798602771cba472e6bd992
 endif
 
 CXX ?= g++
