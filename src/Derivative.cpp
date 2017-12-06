@@ -314,28 +314,26 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
     assert(expr_adjoints.find(op) != expr_adjoints.end());
     Expr adjoint = expr_adjoints[op];
     // Math functions
-    if (op->name == "exp_f32") {
-        // d/dx exp(x) = exp(x)
-        for (size_t i = 0; i < op->args.size(); i++) {
-            accumulate(op->args[i], adjoint * exp(op->args[i]));
-        }
-    } else if (op->name == "ceil_f32") {
-        // TODO: d/dx = dirac(n) for n in Z ...
-        for (size_t i = 0; i < op->args.size(); i++) {
-            accumulate(op->args[i], 0.0f);
-        }
-    } else if (op->name == "floor_f32") {
-        // TODO: d/dx = dirac(n) for n in Z ...
-        for (size_t i = 0; i < op->args.size(); i++) {
-            accumulate(op->args[i], 0.0f);
-        }
-    } else if (!op->func.defined() && op->image.get() == nullptr) {
-        internal_error << "The derivative of " << op->name << " is not implemented.";
-    }
-    // TODO: add more functions
-
-    // Halide function call
-    if (op->func.defined()) {
+    if (op->is_extern()) {
+      if (op->name == "exp_f32") {
+          // d/dx exp(x) = exp(x)
+          for (size_t i = 0; i < op->args.size(); i++) {
+              accumulate(op->args[i], adjoint * exp(op->args[i]));
+          }
+      } else if (op->name == "ceil_f32") {
+          // TODO: d/dx = dirac(n) for n in Z ...
+          for (size_t i = 0; i < op->args.size(); i++) {
+              accumulate(op->args[i], 0.0f);
+          }
+      } else if (op->name == "floor_f32") {
+          // TODO: d/dx = dirac(n) for n in Z ...
+          for (size_t i = 0; i < op->args.size(); i++) {
+              accumulate(op->args[i], 0.0f);
+          }
+      } else {
+          internal_error << "The derivative of " << op->name << " is not implemented.";
+      }
+    } else if (op->call_type == Call::Halide) { // Halide function call
         Function func(op->func);
         // Avoid implicit functions
         // TODO: FIX THIS
@@ -616,6 +614,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // debug(0) << "\n";
         // debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
         // print_func(func_to_update);
+    } else if (op->call_type != Call::Image) {  // Image loads should not be propagated
+        // op->call_type is Call::Intrinsic or Call::PureIntrinsic
+        internal_error << "The derivative of " << op->name << " is not implemented.";
     }
 }
 
