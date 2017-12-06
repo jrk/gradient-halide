@@ -285,7 +285,7 @@ Target get_target_from_environment() {
     }
 }
 
-Target get_jit_target_from_environment() {
+Target get_jit_target_from_environment(bool profile) {
     Target host = get_host_target();
     host.set_feature(Target::JIT);
 #if defined(__has_feature)
@@ -295,10 +295,16 @@ Target get_jit_target_from_environment() {
 #endif
     string target = Internal::get_env_variable("HL_JIT_TARGET");
     if (target.empty()) {
+        if (profile) {
+            host.set_feature(Target::Profile);
+        }
         return host;
     } else {
         Target t(target);
         t.set_feature(Target::JIT);
+        if (profile) {
+            t.set_feature(Target::Profile);
+        }
         user_assert(t.os == host.os && t.arch == host.arch && t.bits == host.bits)
             << "HL_JIT_TARGET must match the host OS, architecture, and bit width.\n"
             << "HL_JIT_TARGET was " << target << ". "
