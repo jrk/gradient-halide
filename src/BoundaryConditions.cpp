@@ -38,7 +38,8 @@ Func repeat_edge(const Func &source,
 }
 
 Func constant_exterior(const Func &source, Tuple value,
-                       const std::vector<std::pair<Expr, Expr>> &bounds) {
+                       const std::vector<std::pair<Expr, Expr>> &bounds,
+                       const std::string &name) {
     std::vector<Var> source_args = source.args();
     std::vector<Var> args(source_args);
     user_assert(args.size() >= bounds.size()) <<
@@ -62,7 +63,7 @@ Func constant_exterior(const Func &source, Tuple value,
         }
     }
 
-    Func bounded("constant_exterior");
+    Func bounded(name);
     if (value.as_vector().size() > 1) {
         std::vector<Expr> def;
         for (size_t i = 0; i < value.as_vector().size(); i++) {
@@ -77,8 +78,9 @@ Func constant_exterior(const Func &source, Tuple value,
 }
 
 Func constant_exterior(const Func &source, Expr value,
-                       const std::vector<std::pair<Expr, Expr>> &bounds) {
-    return constant_exterior(source, Tuple(value), bounds);
+                       const std::vector<std::pair<Expr, Expr>> &bounds,
+                       const std::string &name) {
+    return constant_exterior(source, Tuple(value), bounds, name);
 }
 
 

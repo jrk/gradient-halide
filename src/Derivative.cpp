@@ -71,10 +71,10 @@ void ReverseAccumulationVisitor::propagate_adjoints(
     std::vector<std::string> order = realization_order({output.function()}, env);
     std::vector<Func> funcs;
     funcs.reserve(order.size());
-    Internal::debug(0) << "Sorted Func list:" << "\n";
-    for (const auto &func_name : order) {
-        Internal::debug(0) << "  . " << func_name << "\n";
-    }
+    // Internal::debug(0) << "Sorted Func list:" << "\n";
+    // for (const auto &func_name : order) {
+    //     Internal::debug(0) << "  . " << func_name << "\n";
+    // }
     for (const auto &func_name : order) {
         Func func(env[func_name]);
         // Avoid implicit variables
@@ -87,18 +87,18 @@ void ReverseAccumulationVisitor::propagate_adjoints(
 
     internal_assert(funcs.size() > 0);
 
-    debug(0) << "ReverseAccumulationVisitor: infering bounds...";
+    // debug(0) << "ReverseAccumulationVisitor: infering bounds...";
     func_bounds = inference_bounds(output, output_bounds);
-    debug(0) << "done\n";
+    // debug(0) << "done\n";
 
-    // Create a stub for each function to accumulate adjoints
+    // Create a stub for each function to accumulate adjoints.
     for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
         const Func &func = funcs[func_id];
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
             Func adjoint_func(func.name() + "_" + std::to_string(update_id + 1) + "_d_def__");
-            bool is_last = func_id == (int)funcs.size() - 1 &&
-                           update_id == func.num_update_definitions() - 1;
-            if (is_last) {
+            bool is_final_output = func_id == (int)funcs.size() - 1 &&
+                                   update_id == func.num_update_definitions() - 1;
+            if (is_final_output) {
                 adjoint_func(func.args()) = adjoint(func.args());
             } else {
                 adjoint_func(func.args()) = 0.f;
@@ -108,7 +108,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
         }
     }
 
-    // Traverse functions from back to front for reverse accumulation
+    // Traverse functions from producers to consumers for reverse accumulation
     for (int func_id = funcs.size() - 1; func_id >=  0; func_id--) {
         const Func &func = funcs[func_id];
         current_func = func;
@@ -126,27 +126,45 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             if (update_id == func.num_update_definitions() - 1) {
                 Func adjoint_func = adjoint_funcs[func_key];
                 adjoint_func = BoundaryConditions::constant_exterior(
-                    adjoint_func, 0.f, box_to_vector(bounds));
-                // Give it a better name
-                Func tmp(func.name() + "_" + std::to_string(update_id + 1) + "_d__");
-                tmp(adjoint_func.args()) = adjoint_func(adjoint_func.args());
-                adjoint_funcs[func_key] = tmp;
+                    adjoint_func, 0.f, box_to_vector(bounds),
+                    adjoint_func.name() + std::string("_ce"));
+                adjoint_funcs[func_key] = adjoint_func;
             }
 
-            // Propagate the adjoints to next update
+            // Initialize the next adjoint function by propagating the adjoints to next update
             // Example:
             // f(x) = ...
-            // f(1) = ...
+            // f(1) = ... <- we're here
+            // We have an adjoint for f(1) defined over the whole support of f
+            // Now we want to initialize for the f(x) update
             // Need to propagate back to all x while masking 1
+            // x -> next_args
+            // 1 -> update_args
             if (update_id >= 0) {
                 FuncKey next_func_key{func.name(), update_id - 1};
-                Func next_adjoint_func = adjoint_funcs[next_func_key];
-                // TODO: create new functions if left hand side is pure
-                next_adjoint_func(next_adjoint_func.args()) =
-                    adjoint_funcs[func_key](next_adjoint_func.args());
-                next_adjoint_func(func.update_args(update_id)) = 0.f;
+                Func &next_adjoint_func = adjoint_funcs[next_func_key];
+                std::vector<Var> next_args = next_adjoint_func.args();
+                std::vector<Expr> update_args = func.update_args(update_id);
+                // Check if next_args are the same as update_args 
+                // e.g.
+                // If they are the same simply set everything to zero
+                bool is_noop = true;
+                for (int i = 0 ; i < (int)next_args.size(); i++) {
+                    const Variable *update_var = update_args[i].as<Variable>();
+                    if (update_var == nullptr || next_args[i].name() != update_var->name) {
+                        is_noop = false;
+                    }
+                }
+                next_adjoint_func = Func(next_adjoint_func.name());
+                if (!is_noop) {
+                    // f'(x) = adjoint
+                    next_adjoint_func(next_args) =
+                        adjoint_funcs[func_key](next_args);
+                }
+                next_adjoint_func(update_args) = 0.f; // e.g. f'(1) = 0.f
             }
 
+            // Now we want to propagate the derivatives at expression level
             // Topologically sort the expressions
             std::vector<Expr> expr_list =
                 update_id >= 0 ? sort_expressions(func.update_value(update_id)) :
@@ -165,7 +183,8 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 }
             }
 
-            // Retrieve previously propagated adjoint for the Func, apply it to expression adjoints
+            // Retrieve previously propagated adjoint for the Func,
+            // apply it to expression adjoints
             std::vector<Expr> update_args;
             if (update_id >= 0) {
                 update_args = func.update_args(update_id);
@@ -310,7 +329,10 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         for (size_t i = 0; i < op->args.size(); i++) {
             accumulate(op->args[i], 0.0f);
         }
+    } else if (!op->func.defined()) {
+        internal_error << "The derivative of " << op->name << " is not implemented.";
     }
+    // TODO: add more functions
 
     // Halide function call
     if (op->func.defined()) {
@@ -340,6 +362,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
 
         // If target is the current function itself, send to previous update
+        // e.g. f(x) = ...
+        //      f(x) = f(x) + 1
         FuncKey func_key = func.name() != current_func.name() ?
                            FuncKey{func.name(), func.updates().size() - 1} :
                            FuncKey{func.name(), current_update_id - 1};
@@ -347,6 +371,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         Func& func_to_update = adjoint_funcs[func_key];
 
         // Gather argument & bounds information
+        // current_args are the pure variables
+        // current_update_args are the actual updates at left hand side
         std::vector<Var> current_args = current_func.args();
         std::vector<Expr> current_update_args;
         if (current_update_id >= 0) {
@@ -362,10 +388,11 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // We want to do this:
         // func_to_update(op->args) += adjoint(current_update_args);
         // But op->args can be invalid lhs, need to canonicalize
-        // we canonicalize by first try to subsitute with pure variables
+        // we canonicalize by first trying to substitute with pure variables
         // if that fails we will replace variables on lhs with RDoms
 
-        // Try to do the canonicalization
+        // TODO: maybe modularize this more
+        // Try to do the canonicalization by substitution of variables
         // Create a set of new substitution variables
         std::vector<Var> new_args;
         std::set<std::string> new_args_set;
@@ -376,16 +403,16 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
         std::vector<bool> canonicalized(lhs.size(), false);
         // We canonicalize the left hand side arguments (op->args) so that it's always x, y, z, ...
-        // First gather all arguments that contains multiple pure variables
-        // we don't want to mess with system solving yet, so we invalidate all of them
-        // 
+        //
         // Given:
         // g(x, y, z) = f(x, y-1, z+1)
         // we get:
         // d_f(x, y - 1, z + 1) += d_g(x,y,z)
         // Goal: rewrite to
         //  ==> d_f(x,y,z) += d_g(x,y+1,z-1)
-        // 
+        //
+        // First gather all arguments that contains multiple pure variables
+        // we don't want to mess with system solving yet, so we invalidate all of them
         // This is currently simple and conservative, solving each dimension independently, so 
         // inter-dependencies like:
         // g(x, y) = f(x*y, x+y)
@@ -402,6 +429,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 continue;
             }
         }
+        // Here we invert the equations (TODO: make this a routine? also the invalidated vars?)
         for (int i = 0; i < (int)lhs.size(); i++) {
             // Gather all pure variables at op->args[i], substitute them with new_args
             // For now only support single pure variable
@@ -425,12 +453,14 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 continue;
             }
 
+            // Extract body of the let variable
             Expr result_rhs = result.result;
             if (result.result.as<Let>() != nullptr) {
                 const Let *let_expr = result.result.as<Let>();
                 // debug(0) << "we have a let " << result.result << "\n";
                 // debug(0) << let_expr->value << " " << let_expr->body << "\n";
                 result_rhs = substitute(let_expr->name, let_expr->value, let_expr->body);
+                // Extract the body of the And????
                 if (result_rhs.as<And>() != nullptr) {
                     // TODO(mgharbi): this is quite dirty and brittle, what's the right solution?
                     const And *and_expr = result_rhs.as<And>();
@@ -442,6 +472,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
 
             // y == u_1 + 1
+            // Sometimes even if the equation is tagged fully_solved it isn't
+            // We still need to check
             if (result_rhs.as<EQ>() != nullptr) {
                 // Checking whether the lhs is a single variable
                 Expr result_lhs = result_rhs.as<EQ>()->a;
@@ -483,7 +515,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 for (int var_id = 0; var_id < (int)variables.size(); var_id++) {
                     for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
                         if (current_args[arg_id].name() == variables[var_id]) {
-                            lhs[lhs_id] = substitute(variables[var_id], r_bounds[arg_id], lhs[lhs_id]);
+                            lhs[lhs_id] = substitute(variables[var_id],
+                                                     r_bounds[arg_id],
+                                                     lhs[lhs_id]);
                             adjoint = substitute(variables[var_id], r_bounds[arg_id], adjoint);
                             break;
                         }
@@ -499,6 +533,11 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         bounds_subset.reserve(current_args.size());
         arg_id_to_substitute.reserve(current_args.size());
         for (int i = 0; i < (int)current_args.size(); i++) {
+            // e.g. we have in forward pass f(x, y) = g(x)
+            //      then we need to do g'(x) += f(x, y)
+            //      now we need to replace y with a reduction variable over f's bound
+            //      x is automatically excluded since it's
+            //      replaced by the new substitution variable e.g. u_0
             if (has_variable(adjoint, current_args[i].name())) {
                 const Interval &interval = current_bounds[i];
                 bounds_subset.emplace_back(interval.min, interval.max - interval.min + 1);
@@ -518,6 +557,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         std::vector<Var> func_to_update_args = func_to_update.args();
         // For each variable in lhs, check if it is a single rvar
         // if so we can rewrite it back to pure variables
+        // e.g.
+        // f(r.x) = g(r.x)
+        // => f(x) = g(x)
         // TODO: is this the best way?
         for (int i = 0; i < (int)lhs.size(); i++) {
             auto &lhs_arg = lhs[i];
@@ -530,6 +572,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
         }
 
+        // TODO: can we somehow enforce the same partial ordering?
         // Merge RDoms on both lhs and rhs
         std::map<std::string, std::pair<Expr, Expr>> rvar_maps =
             gather_rvariables(adjoint);
@@ -562,6 +605,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             adjoint = substitute(new_args[i].name(), func_to_update_args[i], adjoint);
         }
 
+        // TODO: maybe do some analysis on lhs to avoid applying boundary conditions to 
+        //       function calls in adjoint
         func_to_update(lhs) += adjoint;
 
         // debug(0) << "lhs after canonicalization:";
@@ -598,7 +643,7 @@ Derivative propagate_adjoints(const Func &output) {
     return propagate_adjoints(output, adjoint, output_bounds);
 }
 
-void print_func(const Func &func) {
+void print_func(const Func &func, bool recursive) {
     Internal::debug(0) << "Printing function:" << func.name() << "\n";
     // Topologically sort the functions
     std::map<std::string, Internal::Function> env =
@@ -617,6 +662,9 @@ void print_func(const Func &func) {
     }
 
     for (int i = (int)funcs.size() - 1; i >= 0; i--) {
+        if (!recursive && funcs[i].name() != func.name()) {
+            continue;
+        }
         Func &func = funcs[i];
         Internal::debug(0) << "  funcs[" << i << "]: " << func.name() << "\n";
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {

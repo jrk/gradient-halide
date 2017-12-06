@@ -257,6 +257,7 @@ std::map<std::string, Box> inference_bounds(const Func &func,
     }
     Box output_bounds_box(output_bounds_interval);
     bounds[func.name()] = output_bounds_box;
+    // Traverse from the consumers to the producers
     for (auto it = order.rbegin(); it != order.rend(); it++) {
         Func func = Func(env[*it]);
         const Box &current_bounds = bounds[*it];
@@ -265,7 +266,8 @@ std::map<std::string, Box> inference_bounds(const Func &func,
         }
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
             std::map<std::string, Box> update_bounds =
-                boxes_required(update_id == -1 ? func.value() : func.update_value(update_id), scope);
+                boxes_required(update_id == -1 ? func.value() : func.update_value(update_id),
+                               scope);
             for (const auto &it : update_bounds) {
                 auto found = bounds.find(it.first);
                 if (found == bounds.end()) {
