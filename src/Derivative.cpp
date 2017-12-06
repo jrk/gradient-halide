@@ -329,7 +329,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         for (size_t i = 0; i < op->args.size(); i++) {
             accumulate(op->args[i], 0.0f);
         }
-    } else if (!op->func.defined()) {
+    } else if (!op->func.defined() && op->image.get() == nullptr) {
         internal_error << "The derivative of " << op->name << " is not implemented.";
     }
     // TODO: add more functions
@@ -630,6 +630,19 @@ Derivative propagate_adjoints(const Func &output,
     visitor.propagate_adjoints(output, adjoint, output_bounds);
     return Derivative{visitor.get_adjoint_funcs(),
                       visitor.get_reductions()};
+}
+
+Derivative propagate_adjoints(const Func &output,
+                              const Buffer<float> &adjoint) {
+    user_assert(output.dimensions() == adjoint.dimensions());
+    std::vector<std::pair<Expr, Expr>> bounds;
+    for (int dim = 0; dim < adjoint.dimensions(); dim++) {
+        bounds.push_back(std::make_pair(Expr(adjoint.min(dim)),
+                                        Expr(adjoint.min(dim) + adjoint.extent(dim) - 1)));
+    }
+    Func adjoint_func("adjoint_func");
+    adjoint_func(_) = adjoint(_);
+    return propagate_adjoints(output, adjoint_func, bounds);
 }
 
 Derivative propagate_adjoints(const Func &output) {

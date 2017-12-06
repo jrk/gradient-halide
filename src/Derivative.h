@@ -26,6 +26,8 @@ struct Derivative {
 Derivative propagate_adjoints(const Func &output,
                               const Func &adjoint,
                               const std::vector<std::pair<Expr, Expr>> &output_bounds);
+Derivative propagate_adjoints(const Func &output,
+                              const Buffer<float> &adjoint);
 Derivative propagate_adjoints(const Func &output);
 void print_func(const Func &func, bool recursive = true);
 
