@@ -325,7 +325,7 @@ EXPORT Target get_target_from_environment();
  * get_host_target. Throws an error if the architecture, bit width,
  * and OS of the target do not match the host target, so this is only
  * useful for controlling the feature set. */
-EXPORT Target get_jit_target_from_environment();
+EXPORT Target get_jit_target_from_environment(bool profile = false);
 
 /** Get the Target feature corresponding to a DeviceAPI. For device
  * apis that do not correspond to any single target feature, returns
