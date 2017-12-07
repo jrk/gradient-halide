@@ -684,17 +684,22 @@ void print_func(const Func &func, bool recursive) {
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
             Internal::ReductionDomain rdom;
             if (update_id >= 0) {
-                Internal::debug(0) << "    update:" << func.name() << "(" <<
-                    Internal::simplify(func.update_args(update_id)[0]);
-                for (int i = 1; i < (int)func.update_args(update_id).size(); i++) {
-                    Internal::debug(0) << ", " << Internal::simplify(func.update_args()[i]);
+                Internal::debug(0) << "    update:" << func.name() << "(";
+                if (func.update_args(update_id).size() > 0) {
+                    Internal::debug(0) << Internal::simplify(func.update_args(update_id)[0]);
+                    for (int i = 1; i < (int)func.update_args(update_id).size(); i++) {
+                        Internal::debug(0) << ", " << Internal::simplify(func.update_args()[i]);
+                    }
                 }
                 Internal::debug(0) << ") = " << Internal::simplify(func.update_value(update_id)) << "\n";
                 rdom = Internal::extract_rdom(Internal::simplify(func.update_value(update_id)));
             } else {
-                Internal::debug(0) << "    " << func.name() << "(" << func.args()[0];
-                for (int i = 1; i < (int)func.args().size(); i++) {
-                    Internal::debug(0) << ", " << Internal::simplify(func.args()[i]);
+                Internal::debug(0) << "    " << func.name() << "(";
+                if (func.args().size() > 0) {
+                    Internal::debug(0) << func.args()[0];
+                    for (int i = 1; i < (int)func.args().size(); i++) {
+                        Internal::debug(0) << ", " << Internal::simplify(func.args()[i]);
+                    }
                 }
                 Internal::debug(0) << ") = " << Internal::simplify(func.value()) << "\n";
                 rdom = Internal::extract_rdom(Internal::simplify(func.value()));
