@@ -116,7 +116,7 @@ Buffer<float> blur_image(const Buffer<float> &image,
 std::pair<Pipeline, Realization>
     cgInitializationFunc(const Buffer<float> &blurred,
                          const Buffer<float> &kernel,
-                         const std::vector<float> &regKernelsWeight,
+                         const std::vector<Buffer<float>> &regKernelsWeight,
                          const std::vector<Buffer<float>> &regKernels) {
     // Initializing conjugate gradient
     // Want to solve A^TAx = A^Tb
@@ -145,7 +145,7 @@ std::pair<Pipeline, Realization>
                                  c) *
                          regKernel(regKernel.width()  - rRegKernel.x - 1,
                                    regKernel.height() - rRegKernel.y - 1);
-        ATb(x, y, c) += regKernelsWeight[i] * rKTb(x, y, c);
+        ATb(x, y, c) += regKernelsWeight[i]() * rKTb(x, y, c);
     }
     Func Kx0("Kx0");
     Kx0(x, y, c)  = 0.f;
@@ -178,7 +178,7 @@ std::pair<Pipeline, Realization>
                               c) *
                           regKernel(regKernel.width()  - rRegKernel.x - 1,
                                     regKernel.height() - rRegKernel.y - 1);
-        ATAx0(x, y, c) += regKernelsWeight[i] * rKTKb(x, y, c);
+        ATAx0(x, y, c) += regKernelsWeight[i]() * rKTKb(x, y, c);
     }
 
     Func x0("x0");
@@ -207,14 +207,14 @@ std::pair<Pipeline, Realization>
 std::pair<Pipeline, Realization>
     cgIterationFuncFwd(const Buffer<float> &kernel,
                        const Buffer<float> &xrp,
-                       const std::vector<float> &regKernelsWeight,
+                       const std::vector<Buffer<float>> &regKernelsWeight,
                        const std::vector<Buffer<float>> &regKernels) {
     // A single iteration, takes X, R, P and updates them
     std::vector<Func> regKernelsWeightFunc;
     std::vector<Func> regKernelsFunc;
     for (int i = 0; i < (int)regKernelsWeight.size(); i++) {
         Func wFunc("wFunc");
-        wFunc() = regKernelsWeight[i];
+        wFunc() = regKernelsWeight[i]();
         Func rkFunc("rkFunc");
         rkFunc(x, y) = regKernels[i](x, y);
         regKernelsWeightFunc.push_back(wFunc);
@@ -371,14 +371,14 @@ std::pair<Pipeline, Realization>
     cgIterationFuncRev(const Buffer<float> &kernel,
                        const Buffer<float> &xrp,
                        const Buffer<float> &dXrp,
-                       const std::vector<float> &regKernelsWeight,
+                       const std::vector<Buffer<float>> &regKernelsWeight,
                        const std::vector<Buffer<float>> &regKernels) {
     // A single iteration, takes X, R, P and updates them
     std::vector<Func> regKernelsWeightFunc;
     std::vector<Func> regKernelsFunc;
     for (int i = 0; i < (int)regKernelsWeight.size(); i++) {
         Func wFunc("wFunc");
-        wFunc() = regKernelsWeight[i];
+        wFunc() = regKernelsWeight[i]();
         Func rkFunc("rkFunc");
         rkFunc(x, y) = regKernels[i](x, y);
         regKernelsWeightFunc.push_back(wFunc);
@@ -502,63 +502,7 @@ std::pair<Pipeline, Realization>
     Pipeline pipeline(pipelineFuncs);
     Realization realization(pipelineBuffers);
 
-    // int tileX = 64;
-    // int tileY = 64;
-    // int vectorWidth = 8;
-    // nextXrp.compute_root()
-    //        .tile(x, y, xo, yo, xi, yi, tileX, tileY)
-    //        .parallel(yo)
-    //        .vectorize(xi, vectorWidth);
-    // nextXrp.update(0)
-    //        .tile(x, y, xo, yo, xi, yi, tileX, tileY)
-    //        .parallel(yo)
-    //        .vectorize(xi, vectorWidth);
-    // nextXrp.update(1)
-    //        .tile(x, y, xo, yo, xi, yi, tileX, tileY)
-    //        .parallel(yo)
-    //        .vectorize(xi, vectorWidth);
-    // nextXrp.update(2)
-    //        .tile(x, y, xo, yo, xi, yi, tileX, tileY)
-    //        .parallel(yo)
-    //        .vectorize(xi, vectorWidth);
-    // alpha.compute_root();
-    // Func pTATApInt = pTATAp.update().rfactor({{rImage.x, rx}, {rImage.y, ry}});
-    // pTATApInt.compute_root()
-    //          .update()
-    //          .parallel(ry, 8)
-    //          .vectorize(rx, vectorWidth);
-    // ATAp.compute_root()
-    //     .tile(x, y, xo, yo, xi, yi, tileX, tileY)
-    //     .parallel(yo)
-    //     .vectorize(xi, vectorWidth);
-    // for (int i = 0; i < (int)regKernels.size(); i++) {
-    //     ATAp.update(i)
-    //         .tile(x, y, xo, yo, xi, yi, tileX, tileY)
-    //         .parallel(yo)
-    //         .vectorize(xi, vectorWidth);
-    // }
-    // Kp.in()
-    //   .compute_at(ATAp, xo)
-    //   .vectorize(x, vectorWidth);
-    // for (int i = 0; i < (int)regKernels.size(); i++) {
-    //     rKps[i].in()
-    //            .compute_at(ATAp, xo)
-    //            .vectorize(x, vectorWidth);
-    // }
-    // Func rTrInt = rTr.update().rfactor({{rImage.x, rx}, {rImage.y, ry}});
-    // rTrInt.compute_root()
-    //       .update()
-    //       .parallel(ry, 8)
-    //       .vectorize(rx, vectorWidth);
-
-    // beta.compute_root();
-    // Func nRTnRInt = nRTnR.update().rfactor({{rImage.x, rx}, {rImage.y, ry}});
-    // nRTnRInt.compute_root()
-    //         .update()
-    //         .parallel(ry, 8)
-    //         .vectorize(rx, vectorWidth);
-
-    pipeline.auto_schedule(get_jit_target_from_environment(true));
+    pipeline.auto_schedule(get_jit_target_from_environment());
     return std::make_pair(pipeline, realization);
 }
 
@@ -574,7 +518,8 @@ int main(int argc, char **argv) {
     }
     dxKernel(1, 1) = -1.f;
     dxKernel(2, 1) =  1.f;
-    float dxWeight = 1.f;
+    Buffer<float> dxWeight = Buffer<float>::make_scalar();
+    dxWeight() = 1.f;
     Buffer<float> dyKernel(regKernelWidth, regKernelWidth);
     for (int y = 0; y < dyKernel.height(); y++) {
         for (int x = 0; x < dyKernel.width(); x++) {
@@ -583,13 +528,13 @@ int main(int argc, char **argv) {
     }
     dyKernel(1, 1) = -1.f;
     dyKernel(1, 2) =  1.f;
-    float dyWeight = 1.f;
+    Buffer<float> dyWeight = Buffer<float>::make_scalar();
+    dyWeight() = 1.f;
 
     std::mt19937 rng;
-    // float learningRate = 1e-4f;
     Buffer<float> kernel = generate_kernel(5, rng);
     Buffer<float> blurred = blur_image(input, kernel, 0.0f, rng);
-    std::vector<float> regKernelsWeight = {dxWeight, dyWeight};
+    std::vector<Buffer<float>> regKernelsWeight = {dxWeight, dyWeight};
     std::vector<Buffer<float>> regKernels = {dxKernel, dyKernel};
     auto initFunc
         = cgInitializationFunc(blurred, kernel, regKernelsWeight, regKernels);
@@ -602,40 +547,7 @@ int main(int argc, char **argv) {
     Pipeline fwdIterPipeline = std::get<0>(fwdIterFunc);
     Realization fwdIterRealization = std::get<1>(fwdIterFunc);
     fwdIterPipeline.compile_jit(get_jit_target_from_environment());
-    save_float_image(xrp, "x.png", 0);
-    // Fwd pass
-    std::vector<Buffer<float>> xrps;
-    auto fwdStart = std::chrono::system_clock::now();
-    for (int cgIter = 0; cgIter < 10; cgIter++) {
-        xrps.push_back(copy(xrp));
-        fwdIterPipeline.realize(fwdIterRealization);
-        Buffer<float> nextXRP = fwdIterRealization[0];
-        fill(nextXRP, xrp);
-        // char buf[256];
-        // sprintf(buf, "x_%d.png", cgIter);
-        // save_float_image(xrp, buf, 0);
-    }
-    auto fwdEnd = std::chrono::system_clock::now();
-    std::chrono::duration<double> fwdSlapsedSeconds = fwdEnd - fwdStart;
-    std::cout << "Forward time:" << fwdSlapsedSeconds.count() << std::endl;
     Buffer<float> dXrp(xrp.width(), xrp.height(), xrp.channels(), 3);
-    for (int c = 0; c < xrp.channels(); c++) {
-        for (int y = 0; y < xrp.height(); y++) {
-            for (int x = 0; x < xrp.width(); x++) {
-                dXrp(x, y, c, 0) = 2.f * (xrp(x, y, c, 0) - input(x, y, c));
-            }
-        }
-    }
-    for (int n = 1; n < 3; n++) {
-        for (int c = 0; c < xrp.channels(); c++) {
-            for (int y = 0; y < xrp.height(); y++) {
-                for (int x = 0; x < xrp.width(); x++) {
-                    dXrp(x, y, c, n) = 0.f;
-                }
-            }
-        }
-    }
-
     std::vector<Buffer<float>> dW;
     std::vector<Buffer<float>> dRK;
     for (int i = 0; i < (int)regKernelsWeight.size(); i++) {
@@ -653,27 +565,74 @@ int main(int argc, char **argv) {
     Pipeline revIterPipeline = std::get<0>(revIterFunc);
     Realization revIterRealization = std::get<1>(revIterFunc);
     revIterPipeline.compile_jit(get_jit_target_from_environment());
-    // Rev pass
-    auto revStart = std::chrono::system_clock::now();
-    for (int cgIter = 9; cgIter >= 0; cgIter--) {
-        fill(xrps[cgIter], xrp);
-        revIterPipeline.realize(revIterRealization);
-        Buffer<float> nextDXrp = revIterRealization[0];
-        fill(nextDXrp, dXrp);
-        for (int i = 0; i < (int)regKernelsWeight.size(); i++) {
-            Buffer<float> dWi = revIterRealization[2 * i + 1];
-            Buffer<float> dRKi = revIterRealization[2 * i + 2];
-            dW[i](0) += dWi(0);
-            for (int y = 0; y < regKernels[i].height(); y++) {
-                for (int x = 0; x < regKernels[i].width(); x++) {
-                    dRK[i](x, y) += dRKi(x, y);
+
+    for (int trainIter = 0; trainIter < 2; trainIter++) {
+        // Fwd pass
+        std::vector<Buffer<float>> xrps;
+        auto fwdStart = std::chrono::system_clock::now();
+        for (int cgIter = 0; cgIter < 10; cgIter++) {
+            xrps.push_back(copy(xrp));
+            fwdIterPipeline.realize(fwdIterRealization);
+            Buffer<float> nextXRP = fwdIterRealization[0];
+            fill(nextXRP, xrp);
+        }
+        auto fwdEnd = std::chrono::system_clock::now();
+        std::chrono::duration<double> fwdSlapsedSeconds = fwdEnd - fwdStart;
+        std::cout << "Forward time:" << fwdSlapsedSeconds.count() << std::endl;
+        for (int c = 0; c < xrp.channels(); c++) {
+            for (int y = 0; y < xrp.height(); y++) {
+                for (int x = 0; x < xrp.width(); x++) {
+                    dXrp(x, y, c, 0) = 2.f * (xrp(x, y, c, 0) - input(x, y, c));
                 }
             }
         }
+        for (int n = 1; n < 3; n++) {
+            for (int c = 0; c < xrp.channels(); c++) {
+                for (int y = 0; y < xrp.height(); y++) {
+                    for (int x = 0; x < xrp.width(); x++) {
+                        dXrp(x, y, c, n) = 0.f;
+                    }
+                }
+            }
+        }
+
+        // Rev pass
+        auto revStart = std::chrono::system_clock::now();
+        for (int cgIter = 9; cgIter >= 0; cgIter--) {
+            fill(xrps[cgIter], xrp);
+            revIterPipeline.realize(revIterRealization);
+            Buffer<float> nextDXrp = revIterRealization[0];
+            fill(nextDXrp, dXrp);
+            for (int i = 0; i < (int)regKernelsWeight.size(); i++) {
+                Buffer<float> dWi = revIterRealization[2 * i + 1];
+                Buffer<float> dRKi = revIterRealization[2 * i + 2];
+                dW[i](0) += dWi(0);
+                for (int y = 0; y < regKernels[i].height(); y++) {
+                    for (int x = 0; x < regKernels[i].width(); x++) {
+                        dRK[i](x, y) += dRKi(x, y);
+                    }
+                }
+            }
+        }
+        auto revEnd = std::chrono::system_clock::now();
+        std::chrono::duration<double> revSlapsedSeconds = revEnd - revStart;
+        std::cout << "Reverse time:" << revSlapsedSeconds.count() << std::endl;
+
+        float learningRate = 1e-4f;
+        for (int i = 0; i < (int)regKernelsWeight.size(); i++) {
+            std::cout << "reg kernel " << i << std::endl;
+            regKernelsWeight[i]() -= learningRate * dW[i]();
+            std::cout << "w:" << regKernelsWeight[i]() << std::endl;
+            std::cout << "kernel:" << std::endl;
+            for (int y = 0; y < dyKernel.height(); y++) {
+                for (int x = 0; x < dyKernel.width(); x++) {
+                    regKernels[i](x, y) -= learningRate * dRK[i](x, y);
+                    std::cout << " " << regKernels[i](x, y);
+                }
+                std::cout << std::endl;
+            }
+        }
     }
-    auto revEnd = std::chrono::system_clock::now();
-    std::chrono::duration<double> revSlapsedSeconds = revEnd - revStart;
-    std::cout << "Reverse time:" << revSlapsedSeconds.count() << std::endl;
 
     // std::cerr << "dxWeight:" << dW[0](0) << std::endl;
     // std::cerr << "dyWeight:" << dW[1](0) << std::endl;
