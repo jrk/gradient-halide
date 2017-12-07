@@ -619,7 +619,11 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // print_func(func_to_update);
     } else if (op->call_type != Call::Image) {  // Image loads should not be propagated
         // op->call_type is Call::Intrinsic or Call::PureIntrinsic
-        internal_error << "The derivative of " << op->name << " is not implemented.";
+        if (op->is_intrinsic(Call::abs)) {
+            accumulate(op->args[0], adjoint*select(op->args[0] > 0, -1.0f, 1.0f));
+        } else {
+            internal_error << "The derivative of intrinsic " << op->name << " is not implemented.";
+        } 
     }
 }
 
@@ -629,7 +633,11 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 Derivative propagate_adjoints(const Func &output,
                               const Func &adjoint,
                               const std::vector<std::pair<Expr, Expr>> &output_bounds) {
-    user_assert(output.dimensions() == adjoint.dimensions());
+    user_assert(output.dimensions() == adjoint.dimensions()) 
+      << "output dimensions and adjoint dimensions must match\n";
+    user_assert((int)output_bounds.size() == adjoint.dimensions()) 
+      << "output_bounds and adjoint dimensions must match\n";
+
     Internal::ReverseAccumulationVisitor visitor;
     visitor.propagate_adjoints(output, adjoint, output_bounds);
     return Derivative{visitor.get_adjoint_funcs(),
