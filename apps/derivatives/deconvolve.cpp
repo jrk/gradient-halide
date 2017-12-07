@@ -4,6 +4,7 @@
 #include <ctime>
 #include <random>
 #include <map>
+#include <chrono>
 
 using namespace Halide;
 using namespace Halide::Tools;
@@ -21,12 +22,16 @@ void apply_compute_root(Func F) {
     // cout << endl;
 }
 
-void save_float_image(const Buffer<float> &img, const char *filename) {
+void save_float_image(const Buffer<float> &img, const char *filename, int index = -1) {
     Buffer<uint8_t> buf(img.width(), img.height(), img.channels());
     for (int c = 0; c < buf.channels(); c++) {
         for (int y = 0; y < buf.height(); y++) {
             for (int x = 0; x < buf.width(); x++) {
-                buf(x, y, c) = uint8_t(255.f * std::min(std::max(img(x, y, c), 0.f), 1.f));
+                if (index == -1) {
+                    buf(x, y, c) = uint8_t(255.f * std::min(std::max(img(x, y, c), 0.f), 1.f));
+                } else {
+                    buf(x, y, c) = uint8_t(255.f * std::min(std::max(img(x, y, c, index), 0.f), 1.f));
+                }
             }
         }
     }
@@ -34,11 +39,13 @@ void save_float_image(const Buffer<float> &img, const char *filename) {
 }
 
 Buffer<float> copy(const Buffer<float> &buf) {
-    Buffer<float> ret(buf.width(), buf.height(), buf.channels());
-    for (int c = 0; c < buf.channels(); c++) {
-        for (int y = 0; y < buf.height(); y++) {
-            for (int x = 0; x < buf.width(); x++) {
-                ret(x, y, c) = buf(x, y, c);
+    Buffer<float> ret(buf.width(), buf.height(), buf.channels(), buf.dim(3).extent());
+    for (int n = 0; n < buf.dim(3).extent(); n++) {
+        for (int c = 0; c < buf.channels(); c++) {
+            for (int y = 0; y < buf.height(); y++) {
+                for (int x = 0; x < buf.width(); x++) {
+                    ret(x, y, c, n) = buf(x, y, c, n);
+                }
             }
         }
     }
@@ -46,16 +53,20 @@ Buffer<float> copy(const Buffer<float> &buf) {
 }
 
 void fill(const Buffer<float> &src, Buffer<float> &tgt) {
-    for (int c = 0; c < tgt.channels(); c++) {
-        for (int y = 0; y < tgt.height(); y++) {
-            for (int x = 0; x < tgt.width(); x++) {
-                tgt(x, y, c) = src(x, y, c);
+    for (int n = 0; n < tgt.dim(3).extent(); n++) {
+        for (int c = 0; c < tgt.channels(); c++) {
+            for (int y = 0; y < tgt.height(); y++) {
+                for (int x = 0; x < tgt.width(); x++) {
+                    tgt(x, y, c, n) = src(x, y, c, n);
+                }
             }
         }
     }
 }
 
-Var x("x"), y("y"), c("c");
+Var x("x"), y("y"), c("c"), n("n");
+Var xi("xi"), yi("yi"), xo("xo"), yo("yo");
+Var rx("rx"), ry("ry");
 
 Buffer<float> generate_kernel(int kernelWidth,
                               std::mt19937 &rng) {
@@ -102,10 +113,11 @@ Buffer<float> blur_image(const Buffer<float> &image,
     return result;
 }
 
-Func cgInitializationFunc(const Buffer<float> &blurred,
-                          const Buffer<float> &kernel,
-                          const std::vector<float> &regKernelsWeight,
-                          const std::vector<Buffer<float>> &regKernels) {
+std::pair<Pipeline, Realization>
+    cgInitializationFunc(const Buffer<float> &blurred,
+                         const Buffer<float> &kernel,
+                         const std::vector<float> &regKernelsWeight,
+                         const std::vector<Buffer<float>> &regKernels) {
     // Initializing conjugate gradient
     // Want to solve A^TAx = A^Tb
     // A -> correlation with kernel
@@ -131,8 +143,8 @@ Func cgInitializationFunc(const Buffer<float> &blurred,
         rKTb(x, y, c) += clamped(x + rRegKernel.x - regKernel.width()  / 2,
                                  y + rRegKernel.y - regKernel.height() / 2,
                                  c) *
-                         regKernel(regKernel.width()  - regKernel.x - 1,
-                                   regKernel.height() - regKernel.y - 1);
+                         regKernel(regKernel.width()  - rRegKernel.x - 1,
+                                   regKernel.height() - rRegKernel.y - 1);
         ATb(x, y, c) += regKernelsWeight[i] * rKTb(x, y, c);
     }
     Func Kx0("Kx0");
@@ -146,9 +158,10 @@ Func cgInitializationFunc(const Buffer<float> &blurred,
     KTKx0(x, y, c) += Kx0(x + rKernel.x - kernel.width()  / 2,
                           y + rKernel.y - kernel.height() / 2,
                           c) *
-                      kernel(kernel.width()  - rKernel.x - 1, kernel.height() - rKernel.y - 1);
+                      kernel(kernel.width()  - rKernel.x - 1,
+                             kernel.height() - rKernel.y - 1);
     Func ATAx0("A^TAx0");
-    ATAx0(x, y, c) = 0.f;
+    ATAx0(x, y, c) = KTKx0(x, y, c);
     for (int i = 0; i < (int)regKernelsWeight.size(); i++) {
         const Buffer<float> &regKernel = regKernels[i];
         RDom rRegKernel(regKernel);
@@ -157,72 +170,115 @@ Func cgInitializationFunc(const Buffer<float> &blurred,
         rKb(x, y, c) += clamped(x + rRegKernel.x - regKernel.width()  / 2,
                                 y + rRegKernel.y - regKernel.height() / 2,
                                 c) *
-                         regKernel(regKernel.x, regKernel.y);
+                         regKernel(rRegKernel.x, rRegKernel.y);
         Func rKTKb("rKTKb");
         rKTKb(x, y, c) = 0.f;
         rKTKb(x, y, c) += rKb(x + rRegKernel.x - regKernel.width()  / 2,
                               y + rRegKernel.y - regKernel.height() / 2,
                               c) *
-                          regKernel(regKernel.width()  - regKernel.x - 1,
-                                    regKernel.height() - regKernel.y - 1);
+                          regKernel(regKernel.width()  - rRegKernel.x - 1,
+                                    regKernel.height() - rRegKernel.y - 1);
         ATAx0(x, y, c) += regKernelsWeight[i] * rKTKb(x, y, c);
     }
 
+    Func x0("x0");
+    x0(x, y, c) = blurred(x, y, c);
     Func r0("r0");
     r0(x, y, c) = ATb(x, y, c) - ATAx0(x, y, c);
-    return r0;
+    Func p0("p0");
+    p0(x, y, c) = r0(x, y, c);
+    Func xrp("xrp");
+    xrp(x, y, c, n) = 0.f;
+    xrp(x, y, c, 0) = x0(x, y, c);
+    xrp(x, y, c, 1) = r0(x, y, c);
+    xrp(x, y, c, 2) = p0(x, y, c);
+    Pipeline pipeline({xrp});
+    Buffer<> xrpBuf =
+        Buffer<float>(blurred.width(), blurred.height(), blurred.channels(), 3);
+    Realization realization({xrpBuf});
+    xrp.estimate(x, 0, xrpBuf.width())
+       .estimate(y, 0, xrpBuf.height())
+       .estimate(c, 0, xrpBuf.channels())
+       .estimate(n, 0, 3);
+    pipeline.auto_schedule(get_jit_target_from_environment());
+    return std::make_pair(pipeline, realization);
 }
 
-std::tuple<Func, Func, Func> cgIterationFunc(const Buffer<float> &kernel,
-                                             const Buffer<float> &xk,
-                                             const Buffer<float> &r,
-                                             const Buffer<float> &p,
-                                             const std::vector<Func> &regKernelsWeight,
-                                             const std::vector<Func> &regKernels,
-                                             const RDom &rRegKernel,
-                                             int regKernelWidth) {
-    // A single iteration, outputs X, R, P
-    // alpha = r^T * r / p^T A^T A p
-    RDom rImage(xk);
+std::pair<Pipeline, Realization>
+    cgIterationFuncFwd(const Buffer<float> &kernel,
+                       const Buffer<float> &xrp,
+                       const std::vector<float> &regKernelsWeight,
+                       const std::vector<Buffer<float>> &regKernels) {
+    // A single iteration, takes X, R, P and updates them
+    std::vector<Func> regKernelsWeightFunc;
+    std::vector<Func> regKernelsFunc;
+    for (int i = 0; i < (int)regKernelsWeight.size(); i++) {
+        Func wFunc("wFunc");
+        wFunc() = regKernelsWeight[i];
+        Func rkFunc("rkFunc");
+        rkFunc(x, y) = regKernels[i](x, y);
+        regKernelsWeightFunc.push_back(wFunc);
+        regKernelsFunc.push_back(rkFunc);
+    }
+    RDom rImage(0, xrp.width(), 0, xrp.height(), 0, xrp.channels());
     RDom rKernel(kernel);
+    Func xrpBC = BoundaryConditions::repeat_edge(xrp);
+    // Extract input
+    Func xk("xk");
+    xk(x, y, c) = xrpBC(x, y, c, 0);
+    Func r("r");
+    r(x, y, c) = xrpBC(x, y, c, 1);
+    Func p("p");
+    p(x, y, c) = xrpBC(x, y, c, 2);
     Func rTr("rTr");
-    rTr()  = 0.f;
+    // alpha = r^T * r / p^T A^T A p
+    rTr() = 0.f;
     rTr() += r(rImage.x, rImage.y, rImage.z) *
              r(rImage.x, rImage.y, rImage.z);
-    Func Ap("Ap");
-    Ap(x, y, c) = 0.f;
-    Ap(x, y, c) += p(x + rKernel.x - kernel.width()  / 2,
+    // rTr() = print(rTr());
+    Func Kp("Kp");
+    Kp(x, y, c) = 0.f;
+    Kp(x, y, c) += p(x + rKernel.x - kernel.width()  / 2,
                      y + rKernel.y - kernel.height() / 2,
                      c) *
                    kernel(rKernel.x, rKernel.y);
-    Func ATAp("A^TAp");
-    ATAp(x, y, c) = 0.f;
-    ATAp(x, y, c) += Ap(x + rKernel.x - kernel.width()  / 2,
+    Func KTKp("K^TKp");
+    KTKp(x, y, c) = 0.f;
+    KTKp(x, y, c) += Kp(x + rKernel.x - kernel.width()  / 2,
                         y + rKernel.y - kernel.height() / 2,
                         c) *
-                  kernel(kernel.width() - rKernel.x - 1, kernel.height() - rKernel.y - 1);
+                     kernel(kernel.width()  - rKernel.x - 1,
+                            kernel.height() - rKernel.y - 1);
+    Func ATAp("A^TAp");
+    ATAp(x, y, c) = KTKp(x, y, c);
+    std::vector<Func> rKps;
+    std::vector<Func> rKTrKps;
+    for (int regKernelId = 0; regKernelId < (int)regKernels.size(); regKernelId++) {
+        const Buffer<float> &regKernel = regKernels[regKernelId];
+        RDom rRegKernel(regKernel);
+        Func rK = regKernelsFunc[regKernelId];
+        Func rKp("rKp");
+        rKp(x, y, c) = 0.f;
+        rKp(x, y, c) += p(x + rRegKernel.x - regKernel.width()  / 2,
+                          y + rRegKernel.y - regKernel.height() / 2,
+                          c) *
+                        rK(rRegKernel.x, rRegKernel.y);
+        Func rKTrKp("rK^TrKp");
+        rKTrKp(x, y, c) = 0.f;
+        rKTrKp(x, y, c) += rKp(x + rRegKernel.x - regKernel.width()  / 2,
+                               y + rRegKernel.y - regKernel.height() / 2,
+                               c) *
+                           rK(regKernel.width()  - rRegKernel.x - 1,
+                              regKernel.height() - rRegKernel.y - 1);
+        rKps.push_back(rKp);
+        rKTrKps.push_back(rKTrKp);
+        Expr w = regKernelsWeightFunc[regKernelId]();
+        ATAp(x, y, c) += rKTrKp(x, y, c) * w * w;
+    }
     Func pTATAp("p^TA^TAp");
     pTATAp() = 0.f;
     pTATAp() += p(rImage.x, rImage.y, rImage.z) *
                 ATAp(rImage.x, rImage.y, rImage.z);
-    for (int regKernelId = 0; regKernelId < (int)regKernels.size(); regKernelId++) {
-        Func rKp("rKp");
-        rKp(x, y, c) = 0.f;
-        rKp(x, y, c) += p(x + rRegKernel.x - kernel.width()  / 2,
-                          y + rRegKernel.y - kernel.height() / 2,
-                          c) *
-                        regKernels[regKernelId](rRegKernel.x, rRegKernel.y);
-        Func rKTrKp("rK^TrKp");
-        rKTrKp(x, y, c) = 0.f;
-        rKTrKp(x, y, c) += rKp(x + rRegKernel.x - kernel.width()  / 2,
-                               y + rRegKernel.y - kernel.height() / 2,
-                               c) *
-                           regKernels[regKernelId](regKernelWidth - rRegKernel.x - 1,
-                                                   regKernelWidth - rRegKernel.y - 1);
-        pTATAp() += p(rImage.x, rImage.y, rImage.z) *
-                    rKTrKp(rImage.x, rImage.y, rImage.z);
-        pTATAp() *= (regKernelsWeight[regKernelId]() * regKernelsWeight[regKernelId]());
-    }
 
     Func alpha("alpha");
     alpha() = rTr() / pTATAp();
@@ -234,153 +290,276 @@ std::tuple<Func, Func, Func> cgIterationFunc(const Buffer<float> &kernel,
     nextR(x, y, c) = r(x, y, c) - alpha() * ATAp(x, y, c);
     // beta = nextR^TnextR / r^Tr
     Func nRTnR("nRTnR");
-    nRTnR()  = 0.f;
+    nRTnR() = 0.f;
     nRTnR() += nextR(rImage.x, rImage.y, rImage.z) *
                nextR(rImage.x, rImage.y, rImage.z);
     Func beta("beta");
     beta() = nRTnR() / rTr();
     Func nextP("nextP");
     nextP(x, y, c) = nextR(x, y, c) + beta() * p(x, y, c);
+    Func nextXrp("nextXrp");
+    nextXrp(x, y, c, n) = 0.f;
+    nextXrp(x, y, c, 0) = nextX(x, y, c);
+    nextXrp(x, y, c, 1) = nextR(x, y, c);
+    nextXrp(x, y, c, 2) = nextP(x, y, c);
 
-    return std::make_tuple(nextX, nextR, nextP);
+    Pipeline pipeline({nextXrp});
+    Buffer<> xrpBuf =
+        Buffer<float>(xrp.width(), xrp.height(), xrp.channels(), 3);
+    Realization realization({xrpBuf});
+
+    int tileX = 64;
+    int tileY = 64;
+    int vectorWidth = 8;
+    nextXrp.compute_root()
+           .tile(x, y, xo, yo, xi, yi, tileX, tileY)
+           .parallel(yo)
+           .vectorize(xi, vectorWidth);
+    nextXrp.update(0)
+           .tile(x, y, xo, yo, xi, yi, tileX, tileY)
+           .parallel(yo)
+           .vectorize(xi, vectorWidth);
+    nextXrp.update(1)
+           .tile(x, y, xo, yo, xi, yi, tileX, tileY)
+           .parallel(yo)
+           .vectorize(xi, vectorWidth);
+    nextXrp.update(2)
+           .tile(x, y, xo, yo, xi, yi, tileX, tileY)
+           .parallel(yo)
+           .vectorize(xi, vectorWidth);
+    alpha.compute_root();
+    Func pTATApInt = pTATAp.update().rfactor({{rImage.x, rx}, {rImage.y, ry}});
+    pTATApInt.compute_root()
+             .update()
+             .parallel(ry, 8)
+             .vectorize(rx, vectorWidth);
+    ATAp.compute_root()
+        .tile(x, y, xo, yo, xi, yi, tileX, tileY)
+        .parallel(yo)
+        .vectorize(xi, vectorWidth);
+    for (int i = 0; i < (int)regKernels.size(); i++) {
+        ATAp.update(i)
+            .tile(x, y, xo, yo, xi, yi, tileX, tileY)
+            .parallel(yo)
+            .vectorize(xi, vectorWidth);
+    }
+    Kp.in()
+      .compute_at(ATAp, xo)
+      .vectorize(x, vectorWidth);
+    for (int i = 0; i < (int)regKernels.size(); i++) {
+        rKps[i].in()
+               .compute_at(ATAp, xo)
+               .vectorize(x, vectorWidth);
+    }
+    Func rTrInt = rTr.update().rfactor({{rImage.x, rx}, {rImage.y, ry}});
+    rTrInt.compute_root()
+          .update()
+          .parallel(ry, 8)
+          .vectorize(rx, vectorWidth);
+
+    beta.compute_root();
+    Func nRTnRInt = nRTnR.update().rfactor({{rImage.x, rx}, {rImage.y, ry}});
+    nRTnRInt.compute_root()
+            .update()
+            .parallel(ry, 8)
+            .vectorize(rx, vectorWidth);
+
+    return std::make_pair(pipeline, realization);
 }
 
-void train(int iteration,
-           const Buffer<float> &image,
-           const Buffer<float> &kernel,
-           float noiseStddev,
-           const std::vector<float> &regKernelsWeight,
-           const std::vector<Buffer<float>> &regKernels,
-           std::vector<float> &regKernelsWeightGrad,
-           std::vector<Buffer<float>> &regKernelsGrad,
-           std::mt19937 &rng) {
-    Buffer<float> blurred = blur_image(image, kernel, noiseStddev, rng);
-    char fnbuf[256];
-    sprintf(fnbuf, "blurred_%d.png", iteration);
-    save_float_image(blurred, fnbuf);
-
-    RDom r_kernel(kernel);
-    Func clamped = BoundaryConditions::repeat_edge(blurred);
-    Func ATb("A^Tb");
-    ATb(x, y, c)  = 0.f;
-    ATb(x, y, c) += clamped(x + r_kernel.x - kernel.width()  / 2,
-                            y + r_kernel.y - kernel.height() / 2,
-                            c) *
-                    kernel(kernel.width()  - r_kernel.x - 1,
-                           kernel.height() - r_kernel.y - 1);
-    Func Ax0("Ax0");
-    Ax0(x, y, c)  = 0.f;
-    Ax0(x, y, c) += clamped(x + r_kernel.x - kernel.width()  / 2,
-                            y + r_kernel.y - kernel.height() / 2,
-                            c) *
-                 kernel(r_kernel.x, r_kernel.y);
-    Func ATAx0("A^TAx0");
-    ATAx0(x, y, c)  = 0.f;
-    ATAx0(x, y, c) += Ax0(x + r_kernel.x - kernel.width()  / 2,
-                          y + r_kernel.y - kernel.height() / 2,
-                          c) *
-                      kernel(kernel.width()  - r_kernel.x - 1, kernel.height() - r_kernel.y - 1);
-    Func r0("r0");
-    r0(x, y, c) = ATb(x, y, c) - ATAx0(x, y, c);
-    r0.compute_root();
-    ATb.compute_root();
-    ATAx0.compute_root();
-    Ax0.compute_root();
-    Buffer<float> xk = copy(blurred);
-    Buffer<float> r = r0.realize(blurred.width(), blurred.height(), blurred.channels());
-    Buffer<float> p = copy(r);
-
-    Func x_clamped = BoundaryConditions::repeat_edge(xk);
-    Func r_clamped = BoundaryConditions::repeat_edge(r);
-    Func p_clamped = BoundaryConditions::repeat_edge(p);
-
+std::pair<Pipeline, Realization>
+    cgIterationFuncRev(const Buffer<float> &kernel,
+                       const Buffer<float> &xrp,
+                       const Buffer<float> &dXrp,
+                       const std::vector<float> &regKernelsWeight,
+                       const std::vector<Buffer<float>> &regKernels) {
+    // A single iteration, takes X, R, P and updates them
     std::vector<Func> regKernelsWeightFunc;
     std::vector<Func> regKernelsFunc;
     for (int i = 0; i < (int)regKernelsWeight.size(); i++) {
-        Func rKw("rKw");
-        rKw() = regKernelsWeight[i];
-        Func rK("rK");
-        rK(x, y) = regKernels[i](x, y);
-        regKernelsWeightFunc.push_back(rKw);
-        regKernelsFunc.push_back(rK);
+        Func wFunc("wFunc");
+        wFunc() = regKernelsWeight[i];
+        Func rkFunc("rkFunc");
+        rkFunc(x, y) = regKernels[i](x, y);
+        regKernelsWeightFunc.push_back(wFunc);
+        regKernelsFunc.push_back(rkFunc);
     }
-    RDom rRegKernel(regKernels[0]);
-    Func xkFunc = x_clamped;
-    Func rFunc = r_clamped;
-    Func pFunc = p_clamped;
-    RDom rImage(xk);
-    for (int i = 0; i < 1; i++) {
-        std::tie(xkFunc, rFunc, pFunc) =
-            cgIterationFunc(kernel, xkFunc, rFunc, pFunc,
-                            regKernelsWeightFunc, regKernelsFunc,
-                            rImage, rRegKernel, regKernels[0].width());
+    RDom rImage(0, xrp.width(), 0, xrp.height(), 0, xrp.channels());
+    RDom rKernel(kernel);
+    Func xrpFunc("xrp");
+    xrpFunc(x, y, c, n) = xrp(x, y, c, n);
+    // Extract input
+    Func xk("xk");
+    xk(x, y, c) = xrpFunc(x, y, c, 0);
+    Func r("r");
+    r(x, y, c) = xrpFunc(x, y, c, 1);
+    Func p("p");
+    p(x, y, c) = xrpFunc(x, y, c, 2);
+    Func clampedP = BoundaryConditions::repeat_edge(p,
+        {std::make_pair(Expr(0), Expr(xrp.width())),
+         std::make_pair(Expr(0), Expr(xrp.height())),
+         std::make_pair(Expr(), Expr())});
+    Func rTr("rTr");
+    // alpha = r^T * r / p^T A^T A p
+    rTr() = 0.f;
+    rTr() += r(rImage.x, rImage.y, rImage.z) *
+             r(rImage.x, rImage.y, rImage.z);
+    // rTr() = print(rTr());
+    Func Kp("Kp");
+    Kp(x, y, c) = 0.f;
+    Kp(x, y, c) += clampedP(x + rKernel.x - kernel.width()  / 2,
+                            y + rKernel.y - kernel.height() / 2,
+                            c) *
+                   kernel(rKernel.x, rKernel.y);
+    Func KTKp("K^TKp");
+    KTKp(x, y, c) = 0.f;
+    KTKp(x, y, c) += Kp(x + rKernel.x - kernel.width()  / 2,
+                        y + rKernel.y - kernel.height() / 2,
+                        c) *
+                     kernel(kernel.width()  - rKernel.x - 1,
+                            kernel.height() - rKernel.y - 1);
+    Func ATAp("A^TAp");
+    ATAp(x, y, c) = KTKp(x, y, c);
+    std::vector<Func> rKps;
+    std::vector<Func> rKTrKps;
+    for (int regKernelId = 0; regKernelId < (int)regKernels.size(); regKernelId++) {
+        const Buffer<float> &regKernel = regKernels[regKernelId];
+        RDom rRegKernel(regKernel);
+        Func rK = regKernelsFunc[regKernelId];
+        Func rKp("rKp");
+        rKp(x, y, c) = 0.f;
+        rKp(x, y, c) += clampedP(x + rRegKernel.x - regKernel.width()  / 2,
+                                 y + rRegKernel.y - regKernel.height() / 2,
+                                 c) *
+                        rK(rRegKernel.x, rRegKernel.y);
+        Func rKTrKp("rK^TrKp");
+        rKTrKp(x, y, c) = 0.f;
+        rKTrKp(x, y, c) += rKp(x + rRegKernel.x - regKernel.width()  / 2,
+                               y + rRegKernel.y - regKernel.height() / 2,
+                               c) *
+                           rK(regKernel.width()  - rRegKernel.x - 1,
+                              regKernel.height() - rRegKernel.y - 1);
+        rKps.push_back(rKp);
+        rKTrKps.push_back(rKTrKp);
+        Expr w = regKernelsWeightFunc[regKernelId]();
+        ATAp(x, y, c) += rKTrKp(x, y, c) * w * w;
+
     }
-    // estimate output sizes
-    // Pipeline cgIteration({xkFunc});
+    Func pTATAp("p^TA^TAp");
+    pTATAp() = 0.f;
+    pTATAp() += clampedP(rImage.x, rImage.y, rImage.z) *
+                ATAp(rImage.x, rImage.y, rImage.z);
 
-    // Target compile_target = get_jit_target_from_environment();
-    // cgIteration.auto_schedule(compile_target);
+    Func alpha("alpha");
+    alpha() = rTr() / pTATAp();
+    // x = x + alpha * p
+    Func nextX("nextX");
+    nextX(x, y, c) = xk(x, y, c) + alpha() * clampedP(x, y, c);
+    // r = r - alpha * A^TAp
+    Func nextR("nextR");
+    nextR(x, y, c) = r(x, y, c) - alpha() * ATAp(x, y, c);
+    // beta = nextR^TnextR / r^Tr
+    Func nRTnR("nRTnR");
+    nRTnR() = 0.f;
+    nRTnR() += nextR(rImage.x, rImage.y, rImage.z) *
+               nextR(rImage.x, rImage.y, rImage.z);
+    Func beta("beta");
+    beta() = nRTnR() / rTr();
+    Func nextP("nextP");
+    nextP(x, y, c) = nextR(x, y, c) + beta() * clampedP(x, y, c);
+    Func nextXrp("nextXrp");
+    nextXrp(x, y, c, n) = 0.f;
+    nextXrp(x, y, c, 0) = nextX(x, y, c);
+    nextXrp(x, y, c, 1) = nextR(x, y, c);
+    nextXrp(x, y, c, 2) = nextP(x, y, c);
+    nextXrp.estimate(x, 0, xrp.width())
+           .estimate(y, 0, xrp.height())
+           .estimate(c, 0, xrp.channels())
+           .estimate(n, 0, 3);
 
-    // Realization realization =
-    //     cgIteration.realize(blurred.width(), blurred.height(), blurred.channels());
-    // fill(realization[0], xk);
-
-    // sprintf(fnbuf, "deblurred_%d.png", iteration);
-    // save_float_image(xk, fnbuf);
-
-    Func target("target");
-    target(x, y, c) = image(x, y, c);
-    Func loss("loss");
-    loss() = 0.f;
-    Expr diff = target(rImage.x, rImage.y, rImage.z) -
-                xkFunc(rImage.x, rImage.y, rImage.z);
-    loss() += diff * diff;
-
-    Derivative d = propagate_adjoints(loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
+    Derivative d = propagate_adjoints(nextXrp, dXrp);
+    Func nextDXrp = d.adjoints[FuncKey{xrpFunc.name(), -1}];
+    // print_func(nextDXrp);
+    nextDXrp.estimate(x, 0, xrp.width())
+            .estimate(y, 0, xrp.height())
+            .estimate(c, 0, xrp.channels())
+            .estimate(n, 0, 3);
     std::vector<Func> pipelineFuncs;
-    std::vector<Buffer<>> buffers;
-    // apply_compute_root(xkFunc);
-    xkFunc.estimate(x, 0, blurred.width())
-          .estimate(y, 0, blurred.height())
-          .estimate(c, 0, blurred.channels());
-    pipelineFuncs.push_back(xkFunc);
-    buffers.push_back(Buffer<float>(image.width(), image.height(), image.channels()));
-    // for (int i = 0; i < (int)regKernelsWeight.size(); i++) {
-    //     pipelineFuncs.push_back(adjoints[FuncKey{regKernelsWeightFunc[i].name(), -1}]);
-    //     // apply_compute_root(pipelineFuncs.back());
-    //     pipelineFuncs.push_back(adjoints[FuncKey{regKernelsFunc[i].name(), -1}]);
-    //     pipelineFuncs.back().estimate(x, 0, regKernels[i].width())
-    //                         .estimate(y, 0, regKernels[i].height());
-    //     // apply_compute_root(pipelineFuncs.back());
-    //     buffers.push_back(Buffer<float>::make_scalar());
-    //     buffers.push_back(Buffer<float>(regKernels[i].width(), regKernels[i].height()));
-    // }
-    Pipeline pipeline(pipelineFuncs);
-    pipeline.auto_schedule(get_jit_target_from_environment());
-    Realization realization(buffers);
-    pipeline.realize(realization);
-
-    Buffer<float> deblurred = buffers[0];
-    sprintf(fnbuf, "deblurred_%d.png", iteration);
-    save_float_image(deblurred, fnbuf);
+    std::vector<Buffer<>> pipelineBuffers;
+    pipelineFuncs.push_back(nextDXrp);
+    pipelineBuffers.push_back(Buffer<float>(xrp.width(), xrp.height(), xrp.channels(), 3));
     for (int i = 0; i < (int)regKernelsWeight.size(); i++) {
-        Buffer<float> w = buffers[2 * i + 1].as<float>();
-        regKernelsWeightGrad.push_back(w(0));
-        regKernelsGrad.push_back(buffers[2 * i + 2].as<float>());
+        Func dW = d.adjoints[FuncKey{regKernelsWeightFunc[i].name(), -1}];
+        Func dRK = d.adjoints[FuncKey{regKernelsFunc[i].name(), -1}];
+        dRK.estimate(x, 0, regKernels[i].width())
+           .estimate(y, 0, regKernels[i].height());
+        pipelineFuncs.push_back(dW);
+        pipelineBuffers.push_back(Buffer<float>::make_scalar());
+        pipelineFuncs.push_back(dRK);
+        pipelineBuffers.push_back(Buffer<float>(regKernels[i].width(), regKernels[i].height()));
     }
 
-    float error = 0.f;
-    for (int c = 0; c < xk.channels(); c++) {
-        for (int y = 0; y < xk.height(); y++) {
-            for (int x = 0; x < xk.width(); x++) {
-                error += (deblurred(x, y, c) - image(x, y, c)) *
-                         (deblurred(x, y, c) - image(x, y, c));
-            }
-        }
-    }
-    error /= float(xk.width() * xk.height() * xk.channels());
-    std::cout << "error:" << error << std::endl;
+    Pipeline pipeline(pipelineFuncs);
+    Realization realization(pipelineBuffers);
+
+    // int tileX = 64;
+    // int tileY = 64;
+    // int vectorWidth = 8;
+    // nextXrp.compute_root()
+    //        .tile(x, y, xo, yo, xi, yi, tileX, tileY)
+    //        .parallel(yo)
+    //        .vectorize(xi, vectorWidth);
+    // nextXrp.update(0)
+    //        .tile(x, y, xo, yo, xi, yi, tileX, tileY)
+    //        .parallel(yo)
+    //        .vectorize(xi, vectorWidth);
+    // nextXrp.update(1)
+    //        .tile(x, y, xo, yo, xi, yi, tileX, tileY)
+    //        .parallel(yo)
+    //        .vectorize(xi, vectorWidth);
+    // nextXrp.update(2)
+    //        .tile(x, y, xo, yo, xi, yi, tileX, tileY)
+    //        .parallel(yo)
+    //        .vectorize(xi, vectorWidth);
+    // alpha.compute_root();
+    // Func pTATApInt = pTATAp.update().rfactor({{rImage.x, rx}, {rImage.y, ry}});
+    // pTATApInt.compute_root()
+    //          .update()
+    //          .parallel(ry, 8)
+    //          .vectorize(rx, vectorWidth);
+    // ATAp.compute_root()
+    //     .tile(x, y, xo, yo, xi, yi, tileX, tileY)
+    //     .parallel(yo)
+    //     .vectorize(xi, vectorWidth);
+    // for (int i = 0; i < (int)regKernels.size(); i++) {
+    //     ATAp.update(i)
+    //         .tile(x, y, xo, yo, xi, yi, tileX, tileY)
+    //         .parallel(yo)
+    //         .vectorize(xi, vectorWidth);
+    // }
+    // Kp.in()
+    //   .compute_at(ATAp, xo)
+    //   .vectorize(x, vectorWidth);
+    // for (int i = 0; i < (int)regKernels.size(); i++) {
+    //     rKps[i].in()
+    //            .compute_at(ATAp, xo)
+    //            .vectorize(x, vectorWidth);
+    // }
+    // Func rTrInt = rTr.update().rfactor({{rImage.x, rx}, {rImage.y, ry}});
+    // rTrInt.compute_root()
+    //       .update()
+    //       .parallel(ry, 8)
+    //       .vectorize(rx, vectorWidth);
+
+    // beta.compute_root();
+    // Func nRTnRInt = nRTnR.update().rfactor({{rImage.x, rx}, {rImage.y, ry}});
+    // nRTnRInt.compute_root()
+    //         .update()
+    //         .parallel(ry, 8)
+    //         .vectorize(rx, vectorWidth);
+
+    pipeline.auto_schedule(get_jit_target_from_environment(true));
+    return std::make_pair(pipeline, realization);
 }
 
 int main(int argc, char **argv) {
@@ -407,11 +586,97 @@ int main(int argc, char **argv) {
     float dyWeight = 1.f;
 
     std::mt19937 rng;
-    float learningRate = 1e-4f;
+    // float learningRate = 1e-4f;
     Buffer<float> kernel = generate_kernel(5, rng);
+    Buffer<float> blurred = blur_image(input, kernel, 0.0f, rng);
     std::vector<float> regKernelsWeight = {dxWeight, dyWeight};
     std::vector<Buffer<float>> regKernels = {dxKernel, dyKernel};
-    Func r0 = cgInitializationFunc(blurred, kernel, regKernelsWeight, regKernels);
+    auto initFunc
+        = cgInitializationFunc(blurred, kernel, regKernelsWeight, regKernels);
+    Pipeline initPipeline = std::get<0>(initFunc);
+    Realization initRealization = std::get<1>(initFunc);
+    initPipeline.realize(initRealization);
+    Buffer<float> xrp = initRealization[0];
+    auto fwdIterFunc
+        = cgIterationFuncFwd(kernel, xrp, regKernelsWeight, regKernels);
+    Pipeline fwdIterPipeline = std::get<0>(fwdIterFunc);
+    Realization fwdIterRealization = std::get<1>(fwdIterFunc);
+    fwdIterPipeline.compile_jit(get_jit_target_from_environment());
+    save_float_image(xrp, "x.png", 0);
+    // Fwd pass
+    std::vector<Buffer<float>> xrps;
+    auto fwdStart = std::chrono::system_clock::now();
+    for (int cgIter = 0; cgIter < 10; cgIter++) {
+        xrps.push_back(copy(xrp));
+        fwdIterPipeline.realize(fwdIterRealization);
+        Buffer<float> nextXRP = fwdIterRealization[0];
+        fill(nextXRP, xrp);
+        // char buf[256];
+        // sprintf(buf, "x_%d.png", cgIter);
+        // save_float_image(xrp, buf, 0);
+    }
+    auto fwdEnd = std::chrono::system_clock::now();
+    std::chrono::duration<double> fwdSlapsedSeconds = fwdEnd - fwdStart;
+    std::cout << "Forward time:" << fwdSlapsedSeconds.count() << std::endl;
+    Buffer<float> dXrp(xrp.width(), xrp.height(), xrp.channels(), 3);
+    for (int c = 0; c < xrp.channels(); c++) {
+        for (int y = 0; y < xrp.height(); y++) {
+            for (int x = 0; x < xrp.width(); x++) {
+                dXrp(x, y, c, 0) = 2.f * (xrp(x, y, c, 0) - input(x, y, c));
+            }
+        }
+    }
+    for (int n = 1; n < 3; n++) {
+        for (int c = 0; c < xrp.channels(); c++) {
+            for (int y = 0; y < xrp.height(); y++) {
+                for (int x = 0; x < xrp.width(); x++) {
+                    dXrp(x, y, c, n) = 0.f;
+                }
+            }
+        }
+    }
+
+    std::vector<Buffer<float>> dW;
+    std::vector<Buffer<float>> dRK;
+    for (int i = 0; i < (int)regKernelsWeight.size(); i++) {
+        dW.push_back(Buffer<float>::make_scalar());
+        dRK.push_back(Buffer<float>(regKernels[i].width(), regKernels[i].height()));
+        dW[i](0) = 0.f;
+        for (int y = 0; y < regKernels[i].height(); y++) {
+            for (int x = 0; x < regKernels[i].width(); x++) {
+                dRK[i](x, y) = 0.f;
+            }
+        }
+    }
+    auto revIterFunc
+        = cgIterationFuncRev(kernel, xrp, dXrp, regKernelsWeight, regKernels);
+    Pipeline revIterPipeline = std::get<0>(revIterFunc);
+    Realization revIterRealization = std::get<1>(revIterFunc);
+    revIterPipeline.compile_jit(get_jit_target_from_environment());
+    // Rev pass
+    auto revStart = std::chrono::system_clock::now();
+    for (int cgIter = 9; cgIter >= 0; cgIter--) {
+        fill(xrps[cgIter], xrp);
+        revIterPipeline.realize(revIterRealization);
+        Buffer<float> nextDXrp = revIterRealization[0];
+        fill(nextDXrp, dXrp);
+        for (int i = 0; i < (int)regKernelsWeight.size(); i++) {
+            Buffer<float> dWi = revIterRealization[2 * i + 1];
+            Buffer<float> dRKi = revIterRealization[2 * i + 2];
+            dW[i](0) += dWi(0);
+            for (int y = 0; y < regKernels[i].height(); y++) {
+                for (int x = 0; x < regKernels[i].width(); x++) {
+                    dRK[i](x, y) += dRKi(x, y);
+                }
+            }
+        }
+    }
+    auto revEnd = std::chrono::system_clock::now();
+    std::chrono::duration<double> revSlapsedSeconds = revEnd - revStart;
+    std::cout << "Reverse time:" << revSlapsedSeconds.count() << std::endl;
+
+    // std::cerr << "dxWeight:" << dW[0](0) << std::endl;
+    // std::cerr << "dyWeight:" << dW[1](0) << std::endl;
 
     // for (int iter = 0; iter < 1; iter++) {
     //     std::vector<float> regKernelsWeightGrad;
