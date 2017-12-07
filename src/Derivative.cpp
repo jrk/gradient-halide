@@ -125,6 +125,9 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             // Apply boundary condition if this is the first visit
             if (update_id == func.num_update_definitions() - 1) {
                 Func adjoint_func = adjoint_funcs[func_key];
+                FuncKey new_func_key{func.name() + "_def__", update_id};
+                adjoint_funcs[new_func_key] = adjoint_func;
+
                 adjoint_func = BoundaryConditions::constant_exterior(
                     adjoint_func, 0.f, box_to_vector(bounds),
                     adjoint_func.name() + std::string("_ce"));
