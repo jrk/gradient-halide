@@ -337,7 +337,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
           internal_error << "The derivative of " << op->name << " is not implemented.";
       }
     } else if (op->call_type == Call::Halide) { // Halide function call
-    // } else if (op->func.defined()) { // Halide function call
         Function func(op->func);
         // Avoid implicit functions
         // TODO: FIX THIS
@@ -619,8 +618,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
         // print_func(func_to_update);
     } else if (op->call_type != Call::Image) {  // Image loads should not be propagated
-      // op->call_type is Call::Intrinsic or Call::PureIntrinsic
-      internal_error << "The derivative of " << op->name << " is not implemented.";
+        // op->call_type is Call::Intrinsic or Call::PureIntrinsic
+        internal_error << "The derivative of " << op->name << " is not implemented.";
     }
 }
 
@@ -635,6 +634,19 @@ Derivative propagate_adjoints(const Func &output,
     visitor.propagate_adjoints(output, adjoint, output_bounds);
     return Derivative{visitor.get_adjoint_funcs(),
                       visitor.get_reductions()};
+}
+
+Derivative propagate_adjoints(const Func &output,
+                              const Buffer<float> &adjoint) {
+    user_assert(output.dimensions() == adjoint.dimensions());
+    std::vector<std::pair<Expr, Expr>> bounds;
+    for (int dim = 0; dim < adjoint.dimensions(); dim++) {
+        bounds.push_back(std::make_pair(Expr(adjoint.min(dim)),
+                                        Expr(adjoint.min(dim) + adjoint.extent(dim) - 1)));
+    }
+    Func adjoint_func("adjoint_func");
+    adjoint_func(_) = adjoint(_);
+    return propagate_adjoints(output, adjoint_func, bounds);
 }
 
 Derivative propagate_adjoints(const Func &output) {
@@ -675,17 +687,22 @@ void print_func(const Func &func, bool recursive) {
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
             Internal::ReductionDomain rdom;
             if (update_id >= 0) {
-                Internal::debug(0) << "    update:" << func.name() << "(" <<
-                    Internal::simplify(func.update_args(update_id)[0]);
-                for (int i = 1; i < (int)func.update_args(update_id).size(); i++) {
-                    Internal::debug(0) << ", " << Internal::simplify(func.update_args()[i]);
+                Internal::debug(0) << "    update:" << func.name() << "(";
+                if (func.update_args(update_id).size() > 0) {
+                    Internal::debug(0) << Internal::simplify(func.update_args(update_id)[0]);
+                    for (int i = 1; i < (int)func.update_args(update_id).size(); i++) {
+                        Internal::debug(0) << ", " << Internal::simplify(func.update_args()[i]);
+                    }
                 }
                 Internal::debug(0) << ") = " << Internal::simplify(func.update_value(update_id)) << "\n";
                 rdom = Internal::extract_rdom(Internal::simplify(func.update_value(update_id)));
             } else {
-                Internal::debug(0) << "    " << func.name() << "(" << func.args()[0];
-                for (int i = 1; i < (int)func.args().size(); i++) {
-                    Internal::debug(0) << ", " << Internal::simplify(func.args()[i]);
+                Internal::debug(0) << "    " << func.name() << "(";
+                if (func.args().size() > 0) {
+                    Internal::debug(0) << func.args()[0];
+                    for (int i = 1; i < (int)func.args().size(); i++) {
+                        Internal::debug(0) << ", " << Internal::simplify(func.args()[i]);
+                    }
                 }
                 Internal::debug(0) << ") = " << Internal::simplify(func.value()) << "\n";
                 rdom = Internal::extract_rdom(Internal::simplify(func.value()));
