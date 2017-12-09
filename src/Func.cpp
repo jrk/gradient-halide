@@ -238,11 +238,19 @@ std::pair<int, int> Func::add_implicit_vars(vector<Var> &args) const {
 std::pair<int, int> Func::add_implicit_vars(vector<Expr> &args) const {
     int placeholder_pos = -1;
     int count = 0;
+    for (const auto &arg : args) {
+        const Variable *var = arg.as<Variable>();
+        if (var && Var::is_implicit(var->name) && var->name != _.name()) {
+            count++;
+        }
+    }
+
     std::vector<Expr>::iterator iter = args.begin();
     while (iter != args.end()) {
         const Variable *var = iter->as<Variable>();
-        if (var && var->name == _.name())
+        if (var && var->name == _.name()) {
             break;
+        }
         iter++;
     }
     if (iter != args.end()) {
