@@ -115,6 +115,16 @@ std::vector<std::string> gather_variables(const Expr &expr,
 	return gatherer.gather(expr, filter);
 }
 
+std::vector<std::string> gather_variables(const Expr &expr,
+		const std::vector<Var> &filter) {
+    std::vector<std::string> str_filter;
+    str_filter.reserve(filter.size());
+    for (const auto &var : filter) {
+        str_filter.push_back(var.name());
+    }
+    return gather_variables(expr, str_filter);
+}
+
 class RVarGatherer : public IRGraphVisitor {
 public:
     using IRGraphVisitor::visit;

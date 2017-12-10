@@ -343,6 +343,16 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
           for (size_t i = 0; i < op->args.size(); i++) {
               accumulate(op->args[i], adjoint * exp(op->args[i]));
           }
+      } else if (op->name == "sin_f32") {
+          // d/dx sin(x) = cos(x)
+          for (size_t i = 0; i < op->args.size(); i++) {
+              accumulate(op->args[i], adjoint * cos(op->args[i]));
+          }
+      } else if (op->name == "cos_f32") {
+          // d/dx cos(x) = -sin(x)
+          for (size_t i = 0; i < op->args.size(); i++) {
+              accumulate(op->args[i], - adjoint * sin(op->args[i]));
+          }
       } else if (op->name == "ceil_f32") {
           // TODO: d/dx = dirac(n) for n in Z ...
           for (size_t i = 0; i < op->args.size(); i++) {
@@ -428,7 +438,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         //
         // First gather all arguments that contains multiple pure variables
         // we don't want to mess with system solving yet, so we invalidate all of them
-        // This is currently simple and conservative, solving each dimension independently, so 
+        // This is currently simple and conservative, solving each dimension independently, so
         // inter-dependencies like:
         // g(x, y) = f(x*y, x+y)
         // can't be simplified. In principle this can be inverted by solving a system of equations.
@@ -525,7 +535,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         for (int lhs_id = 0; lhs_id < (int)lhs.size(); lhs_id++) {
             Expr lhs_arg = lhs[lhs_id];
             if (!canonicalized[lhs_id]) {
-                std::vector<std::string> variables = gather_variables(lhs_arg, func.args());
+                std::vector<std::string> variables = gather_variables(lhs_arg, current_func.function().args());
                 RDom r(bounds);
                 for (int var_id = 0; var_id < (int)variables.size(); var_id++) {
                     for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
@@ -639,6 +649,10 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // op->call_type is Call::Intrinsic or Call::PureIntrinsic
         if (op->is_intrinsic(Call::abs)) {
             accumulate(op->args[0], adjoint*select(op->args[0] > 0, -1.0f, 1.0f));
+        } else if (op->is_intrinsic(Call::likely)) {
+            accumulate(op->args[0], adjoint);
+        } else if (op->is_intrinsic(Call::undef)) {
+            // do nothing
         } else {
             internal_error << "The derivative of intrinsic " << op->name << " is not implemented.";
         }
