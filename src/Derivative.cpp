@@ -96,7 +96,12 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             if (is_final_output) {
                 adjoint_func(func.args()) = adjoint(func.args());
             } else {
-                adjoint_func(func.args()) = 0.f;
+                if (func.values().size() == 1) {
+                    adjoint_func(func.args()) = 0.f;
+                } else {
+                    std::vector<Expr> init(func.values().size(), Expr(0.f));
+                    adjoint_func(func.args()) = Tuple(init);
+                }
             }
             FuncKey func_key{func.name(), update_id};
             adjoint_funcs[func_key] = adjoint_func;
@@ -115,17 +120,23 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             FuncKey func_key{func.name(), update_id};
             internal_assert(func_bounds.find(func.name()) != func_bounds.end());
 
-            // Set up boundary condition
-            const Box &bounds = func_bounds[func.name()];
-            // Apply boundary condition if this is the first visit
+            // Set up boundary condition if this is the first visit
             if (update_id == func.num_update_definitions() - 1) {
                 Func adjoint_func = adjoint_funcs[func_key];
                 FuncKey new_func_key{func.name() + "_def__", update_id};
                 adjoint_funcs[new_func_key] = adjoint_func;
 
-                adjoint_func = BoundaryConditions::constant_exterior(
-                    adjoint_func, 0.f, box_to_vector(bounds),
-                    adjoint_func.name() + std::string("_ce"));
+                const Box &bounds = func_bounds[func.name()];
+                if (adjoint_func.values().size() == 1) {
+                    adjoint_func = BoundaryConditions::constant_exterior(
+                        adjoint_func, 0.f, box_to_vector(bounds),
+                        adjoint_func.name() + std::string("_ce"));
+                } else {
+                    std::vector<Expr> values(adjoint_func.values().size(), Expr(0.f));
+                    adjoint_func = BoundaryConditions::constant_exterior(
+                        adjoint_func, Tuple(values), box_to_vector(bounds),
+                        adjoint_func.name() + std::string("_ce"));
+                }
                 adjoint_funcs[func_key] = adjoint_func;
             }
 
@@ -143,7 +154,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 Func &next_adjoint_func = adjoint_funcs[next_func_key];
                 std::vector<Var> next_args = next_adjoint_func.args();
                 std::vector<Expr> update_args = func.update_args(update_id);
-                // Check if next_args are the same as update_args 
+                // Check if next_args are the same as update_args
                 // e.g.
                 // If they are the same simply set everything to zero
                 bool is_noop = true;
@@ -159,14 +170,26 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                     next_adjoint_func(next_args) =
                         adjoint_funcs[func_key](next_args);
                 }
-                next_adjoint_func(update_args) = 0.f; // e.g. f'(1) = 0.f
+                if (func.values().size() == 1) {
+                    next_adjoint_func(update_args) = 0.f;
+                } else {
+                    std::vector<Expr> init(func.values().size(), Expr(0.f));
+                    next_adjoint_func(update_args) = Tuple(init);
+                }
+
+                // next_adjoint_func(update_args) = 0.f; // e.g. f'(1) = 0.f
             }
 
             // Now we want to propagate the derivatives at expression level
-            // Topologically sort the expressions
-            std::vector<Expr> expr_list =
-                update_id >= 0 ? sort_expressions(func.update_value(update_id)) :
-                                 sort_expressions(func.value());
+            // Topologically sort the expressions for each value in the tuple
+            std::vector<Expr> expr_list;
+            Tuple tuple = update_id < 0 ? func.values() : func.update_values(update_id);
+            std::vector<const BaseExprNode *> output_exprs;
+            for (const auto &expr : tuple.as_vector()) {
+                std::vector<Expr> value_expr_list = sort_expressions(expr);
+                expr_list.insert(expr_list.end(), value_expr_list.begin(), value_expr_list.end());
+                output_exprs.push_back((const BaseExprNode *)expr_list.back().get());
+            }
 
             // TODO: replace let_var_mapping with Scope
             // Gather let variables
@@ -192,8 +215,10 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                     update_args.push_back(var);
                 }
             }
-            expr_adjoints[(const BaseExprNode *)expr_list.back().get()] =
-                Call::make(adjoint_funcs[func_key].function(), update_args);
+            for (int i = 0; i < (int)output_exprs.size(); i++) {
+                expr_adjoints[output_exprs[i]] =
+                    Call::make(adjoint_funcs[func_key].function(), update_args, i);
+            }
 
             // Traverse the expressions in reverse order
             for (auto it = expr_list.rbegin(); it != expr_list.rend(); it++) {
@@ -597,7 +622,11 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
         // TODO: maybe do some analysis on lhs to avoid applying boundary conditions to
         //       function calls in adjoint
-        func_to_update(lhs) += adjoint;
+        if (func_to_update.values().size() == 1) {
+            func_to_update(lhs) += adjoint;
+        } else {
+            func_to_update(lhs)[op->value_index] += adjoint;
+        }
 
         // debug(0) << "lhs after canonicalization:";
         // for (const auto &arg : lhs) {
@@ -615,14 +644,13 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
     }
 }
-
 } // namespace Internal
 
 
 Derivative propagate_adjoints(const Func &output,
                               const Func &adjoint,
                               const std::vector<std::pair<Expr, Expr>> &output_bounds) {
-    user_assert(output.dimensions() == adjoint.dimensions()) 
+    user_assert(output.dimensions() == adjoint.dimensions())
       << "output dimensions and adjoint dimensions must match\n";
     user_assert((int)output_bounds.size() == adjoint.dimensions()) 
       << "output_bounds and adjoint dimensions must match\n";
@@ -1253,6 +1281,45 @@ void test_implicit_vars() {
     CMP(d_copy_buf(1), 1.f);
 }
 
+void test_tuple() {
+    Var x("x");
+    float input_data[] = {1.f, 2.f, 3.f};
+    Buffer<float> input(input_data, 3, "input");
+    Func f_input("f_input");
+    f_input(x) = input(x);
+    Func tuple("tuple");
+    tuple(x) = Tuple(f_input(x), f_input(x + 1));
+    tuple(x) += Tuple(1.f, 1.f);
+    Func reduce("reduce");
+    reduce(x) = tuple(x)[0] + tuple(x)[1];
+    RDom r(0, 2);
+    Func f_loss("f_loss");
+    f_loss() = 0.f;
+    f_loss() += reduce(r.x);
+    Derivative d = propagate_adjoints(f_loss);
+    std::map<FuncKey, Func> adjoints = d.adjoints;
+    // tuple(0) = {1, 2}
+    // tuple(1) = {2, 3}
+    // reduce(0) = 3
+    // reduce(1) = 5
+    // loss = reduce(0) + reduce(1)
+    //      = tuple(0)[0] + tuple(0)[1] + tuple(1)[0] + tuple(1)[1]
+    //      = input(0) + input(1) * 2 + input(2)
+
+    Realization d_tuple_buf = adjoints[FuncKey{tuple.name(), -1}].realize(2);
+    Buffer<float> d_tuple_buf_0 = d_tuple_buf[0];
+    Buffer<float> d_tuple_buf_1 = d_tuple_buf[1];
+    CMP(d_tuple_buf_0(0), 1.f);
+    CMP(d_tuple_buf_0(1), 1.f);
+    CMP(d_tuple_buf_1(0), 1.f);
+    CMP(d_tuple_buf_1(1), 1.f);
+
+    Buffer<float> d_input_buf = adjoints[FuncKey{f_input.name(), -1}].realize(3);
+    CMP(d_input_buf(0), 1.f);
+    CMP(d_input_buf(1), 2.f);
+    CMP(d_input_buf(2), 1.f);
+}
+
 void derivative_test() {
     test_simple_bounds_inference();
     test_simple_bounds_inference_update();
@@ -1270,6 +1337,7 @@ void derivative_test() {
     test_repeat_edge();
     test_second_order();
     test_implicit_vars();
+    test_tuple();
     debug(0) << "Derivative test passed\n";
 }
 
