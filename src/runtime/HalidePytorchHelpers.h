@@ -34,7 +34,6 @@ inline Buffer<float> wrap(THCudaTensor* tensor) {
   }
   float* pData  = THCudaTensor_data(state, tensor);
   Buffer<float> buffer(dims);
-  // Buffer<float> buffer(pData, dims);
   const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();
   buffer.device_wrap_native(cuda_interface, (uint64_t)pData);
   return buffer;

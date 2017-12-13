@@ -283,11 +283,11 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     do_indent();
     stream << "// TODO: Check ndimensions\n";
 
-    do_indent();
-    stream << "// run code!\n";
 
     do_indent();
-    stream << simple_name << "(";
+    stream << "// run code!\n";
+    do_indent();
+    stream << "int ret = " << simple_name << "(";
     for (size_t i = 0; i < args.size(); i++) {
       if (args[i].is_buffer()) {
         stream 
@@ -299,6 +299,33 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
       if (i < args.size()-1) stream << ", ";
     }
     stream << ");\n";
+
+    do_indent();
+    stream << "printf(\"ret val %d \", ret);\n";
+
+    // if(isCuda) {
+    //   do_indent();
+    //   stream << "// Unwrap Halide buffers\n";
+    //   for (size_t i = 0; i < buffer_args.size(); i++) {
+    //     if (buffer_args[i].is_buffer()) {
+    //       do_indent();
+    //       // stream 
+    //       //   << print_name(args[i].name)
+    //       //   << "_buffer"
+    //       //   << ".device_sync();\n";
+    //
+    //       // do_indent();
+    //       // stream 
+    //       //   << print_name(args[i].name)
+    //       //   << "_buffer"
+    //       //   << ".device_detach_native();\n";
+    //     }
+    //   }
+    //   stream << "\n";
+    // }
+
+    do_indent();
+    stream << "printf(\"done processing "<< simple_name <<" \\n\");\n";
 
     do_indent();
     stream << "// Free references\n";
