@@ -18,7 +18,10 @@ bool has_let_defined(const Expr &expr, const std::string &name);
 Expr remove_let_definitions(const Expr &expr);
 std::vector<std::string> gather_variables(const Expr &expr,
 	const std::vector<std::string> &filter);
-std::map<std::string, std::pair<Expr, Expr>> gather_rvariables(const Expr &expr);
+std::vector<std::string> gather_variables(const Expr &expr,
+	const std::vector<Var> &filter);
+std::map<std::string, std::pair<Expr, Expr>> gather_rvariables(Expr expr);
+std::map<std::string, std::pair<Expr, Expr>> gather_rvariables(Tuple tuple);
 Expr add_let_expression(const Expr &expr,
                         const std::map<std::string, Expr> &let_var_mapping,
                         const std::vector<std::string> &let_variables);

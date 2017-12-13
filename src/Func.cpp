@@ -162,14 +162,13 @@ bool Func::is_extern() const {
 void Func::define_extern(const std::string &function_name,
                          const std::vector<ExternFuncArgument> &args,
                          const std::vector<Type> &types,
-                         int dimensionality,
+                         const std::vector<Var> &arguments,
                          NameMangling mangling,
                          DeviceAPI device_api,
                          bool uses_old_buffer_t) {
-    vector<string> dim_names(dimensionality);
-    // Use _0, _1, _2 etc for the storage dimensions
-    for (int i = 0; i < dimensionality; i++) {
-        dim_names[i] = Var::implicit(i).name();
+    vector<string> dim_names(arguments.size());
+    for (size_t i = 0; i < arguments.size(); i++) {
+        dim_names[i] = arguments[i].name();
     }
     func.define_extern(function_name, args, types, dim_names,
                        mangling, device_api, uses_old_buffer_t);
@@ -239,11 +238,19 @@ std::pair<int, int> Func::add_implicit_vars(vector<Var> &args) const {
 std::pair<int, int> Func::add_implicit_vars(vector<Expr> &args) const {
     int placeholder_pos = -1;
     int count = 0;
+    for (const auto &arg : args) {
+        const Variable *var = arg.as<Variable>();
+        if (var && Var::is_implicit(var->name) && var->name != _.name()) {
+            count++;
+        }
+    }
+
     std::vector<Expr>::iterator iter = args.begin();
     while (iter != args.end()) {
         const Variable *var = iter->as<Variable>();
-        if (var && var->name == _.name())
+        if (var && var->name == _.name()) {
             break;
+        }
         iter++;
     }
     if (iter != args.end()) {
@@ -2446,6 +2453,8 @@ Stage Func::update(int idx) {
 }
 
 Func::operator Stage() const {
+    user_assert(!func.has_extern_definition())
+        << "Extern func \"" << name() << "\" cannot be converted into Stage\n";
     return Stage(func.definition(), name(), args(), func.schedule());
 }
 

@@ -99,7 +99,7 @@ public:
     void visit(const Variable *op) {
         for (const auto &pv : filter) {
             if (op->name == pv) {
-                variables.push_back(op->name);    
+                variables.push_back(op->name);
             }
         }
     }
@@ -115,11 +115,25 @@ std::vector<std::string> gather_variables(const Expr &expr,
 	return gatherer.gather(expr, filter);
 }
 
+std::vector<std::string> gather_variables(const Expr &expr,
+		const std::vector<Var> &filter) {
+    std::vector<std::string> str_filter;
+    str_filter.reserve(filter.size());
+    for (const auto &var : filter) {
+        str_filter.push_back(var.name());
+    }
+    return gather_variables(expr, str_filter);
+}
+
 class RVarGatherer : public IRGraphVisitor {
 public:
     using IRGraphVisitor::visit;
     std::map<std::string, std::pair<Expr, Expr>> gather(const Expr &expr) {
         expr.accept(this);
+        return rvar_map;
+    }
+
+    std::map<std::string, std::pair<Expr, Expr>> get_rvar_map() const {
         return rvar_map;
     }
 
@@ -138,9 +152,16 @@ private:
     std::map<std::string, std::pair<Expr, Expr>> rvar_map;
 };
 
-std::map<std::string, std::pair<Expr, Expr>> gather_rvariables(const Expr &expr) {
+std::map<std::string, std::pair<Expr, Expr>> gather_rvariables(Expr expr) {
+    return gather_rvariables(Tuple(expr));
+}
+
+std::map<std::string, std::pair<Expr, Expr>> gather_rvariables(Tuple tuple) {
 	RVarGatherer gatherer;
-	return gatherer.gather(expr);
+    for (const auto &expr : tuple.as_vector()) {
+        gatherer.gather(expr);
+    }
+	return gatherer.get_rvar_map();
 }
 
 Expr add_let_expression(const Expr &expr,
@@ -242,7 +263,7 @@ std::map<std::string, Box> inference_bounds(const Func &func,
     for (const auto &it : env) {
         Func func = Func(it.second);
         for (int i = 0; i < func.num_update_definitions(); i++) {
-            std::map<std::string, std::pair<Expr, Expr>> rvars = gather_rvariables(func.update_value(i));
+            std::map<std::string, std::pair<Expr, Expr>> rvars = gather_rvariables(func.update_values(i));
             for (const auto &it : rvars) {
                 scope.push(it.first, Interval(it.second.first, it.second.first + it.second.second - 1));
             }
@@ -265,16 +286,18 @@ std::map<std::string, Box> inference_bounds(const Func &func,
             scope.push(func.args()[i].name(), current_bounds[i]);
         }
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
-            std::map<std::string, Box> update_bounds =
-                boxes_required(update_id == -1 ? func.value() : func.update_value(update_id),
-                               scope);
-            for (const auto &it : update_bounds) {
-                auto found = bounds.find(it.first);
-                if (found == bounds.end()) {
-                    bounds[it.first] = it.second;
-                } else {
-                    Box new_box = box_union(found->second, it.second);
-                    bounds[it.first] = new_box;
+            Tuple tuple = update_id == -1 ? func.values() : func.update_values(update_id);
+            for (const auto &expr : tuple.as_vector()) {
+                std::map<std::string, Box> update_bounds =
+                    boxes_required(expr, scope);
+                for (const auto &it : update_bounds) {
+                    auto found = bounds.find(it.first);
+                    if (found == bounds.end()) {
+                        bounds[it.first] = it.second;
+                    } else {
+                        Box new_box = box_union(found->second, it.second);
+                        bounds[it.first] = new_box;
+                    }
                 }
             }
         }
