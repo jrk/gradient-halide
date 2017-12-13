@@ -334,7 +334,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
               accumulate(op->args[i], 0.0f);
           }
       } else if (op->name == "sqrt_f32") {
-          accumulate(op->args[0], 1.0f/sqrt(op->args[0]));
+          accumulate(op->args[0], adjoint*0.5f/sqrt(op->args[0]));
       } else {
           internal_error << "The derivative of " << op->name << " is not implemented.";
       }
@@ -622,7 +622,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
     } else if (op->call_type != Call::Image) {  // Image loads should not be propagated
         // op->call_type is Call::Intrinsic or Call::PureIntrinsic
         if (op->is_intrinsic(Call::abs)) {
-            accumulate(op->args[0], adjoint*select(op->args[0] > 0, -1.0f, 1.0f));
+            accumulate(op->args[0], adjoint*select(op->args[0] > 0, 1.0f, -1.0f));
         } else {
             internal_error << "The derivative of intrinsic " << op->name << " is not implemented.";
         } 
