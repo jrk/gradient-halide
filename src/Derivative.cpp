@@ -333,6 +333,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
           for (size_t i = 0; i < op->args.size(); i++) {
               accumulate(op->args[i], 0.0f);
           }
+      } else if (op->name == "sqrt_f32") {
+          accumulate(op->args[0], 1.0f/sqrt(op->args[0]));
       } else {
           internal_error << "The derivative of " << op->name << " is not implemented.";
       }
