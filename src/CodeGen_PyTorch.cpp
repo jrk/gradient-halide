@@ -247,6 +247,21 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     do_indent();
     stream << "// Grab references to contiguous memory\n";
     for (size_t i = 0; i < buffer_args.size(); i++) {
+      // Get the device id of one of the buffers
+      if (isCuda) {
+        if (i == 0) {
+          do_indent();
+          stream << "int device_id = THCudaTensor_getDevice(state, "
+                 << print_name(buffer_args[i].name) << ");";
+          do_indent();
+          stream << "halide_set_gpu_device(device_id);\n";
+        } else {
+          do_indent();
+          stream << "assert(device_id = THCudaTensor_getDevice(state, "
+                 << print_name(buffer_args[i].name) << "));\n";
+        }
+      }
+
       do_indent();
       stream
         << print_name(buffer_args[i].name) 
@@ -262,6 +277,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
         << ");\n"
         ;
     }
+
 
     do_indent();
     stream << "// Wrap tensors in Halide buffers\n";
@@ -287,7 +303,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     do_indent();
     stream << "// run code!\n";
     do_indent();
-    stream << "int ret = " << simple_name << "(";
+    stream << simple_name << "(";
     for (size_t i = 0; i < args.size(); i++) {
       if (args[i].is_buffer()) {
         stream 
@@ -300,19 +316,16 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     }
     stream << ");\n";
 
-    do_indent();
-    stream << "printf(\"ret val %d \", ret);\n";
-
     // if(isCuda) {
     //   do_indent();
     //   stream << "// Unwrap Halide buffers\n";
     //   for (size_t i = 0; i < buffer_args.size(); i++) {
     //     if (buffer_args[i].is_buffer()) {
     //       do_indent();
-    //       // stream 
-    //       //   << print_name(args[i].name)
-    //       //   << "_buffer"
-    //       //   << ".device_sync();\n";
+    //       stream 
+    //         << print_name(args[i].name)
+    //         << "_buffer"
+    //         << ".device_sync();\n";
     //
     //       // do_indent();
     //       // stream 
@@ -321,11 +334,12 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     //       //   << ".device_detach_native();\n";
     //     }
     //   }
+    //   do_indent();
+    //   stream << "cudaDeviceSynchronize();\n";
+    //   stream << "halide_device_release(nullptr, halide_cuda_device_interface());\n";
+    //
     //   stream << "\n";
     // }
-
-    do_indent();
-    stream << "printf(\"done processing "<< simple_name <<" \\n\");\n";
 
     do_indent();
     stream << "// Free references\n";
