@@ -33,7 +33,7 @@ extern int halide_cuda_run(void *user_context,
                            int num_coords_dim1);
 // @}
 
-/** Set the underlying cuda device poiner for a buffer. The device
+/** Set the underlying cuda device pointer for a buffer. The device
  * pointer should be allocated using cuMemAlloc or similar and must
  * have an extent large enough to cover that specified by the
  * halide_buffer_t extent fields. The dev field of the halide_buffer_t
