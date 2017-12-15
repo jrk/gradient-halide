@@ -701,7 +701,7 @@ Derivative propagate_adjoints(const Func &output) {
     return propagate_adjoints(output, adjoint, output_bounds);
 }
 
-void print_func(const Func &func, bool recursive) {
+void print_func(const Func &func, bool recursive, int depth) {
     Internal::debug(0) << "Printing function:" << func.name() << "\n";
     // Topologically sort the functions
     std::map<std::string, Internal::Function> env =
@@ -714,7 +714,13 @@ void print_func(const Func &func, bool recursive) {
         funcs.push_back(func);
     }
 
-    for (int i = (int)funcs.size() - 1; i >= 0; i--) {
+    int lowest_index = 0;
+    if (depth >= 0) {
+      lowest_index = (int)funcs.size() - 1 - depth;
+    }
+
+    for (int i = (int)funcs.size() - 1; i >= lowest_index; i--) {
+        // TODO: "recursive" is a bit misleading here since there' no actual recursion of print_func
         if (!recursive && funcs[i].name() != func.name()) {
             continue;
         }
