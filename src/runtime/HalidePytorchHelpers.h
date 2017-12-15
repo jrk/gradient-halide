@@ -27,16 +27,21 @@ inline Buffer<float> wrap(THFloatTensor* tensor) {
 }
 
 inline Buffer<float> wrap(THCudaTensor* tensor) {
+  const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();
+
   int ndims = THCudaTensor_nDimension(state, tensor);
   std::vector<int> dims(ndims, 0);
   for(int dim = 0; dim < ndims; ++dim) {
     dims[dim] = THCudaTensor_size(state, tensor, ndims-1-dim);
   }
-  float* pData  = THCudaTensor_data(state, tensor);
+
   Buffer<float> buffer(dims);
-  // Buffer<float> buffer(pData, dims);
-  const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();
-  buffer.device_wrap_native(cuda_interface, (uint64_t)pData);
+
+  float* pData  = THCudaTensor_data(state, tensor);
+  int err = buffer.device_wrap_native(cuda_interface, (uint64_t)pData);
+  assert(err == 0);
+  buffer.set_device_dirty();
+
   return buffer;
 }
 

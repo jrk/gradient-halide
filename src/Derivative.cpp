@@ -362,6 +362,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
           for (size_t i = 0; i < op->args.size(); i++) {
               accumulate(op->args[i], 0.0f);
           }
+      } else if (op->name == "sqrt_f32") {
+          accumulate(op->args[0], adjoint*0.5f/sqrt(op->args[0]));
       } else {
           internal_error << "The derivative of " << op->name << " is not implemented.";
       }
@@ -624,7 +626,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
     } else if (op->call_type != Call::Image) {  // Image loads should not be propagated
         // op->call_type is Call::Intrinsic or Call::PureIntrinsic
         if (op->is_intrinsic(Call::abs)) {
-            accumulate(op->args[0], adjoint*select(op->args[0] > 0, -1.0f, 1.0f));
+            accumulate(op->args[0], adjoint*select(op->args[0] > 0, 1.0f, -1.0f));
         } else if (op->is_intrinsic(Call::likely)) {
             accumulate(op->args[0], adjoint);
         } else if (op->is_intrinsic(Call::undef)) {
@@ -675,7 +677,7 @@ Derivative propagate_adjoints(const Func &output) {
     return propagate_adjoints(output, adjoint, output_bounds);
 }
 
-void print_func(const Func &func, bool recursive) {
+void print_func(const Func &func, bool recursive, int depth) {
     Internal::debug(0) << "Printing function:" << func.name() << "\n";
     // Topologically sort the functions
     std::map<std::string, Internal::Function> env =
@@ -688,7 +690,13 @@ void print_func(const Func &func, bool recursive) {
         funcs.push_back(func);
     }
 
-    for (int i = (int)funcs.size() - 1; i >= 0; i--) {
+    int lowest_index = 0;
+    if (depth >= 0) {
+      lowest_index = (int)funcs.size() - 1 - depth;
+    }
+
+    for (int i = (int)funcs.size() - 1; i >= lowest_index; i--) {
+        // TODO: "recursive" is a bit misleading here since there' no actual recursion of print_func
         if (!recursive && funcs[i].name() != func.name()) {
             continue;
         }
