@@ -3,7 +3,6 @@
 #include "DerivativeUtils.h"
 #include "BoundaryConditions.h"
 #include "Simplify.h"
-#include "Solve.h"
 #include "Substitute.h"
 #include "IRMutator.h"
 #include "IROperator.h"
@@ -469,49 +468,11 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 continue;
             }
 
-            // Let new_args[i] == op->args[i]
-            // e.g. u_1 == y - 1 in the above example
-            SolverResult result = solve_expression(new_args[i] == lhs[i], variables[0]);
-            // debug(0) << "solving " << new_args[i] << " " << lhs[i] << " for " << variables[0] << "\n";
-            if (!result.fully_solved) {
-                // debug(0) << "expression not fully solved" << "\n";
+            bool solved;
+            Expr result_rhs;
+            std::tie(solved, result_rhs) = solve_inverse(new_args[i] == lhs[i], variables[0]);
+            if (!solved) {
                 continue;
-            }
-
-            // Extract body of the let variable
-            Expr result_rhs = result.result;
-            if (result.result.as<Let>() != nullptr) {
-                const Let *let_expr = result.result.as<Let>();
-                // debug(0) << "we have a let " << result.result << "\n";
-                // debug(0) << let_expr->value << " " << let_expr->body << "\n";
-                result_rhs = substitute(let_expr->name, let_expr->value, let_expr->body);
-                // Extract the body of the And????
-                if (result_rhs.as<And>() != nullptr) {
-                    // TODO(mgharbi): this is quite dirty and brittle, what's the right solution?
-                    const And *and_expr = result_rhs.as<And>();
-                    // debug(0) << "we have an And clause " << and_expr << "\n";
-                    result_rhs = and_expr->a;
-                }
-            } else {
-                result_rhs = result.result;
-            }
-
-            // y == u_1 + 1
-            // Sometimes even if the equation is tagged fully_solved it isn't
-            // We still need to check
-            if (result_rhs.as<EQ>() != nullptr) {
-                // Checking whether the lhs is a single variable
-                Expr result_lhs = result_rhs.as<EQ>()->a;
-                const Variable *lhs_var = result_lhs.as<Variable>();
-                if (lhs_var == nullptr) {
-                    // debug(0) << "expression not fully solved";
-                    continue;
-                }
-
-                internal_assert(lhs_var->name == variables[0]);
-                result_rhs = result_rhs.as<EQ>()->b;
-            } else {
-                internal_error << "coult not solve expression\n";
             }
             // debug(0) << "result : " << result_rhs << "\n";
 
@@ -580,14 +541,28 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
 
         std::vector<Var> func_to_update_args = func_to_update.args();
-        // For each variable in lhs, check if it is a single rvar
+        // For each expression in lhs, check if it is an expression of a single rvar
         // if so we can rewrite it back to pure variables
         // e.g.
-        // f(r.x) = g(r.x)
-        // => f(x) = g(x)
+        // f(r.x + 1) = g(r.x)
+        // => f(x) = g(x - 1)
         // TODO: is this the best way?
         for (int i = 0; i < (int)lhs.size(); i++) {
             auto &lhs_arg = lhs[i];
+            auto rvar_maps = gather_rvariables(lhs_arg);
+            if (rvar_maps.size() == 1) {
+                std::string rvar = rvar_maps.begin()->first;
+                // Solve for inverse
+                bool solved;
+                Expr result_rhs;
+                std::tie(solved, result_rhs) = solve_inverse(func_to_update_args[i] == lhs_arg, rvar);
+                if (!solved) {
+                    continue;
+                }
+                lhs_arg = func_to_update_args[i];
+                adjoint = simplify(substitute(rvar, result_rhs, adjoint));
+            }
+            /*
             const Variable *var = lhs_arg.as<Variable>();
             if (var != nullptr) {
                 if (var->reduction_domain.defined()) {
@@ -595,6 +570,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                     adjoint = substitute(var->name, func_to_update_args[i], adjoint);
                 }
             }
+            */
         }
 
         // TODO: can we somehow enforce the same partial ordering?
@@ -728,8 +704,13 @@ void print_func(const Func &func, bool recursive) {
                         Internal::debug(0) << ", " << Internal::simplify(func.update_args()[i]);
                     }
                 }
-                Internal::debug(0) << ") = " << Internal::simplify(func.update_value(update_id)) << "\n";
-                rdom = Internal::extract_rdom(Internal::simplify(func.update_value(update_id)));
+                Internal::debug(0) << ") =";
+                auto vals = func.update_values(update_id).as_vector();
+                for (auto val : vals) {
+                    Internal::debug(0) << " " << Internal::simplify(val);
+                }
+                Internal::debug(0) << "\n";
+                //rdom = Internal::extract_rdom(Internal::simplify(func.update_values(update_id)));
             } else {
                 Internal::debug(0) << "    " << func.name() << "(";
                 if (func.args().size() > 0) {
@@ -738,19 +719,24 @@ void print_func(const Func &func, bool recursive) {
                         Internal::debug(0) << ", " << Internal::simplify(func.args()[i]);
                     }
                 }
-                Internal::debug(0) << ") = " << Internal::simplify(func.value()) << "\n";
-                rdom = Internal::extract_rdom(Internal::simplify(func.value()));
-            }
-
-            if (rdom.defined()) {
-                Internal::debug(0) << "    RDom:";
-                for (int i = 0; i < (int)rdom.domain().size(); i++) {
-                    Internal::debug(0) << " (" <<
-                        Internal::simplify(rdom.domain()[i].min) << ", " <<
-                        Internal::simplify(rdom.domain()[i].extent) << ")";
+                Internal::debug(0) << ") =";
+                auto vals = func.values().as_vector();
+                for (auto val : vals) {
+                    Internal::debug(0) << " " << Internal::simplify(val);
                 }
                 Internal::debug(0) << "\n";
+                //rdom = Internal::extract_rdom(Internal::simplify(func.values()));
             }
+
+            // if (rdom.defined()) {
+            //     Internal::debug(0) << "    RDom:";
+            //     for (int i = 0; i < (int)rdom.domain().size(); i++) {
+            //         Internal::debug(0) << " (" <<
+            //             Internal::simplify(rdom.domain()[i].min) << ", " <<
+            //             Internal::simplify(rdom.domain()[i].extent) << ")";
+            //     }
+            //     Internal::debug(0) << "\n";
+            // }
         }
     }
 }
@@ -1333,6 +1319,72 @@ void test_tuple() {
     CMP(d_input_buf(1), 2.f);
     CMP(d_input_buf(2), 1.f);
 }
+
+#if 0
+void test_ATA() {
+    Var x("x");
+    std::mt19937 rng;
+    std::uniform_real_distribution<float> dist(0.f, 1.f);
+    Buffer<float> input(5, "input");
+    for (int i = 0; i < 5; i++) {
+        input(i) = dist(rng);
+    }
+    Func clamped("clamped");
+    Expr clamped_x = Halide::clamp(x, 0, input.width() - 1);
+    clamped(x) = input(clamped_x);
+    Buffer<float> kernel(3, "kernel");
+    for (int i = 0; i < 3; i++) {
+        kernel(i) = dist(rng);
+    }
+    Func kernel_func("kernel_func");
+    kernel_func(x) = kernel(x);
+    Func Ax("Ax");
+    RDom support(0, 3);
+    Ax(x) = 0.f;
+    Ax(x) += clamped(x + support.x - 1) * kernel_func(support.x);
+    Func ATAx("ATAx");
+    ATAx(x) = 0.f;
+    ATAx(x) += Ax(x + support.x - 1) * kernel_func(2 - support.x);
+
+    Buffer<float> adjoints(5);
+    for (int i = 0; i < 5; i++) {
+        adjoints(i) = dist(rng);
+    }
+
+    Derivative d = propagate_adjoints(ATAx, adjoints);
+
+    RDom r(0, 4);
+    Func f_loss("f_loss");
+    f_loss() = 0.f;
+    f_loss() += convolved(r.x) * convolved(r.x);
+    Derivative d = propagate_adjoints(f_loss);
+    std::map<FuncKey, Func> adjoints = d.adjoints;
+    Buffer<float> convolved_buf = convolved.realize(4);
+    // d loss / d blur = 2 * blur(x)
+    Buffer<float> d_convolved_buf = adjoints[FuncKey{convolved.name(), -1}].realize(4);
+
+    for (int i = 0; i < 4; i++) {
+        CMP(d_convolved_buf(i), 2 * convolved_buf(i));
+    }
+    // d loss / d clamped = d_convolved convolve with flipped kernel
+    Buffer<float> d_clamped_buf = adjoints[FuncKey{clamped.name(), -1}].realize(4);
+    for (int i = 0; i < 4; i++) {
+        float target = d_convolved_buf(i) * kernel_data[0];
+        if (i >= 1) {
+            target += d_convolved_buf(i - 1) * kernel_data[1];
+        }
+        CMP(d_clamped_buf(i), target);
+    }
+    // loss = (k0 + 2k1)^2 + (2k0 + 3k1)^2 + (3k0 + 4k1)^2 + (4k0 + 4k1)^2
+    //      = k0^2 + 4k0k1 + 4k1^2 + 4k0^2 + 12 k0k1 + 9k1^2 + 9k0^2 + 24 k0k1 + 16 k1^2 + 16k0^2 + 32k0k1 + 16k1^2
+    //      = 30 k0^2 + 72 k0k1 + 45 k1^2
+    // d loss / d kernel(0) = 2 * 30 + 72 = 132
+    // d loss / d kernel(1) = 2 * 45 + 72 = 162
+    Buffer<float> d_kernel_buf = adjoints[FuncKey{kernel_func.name(), -1}].realize(2);
+    CMP(d_kernel_buf(0), 132);
+    CMP(d_kernel_buf(1), 162);
+}
+#endif
 
 void derivative_test() {
     test_simple_bounds_inference();
