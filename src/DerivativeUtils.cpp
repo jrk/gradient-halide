@@ -7,6 +7,8 @@
 #include "Simplify.h"
 #include "FindCalls.h"
 #include "RealizationOrder.h"
+#include "Solve.h"
+#include "Substitute.h"
 
 namespace Halide {
 namespace Internal {
@@ -375,6 +377,52 @@ private:
 ReductionDomain extract_rdom(const Expr &expr) {
     RDomExtractor extractor;
     return extractor.gather(expr);
+}
+
+std::pair<bool, Expr> solve_inverse(Expr expr, const std::string &var) {
+    SolverResult result = solve_expression(expr, var);
+    // debug(0) << "solving " << expr << " for " << var << "\n";
+    if (!result.fully_solved) {
+        // debug(0) << "expression not fully solved" << "\n";
+        return std::make_pair(false, Expr());
+    }
+
+    // Extract body of the let variable
+    Expr result_rhs = result.result;
+    if (result.result.as<Let>() != nullptr) {
+        const Let *let_expr = result.result.as<Let>();
+        // debug(0) << "we have a let " << result.result << "\n";
+        // debug(0) << let_expr->value << " " << let_expr->body << "\n";
+        result_rhs = substitute(let_expr->name, let_expr->value, let_expr->body);
+        // Extract the body of the And????
+        if (result_rhs.as<And>() != nullptr) {
+            // TODO(mgharbi): this is quite dirty and brittle, what's the right solution?
+            const And *and_expr = result_rhs.as<And>();
+            // debug(0) << "we have an And clause " << and_expr << "\n";
+            result_rhs = and_expr->a;
+        }
+    } else {
+        result_rhs = result.result;
+    }
+
+    // y == u_1 + 1
+    // Sometimes even if the equation is tagged fully_solved it isn't
+    // We still need to check
+    if (result_rhs.as<EQ>() != nullptr) {
+        // Checking whether the lhs is a single variable
+        Expr result_lhs = result_rhs.as<EQ>()->a;
+        const Variable *lhs_var = result_lhs.as<Variable>();
+        if (lhs_var == nullptr) {
+            // debug(0) << "expression not fully solved";
+            return std::make_pair(false, Expr());
+        }
+
+        internal_assert(lhs_var->name == var);
+        result_rhs = result_rhs.as<EQ>()->b;
+    } else {
+        internal_error << "coult not solve expression\n";
+    }
+    return std::make_pair(true, result_rhs);
 }
 
 } // namespace Internal
