@@ -328,20 +328,10 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
         if (buffer_args[i].is_buffer()) {
           do_indent();
           stream 
-            << print_name(args[i].name) << "_buffer"
+            << print_name(buffer_args[i].name) << "_buffer"
             << ".copy_to_device(cuda_interface);\n";
-
-          // do_indent();
-          // stream 
-          //   << print_name(args[i].name)
-          //   << "_buffer"
-          //   << ".device_detach_native();\n";
         }
       }
-    //   do_indent();
-    //   stream << "cudaDeviceSynchronize();\n";
-    //   stream << "halide_device_release(nullptr, halide_cuda_device_interface());\n";
-    //
       stream << "\n";
     }
 
