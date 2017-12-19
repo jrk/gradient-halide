@@ -363,7 +363,10 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
               accumulate(op->args[i], 0.0f);
           }
       } else if (op->name == "sqrt_f32") {
-          accumulate(op->args[0], adjoint*0.5f/sqrt(op->args[0]));
+          accumulate(op->args[0], adjoint * 0.5f / sqrt(op->args[0]));
+      } else if (op->name == "pow_f32") {
+          accumulate(op->args[0], adjoint * op->args[1] * pow(op->args[0], op->args[1] - 1.f));
+          accumulate(op->args[1], adjoint * pow(op->args[0], op->args[1]) * log(op->args[0]));
       } else {
           internal_error << "The derivative of " << op->name << " is not implemented.";
       }
