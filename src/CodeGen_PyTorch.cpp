@@ -257,7 +257,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
           stream << "halide_set_gpu_device(device_id);\n";
         } else {
           do_indent();
-          stream << "assert(device_id = THCudaTensor_getDevice(state, "
+          stream << "assert(device_id == THCudaTensor_getDevice(state, "
                  << print_name(buffer_args[i].name) << "));\n";
         }
       }
@@ -305,7 +305,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     do_indent();
     stream << "// run code!\n";
     do_indent();
-    stream << simple_name << "(";
+    stream << "int err = " << simple_name << "(";
     for (size_t i = 0; i < args.size(); i++) {
       if (args[i].is_buffer()) {
         stream 
@@ -317,6 +317,8 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
       if (i < args.size()-1) stream << ", ";
     }
     stream << ");\n";
+    do_indent();
+    stream << "assert(err == 0);\n";
     stream << "\n";
 
     if(isCuda) {
@@ -330,6 +332,10 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
           stream 
             << print_name(buffer_args[i].name) << "_buffer"
             << ".copy_to_device(cuda_interface);\n";
+          do_indent();
+          stream 
+            << print_name(buffer_args[i].name) << "_buffer"
+            << ".device_detach_native();\n";
         }
       }
       stream << "\n";
@@ -353,6 +359,14 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
       }
     }
     stream << "\n";
+
+    if(isCuda) {
+      do_indent();
+      stream << "// Release device\n";
+      do_indent();
+      stream << "halide_device_release(NULL, cuda_interface);\n";
+      stream << "\n";
+    }
 
     do_indent();
     stream << "return 0;\n";
