@@ -120,11 +120,13 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 const Box &bounds = func_bounds[func.name()];
                 if (adjoint_func.values().size() == 1) {
                     adjoint_func = BoundaryConditions::constant_exterior(
-                            adjoint_func, 0.f, box_to_vector(bounds));
+                            adjoint_func, 0.f, box_to_vector(bounds),
+			    adjoint_func.name() + "_ce");
                 } else {
                     std::vector<Expr> values(adjoint_func.values().size(), Expr(0.f));
                     adjoint_func = BoundaryConditions::constant_exterior(
-                            adjoint_func, Tuple(values), box_to_vector(bounds));
+                            adjoint_func, Tuple(values), box_to_vector(bounds),
+			    adjoint_func.name() + "_ce");
                 }
                 adjoint_funcs[func_key] = adjoint_func;
             }
@@ -681,7 +683,8 @@ void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool
         const char *ce = "constant_exterior";
         const char *re = "repeat_edge";
         if (ignore_bc && (funcs[i].name().substr(0, strlen(ce)) == std::string(ce) ||
-                funcs[i].name().substr(0, strlen(re)) == std::string(re))) {
+                funcs[i].name().substr(0, strlen(re)) == std::string(re) ||
+		funcs[i].name().find("_ce") != std::string::npos)) {
             continue;
         }
 	if (ignore_non_adjoints && funcs[i].name().find("_d_def__") == std::string::npos) {
