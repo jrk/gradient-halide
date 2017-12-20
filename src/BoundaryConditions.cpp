@@ -5,7 +5,8 @@ namespace Halide {
 namespace BoundaryConditions {
 
 Func repeat_edge(const Func &source,
-                 const std::vector<std::pair<Expr, Expr>> &bounds) {
+                 const std::vector<std::pair<Expr, Expr>> &bounds,
+                 const std::string &name) {
     std::vector<Var> args(source.args());
     user_assert(args.size() >= bounds.size()) <<
         "repeat_edge called with more bounds (" << bounds.size() <<
@@ -31,7 +32,7 @@ Func repeat_edge(const Func &source,
     // If there were fewer bounds than dimensions, regard the ones at the end as unbounded.
     actuals.insert(actuals.end(), args.begin() + actuals.size(), args.end());
 
-    Func bounded("repeat_edge");
+    Func bounded(name);
     bounded(args) = source(actuals);
 
     return bounded;

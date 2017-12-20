@@ -3471,6 +3471,8 @@ string generate_schedules(const vector<Function> &outputs, const Target &target,
         part.disp_pipeline_costs();
     }
 
+    // /////////////
+    // Remove the following two stages?
     debug(2) << "Partitioner computing inline group...\n";
     part.group(Partitioner::Level::Inline);
     if (debug::debug_level() >= 3) {

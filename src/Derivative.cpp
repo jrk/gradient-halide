@@ -31,10 +31,6 @@ public:
         return adjoint_funcs;
     }
 
-    std::map<FuncKey, RDom> get_reductions() const {
-        return reductions;
-    };
-
 protected:
     void visit(const Cast *op);
     void visit(const Variable *op);
@@ -53,7 +49,6 @@ private:
 
     std::map<const BaseExprNode *, Expr> expr_adjoints;
     std::map<FuncKey, Func> adjoint_funcs;
-    std::map<FuncKey, RDom> reductions;
     std::map<std::string, Expr> let_var_mapping;
     std::vector<std::string> let_variables;
     std::map<std::string, Box> func_bounds;
@@ -121,20 +116,15 @@ void ReverseAccumulationVisitor::propagate_adjoints(
 
             // Set up boundary condition if this is the first visit
             if (update_id == func.num_update_definitions() - 1) {
-                Func adjoint_func = adjoint_funcs[func_key];
-                FuncKey new_func_key{func.name() + "_def__", update_id};
-                adjoint_funcs[new_func_key] = adjoint_func;
-
+                Func &adjoint_func = adjoint_funcs[func_key];
                 const Box &bounds = func_bounds[func.name()];
                 if (adjoint_func.values().size() == 1) {
                     adjoint_func = BoundaryConditions::constant_exterior(
-                        adjoint_func, 0.f, box_to_vector(bounds),
-                        adjoint_func.name() + std::string("_ce"));
+                            adjoint_func, 0.f, box_to_vector(bounds));
                 } else {
                     std::vector<Expr> values(adjoint_func.values().size(), Expr(0.f));
                     adjoint_func = BoundaryConditions::constant_exterior(
-                        adjoint_func, Tuple(values), box_to_vector(bounds),
-                        adjoint_func.name() + std::string("_ce"));
+                            adjoint_func, Tuple(values), box_to_vector(bounds));
                 }
                 adjoint_funcs[func_key] = adjoint_func;
             }
@@ -175,8 +165,6 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                     std::vector<Expr> init(func.values().size(), Expr(0.f));
                     next_adjoint_func(update_args) = Tuple(init);
                 }
-
-                // next_adjoint_func(update_args) = 0.f; // e.g. f'(1) = 0.f
             }
 
             // Now we want to propagate the derivatives at expression level
@@ -551,7 +539,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // e.g.
         // f(r.x + 1) = g(r.x)
         // => f(x) = g(x - 1)
-        // TODO: is this the best way?
         for (int i = 0; i < (int)lhs.size(); i++) {
             auto &lhs_arg = lhs[i];
             auto rvar_maps = gather_rvariables(lhs_arg);
@@ -567,15 +554,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 lhs_arg = func_to_update_args[i];
                 adjoint = simplify(substitute(rvar, result_rhs, adjoint));
             }
-            /*
-            const Variable *var = lhs_arg.as<Variable>();
-            if (var != nullptr) {
-                if (var->reduction_domain.defined()) {
-                    lhs_arg = substitute(var->name, func_to_update_args[i], lhs_arg);
-                    adjoint = substitute(var->name, func_to_update_args[i], adjoint);
-                }
-            }
-            */
         }
 
         // TODO: can we somehow enforce the same partial ordering?
@@ -593,17 +571,15 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             var_names.push_back(it.first);
             merged_bounds.emplace_back(it.second.first, it.second.second);
         }
+        RDom merged_r;
         if (merged_bounds.size() > 0) {
-            RDom r(merged_bounds);
-            for (int i = 0; i < r.dimensions(); i++) {
-                adjoint = substitute(var_names[i], r[i], adjoint);
+            merged_r = RDom(merged_bounds);
+            for (int i = 0; i < merged_r.dimensions(); i++) {
+                adjoint = substitute(var_names[i], merged_r[i], adjoint);
                 for (auto &lhs_arg : lhs) {
-                    lhs_arg = substitute(var_names[i], r[i], lhs_arg);
+                    lhs_arg = substitute(var_names[i], merged_r[i], lhs_arg);
                 }
             }
-            reductions[FuncKey{func_to_update.name(), func_to_update.num_update_definitions()}] = r;
-        } else {
-            reductions[FuncKey{func_to_update.name(), func_to_update.num_update_definitions()}] = RDom();
         }
 
         for (int i = 0; i < (int)func_to_update_args.size(); i++) {
@@ -652,8 +628,7 @@ Derivative propagate_adjoints(const Func &output,
 
     Internal::ReverseAccumulationVisitor visitor;
     visitor.propagate_adjoints(output, adjoint, output_bounds);
-    return Derivative{visitor.get_adjoint_funcs(),
-                      visitor.get_reductions()};
+    return Derivative{visitor.get_adjoint_funcs()};
 }
 
 Derivative propagate_adjoints(const Func &output,
@@ -680,7 +655,7 @@ Derivative propagate_adjoints(const Func &output) {
     return propagate_adjoints(output, adjoint, output_bounds);
 }
 
-void print_func(const Func &func, bool recursive, int depth) {
+void print_func(const Func &func, bool ignore_bc, bool recursive, int depth) {
     Internal::debug(0) << "Printing function:" << func.name() << "\n";
     // Topologically sort the functions
     std::map<std::string, Internal::Function> env =
@@ -695,12 +670,18 @@ void print_func(const Func &func, bool recursive, int depth) {
 
     int lowest_index = 0;
     if (depth >= 0) {
-      lowest_index = (int)funcs.size() - 1 - depth;
+        lowest_index = (int)funcs.size() - 1 - depth;
     }
 
     for (int i = (int)funcs.size() - 1; i >= lowest_index; i--) {
         // TODO: "recursive" is a bit misleading here since there' no actual recursion of print_func
         if (!recursive && funcs[i].name() != func.name()) {
+            continue;
+        }
+        const char *ce = "constant_exterior";
+        const char *re = "repeat_edge";
+        if (ignore_bc && funcs[i].name().substr(0, strlen(ce)) == std::string(ce) && 
+                funcs[i].name().substr(0, strlen(re)) == std::string(re)) {
             continue;
         }
         Func &func = funcs[i];

@@ -132,7 +132,8 @@ inline NO_INLINE Func constant_exterior(const T &func_like, Expr value,
  */
 // @{
 EXPORT Func repeat_edge(const Func &source,
-                        const std::vector<std::pair<Expr, Expr>> &bounds);
+                        const std::vector<std::pair<Expr, Expr>> &bounds,
+                        const std::string &name = "repeat_edge");
 
 template <typename T>
 inline NO_INLINE Func repeat_edge(const T &func_like) {
