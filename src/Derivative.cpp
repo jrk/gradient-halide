@@ -655,7 +655,7 @@ Derivative propagate_adjoints(const Func &output) {
     return propagate_adjoints(output, adjoint, output_bounds);
 }
 
-void print_func(const Func &func, bool ignore_bc, bool recursive, int depth) {
+void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool recursive, int depth) {
     Internal::debug(0) << "Printing function:" << func.name() << "\n";
     // Topologically sort the functions
     std::map<std::string, Internal::Function> env =
@@ -680,10 +680,13 @@ void print_func(const Func &func, bool ignore_bc, bool recursive, int depth) {
         }
         const char *ce = "constant_exterior";
         const char *re = "repeat_edge";
-        if (ignore_bc && funcs[i].name().substr(0, strlen(ce)) == std::string(ce) && 
-                funcs[i].name().substr(0, strlen(re)) == std::string(re)) {
+        if (ignore_bc && (funcs[i].name().substr(0, strlen(ce)) == std::string(ce) ||
+                funcs[i].name().substr(0, strlen(re)) == std::string(re))) {
             continue;
         }
+	if (ignore_non_adjoints && funcs[i].name().find("_d_def__") == std::string::npos) {
+	    continue;
+	}
         Func &func = funcs[i];
         Internal::debug(0) << "  funcs[" << i << "]: " << func.name() << "\n";
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
