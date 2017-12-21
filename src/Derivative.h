@@ -28,7 +28,7 @@ Derivative propagate_adjoints(const Func &output,
 Derivative propagate_adjoints(const Func &output,
                               const Buffer<float> &adjoint);
 Derivative propagate_adjoints(const Func &output);
-void print_func(const Func &func, bool ignore_bc = true, bool recursive = true, int depth = -1);
+void print_func(const Func &func, bool ignore_non_adjoints = true, bool ignore_bc = true, bool recursive = true, int depth = -1);
 
 namespace Internal {
 

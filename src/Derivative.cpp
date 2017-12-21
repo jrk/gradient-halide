@@ -120,11 +120,13 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 const Box &bounds = func_bounds[func.name()];
                 if (adjoint_func.values().size() == 1) {
                     adjoint_func = BoundaryConditions::constant_exterior(
-                            adjoint_func, 0.f, box_to_vector(bounds));
+                            adjoint_func, 0.f, box_to_vector(bounds),
+			    adjoint_func.name() + "_ce");
                 } else {
                     std::vector<Expr> values(adjoint_func.values().size(), Expr(0.f));
                     adjoint_func = BoundaryConditions::constant_exterior(
-                            adjoint_func, Tuple(values), box_to_vector(bounds));
+                            adjoint_func, Tuple(values), box_to_vector(bounds),
+			    adjoint_func.name() + "_ce");
                 }
                 adjoint_funcs[func_key] = adjoint_func;
             }
@@ -663,7 +665,7 @@ Derivative propagate_adjoints(const Func &output) {
     return propagate_adjoints(output, adjoint, output_bounds);
 }
 
-void print_func(const Func &func, bool ignore_bc, bool recursive, int depth) {
+void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool recursive, int depth) {
     Internal::debug(0) << "Printing function:" << func.name() << "\n";
     // Topologically sort the functions
     std::map<std::string, Internal::Function> env =
@@ -688,10 +690,14 @@ void print_func(const Func &func, bool ignore_bc, bool recursive, int depth) {
         }
         const char *ce = "constant_exterior";
         const char *re = "repeat_edge";
-        if (ignore_bc && funcs[i].name().substr(0, strlen(ce)) == std::string(ce) && 
-                funcs[i].name().substr(0, strlen(re)) == std::string(re)) {
+        if (ignore_bc && (funcs[i].name().substr(0, strlen(ce)) == std::string(ce) ||
+                funcs[i].name().substr(0, strlen(re)) == std::string(re) ||
+		funcs[i].name().find("_ce") != std::string::npos)) {
             continue;
         }
+	if (ignore_non_adjoints && funcs[i].name().find("_d_def__") == std::string::npos) {
+	    continue;
+	}
         Func &func = funcs[i];
         Internal::debug(0) << "  funcs[" << i << "]: " << func.name() << "\n";
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
