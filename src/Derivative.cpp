@@ -606,6 +606,14 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // op->call_type is Call::Intrinsic or Call::PureIntrinsic
         if (op->is_intrinsic(Call::abs)) {
             accumulate(op->args[0], adjoint*select(op->args[0] > 0, 1.0f, -1.0f));
+        } else if (op->is_intrinsic(Call::lerp)) {
+            // z = x * (1 - w) + y * w
+            // dz/dx = 1 - w
+            // dz/dy = w
+            // dz/dw = y - x
+            accumulate(op->args[0], adjoint * (1.f - op->args[2]));
+            accumulate(op->args[1], adjoint * op->args[2]);
+            accumulate(op->args[2], adjoint * (op->args[1] - op->args[0]));
         } else if (op->is_intrinsic(Call::likely)) {
             accumulate(op->args[0], adjoint);
         } else if (op->is_intrinsic(Call::undef)) {
