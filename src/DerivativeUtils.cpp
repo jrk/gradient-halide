@@ -271,7 +271,7 @@ std::map<std::string, Box> inference_bounds(const Func &func,
             }
         }
     }
-    std::vector<std::string> order = realization_order({func.function()}, env);
+    std::vector<std::string> order = realization_order({func.function()}, env).first;
 
     std::map<std::string, Box> bounds;
     std::vector<Interval> output_bounds_interval;

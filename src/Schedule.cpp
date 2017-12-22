@@ -144,7 +144,7 @@ LoopLevel LoopLevel::inlined() {
 
 bool LoopLevel::is_inlined() const {
     // It's OK to be undefined (just return false).
-    check_locked();
+    // check_locked();
     return contents->var_name == inline_looplevel_name;
 }
 
@@ -155,7 +155,7 @@ LoopLevel LoopLevel::root() {
 
 bool LoopLevel::is_root() const {
     // It's OK to be undefined (just return false).
-    check_locked();
+    // check_locked();
     return contents->var_name == root_looplevel_name;
 }
 

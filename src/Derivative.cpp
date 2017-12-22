@@ -62,7 +62,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
         const std::vector<std::pair<Expr, Expr>> &output_bounds) {
     // Topologically sort the functions
     std::map<std::string, Function> env = find_transitive_calls(output.function());
-    std::vector<std::string> order = realization_order({output.function()}, env);
+    std::vector<std::string> order = realization_order({output.function()}, env).first;
     std::vector<Func> funcs;
     funcs.reserve(order.size());
     // Internal::debug(0) << "Sorted Func list:" << "\n";
@@ -670,7 +670,7 @@ void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool
     // Topologically sort the functions
     std::map<std::string, Internal::Function> env =
         find_transitive_calls(func.function());
-    std::vector<std::string> order = realization_order({func.function()}, env);
+    std::vector<std::string> order = realization_order({func.function()}, env).first;
     std::vector<Func> funcs;
     funcs.reserve(order.size());
     for (const auto &func_name : order) {
