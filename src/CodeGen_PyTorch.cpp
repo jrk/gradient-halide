@@ -223,7 +223,9 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
 
   stream << "int " << simple_name << "_th_(";
   for (size_t i = 0; i < args.size(); i++) {
-    if (args[i].is_buffer()) {
+    if (args[i].name == "__user_context") {
+      continue;
+    } else if (args[i].is_buffer()) {
       buffer_args.push_back(args[i]);
       stream 
         << type_to_pytorch_tensor(args[i].type, isCuda)
@@ -252,14 +254,15 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
         if (i == 0) {
           do_indent();
           stream << "int device_id = THCudaTensor_getDevice(state, "
-                 << print_name(buffer_args[i].name) << ");";
+                 << print_name(buffer_args[i].name) << ");\n";
           do_indent();
-          stream << "halide_set_gpu_device(device_id);\n";
-        } else {
-          do_indent();
-          stream << "assert(device_id == THCudaTensor_getDevice(state, "
-                 << print_name(buffer_args[i].name) << "));\n";
-        }
+          stream << "halide_set_gpu_device(device_id);\n\n";
+        } 
+        // else {
+        //   do_indent();
+        //   stream << "assert(device_id == THCudaTensor_getDevice(state, "
+        //          << print_name(buffer_args[i].name) << "));\n";
+        // }
       }
 
       do_indent();
@@ -303,9 +306,18 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
 
 
     do_indent();
-    stream << "// run code!\n";
+    stream << "// Run code\n";
     do_indent();
-    stream << "int err = " << simple_name << "(";
+    if(isCuda) {
+      // TODO: pass on/override halide_cuda_get_stream and
+      // halide_get_gpu_device
+      stream << "void* __user_context;\n";
+    }
+    do_indent();
+    stream << simple_name << "(";
+    // if(isCuda) {
+    //   stream << "user_context, ";
+    // }
     for (size_t i = 0; i < args.size(); i++) {
       if (args[i].is_buffer()) {
         stream 
@@ -317,8 +329,6 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
       if (i < args.size()-1) stream << ", ";
     }
     stream << ");\n";
-    do_indent();
-    stream << "assert(err == 0);\n";
     stream << "\n";
 
     if(isCuda) {
@@ -360,13 +370,13 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     }
     stream << "\n";
 
-    if(isCuda) {
-      do_indent();
-      stream << "// Release device\n";
-      do_indent();
-      stream << "halide_device_release(NULL, cuda_interface);\n";
-      stream << "\n";
-    }
+    // if(isCuda) {
+    //   do_indent();
+    //   stream << "// Release device\n";
+    //   do_indent();
+    //   stream << "halide_device_release(NULL, cuda_interface);\n";
+    //   stream << "\n";
+    // }
 
     do_indent();
     stream << "return 0;\n";
