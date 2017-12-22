@@ -108,13 +108,20 @@ class CheckRDomBounds : public IRGraphVisitor {
     }
 
     void visit(const Variable *op) {
-        if (!op->param.defined() && !op->image.defined()) {
+        if (!op->param.defined() && !op->image.defined() &&
+                let_variables.find(op->name) == let_variables.end()) {
             offending_free_var = op->name;
         }
+    }
+
+    void visit(const Let *op) {
+        let_variables.insert(op->name);
+        IRGraphVisitor::visit(op);
     }
 public:
     string offending_func;
     string offending_free_var;
+    std::set<std::string> let_variables;
 };
 }
 
