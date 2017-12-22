@@ -592,18 +592,20 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // TODO: maybe do some analysis on lhs to avoid applying boundary conditions to
         //       function calls in adjoint
         if (func_to_update.values().size() == 1) {
-            func_to_update(lhs) += adjoint;
+            func_to_update(lhs) = func_to_update(lhs) + adjoint;
         } else {
-            func_to_update(lhs)[op->value_index] += adjoint;
+            func_to_update(lhs)[op->value_index] = func_to_update(lhs)[op->value_index] + adjoint;
         }
 
+        // debug(0) << "func_to_update.name():" << func_to_update.name() << "\n";
         // debug(0) << "lhs after canonicalization:";
         // for (const auto &arg : lhs) {
         //     debug(0) << " " << arg;
         // }
         // debug(0) << "\n";
         // debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
-        // print_func(func_to_update);
+        // print_func(Func(func), true, false, false);
+        // print_func(func_to_update, true, true, false);
     } else if (op->call_type != Call::Image) {  // Image loads should not be propagated
         // op->call_type is Call::Intrinsic or Call::PureIntrinsic
         if (op->is_intrinsic(Call::abs)) {
@@ -695,10 +697,10 @@ void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool
 		funcs[i].name().find("_ce") != std::string::npos)) {
             continue;
         }
-	if (ignore_non_adjoints && funcs[i].name().find("_d_def__") == std::string::npos) {
-	    continue;
-	}
-        Func &func = funcs[i];
+        if (ignore_non_adjoints && funcs[i].name().find("_d_def__") == std::string::npos) {
+            continue;
+        }
+        Func func = funcs[i];
         Internal::debug(0) << "  funcs[" << i << "]: " << func.name() << "\n";
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
             Internal::ReductionDomain rdom;
@@ -707,7 +709,7 @@ void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool
                 if (func.update_args(update_id).size() > 0) {
                     Internal::debug(0) << Internal::simplify(func.update_args(update_id)[0]);
                     for (int i = 1; i < (int)func.update_args(update_id).size(); i++) {
-                        Internal::debug(0) << ", " << Internal::simplify(func.update_args()[i]);
+                        Internal::debug(0) << ", " << Internal::simplify(func.update_args(update_id)[i]);
                     }
                 }
                 Internal::debug(0) << ") =";
