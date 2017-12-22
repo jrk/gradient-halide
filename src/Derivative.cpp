@@ -373,13 +373,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             lhs[i] = add_let_expression(lhs[i], let_var_mapping, let_variables);
         }
 
-        // debug(0) << "lhs is:";
-        // for (const auto &arg : lhs) {
-        //     debug(0) << " " << arg;
-        // }
-        // debug(0) << "\n";
-        // debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
-
         // If target is the current function itself, send to previous update
         // e.g. f(x) = ...
         //      f(x) = f(x) + 1
@@ -388,6 +381,17 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                            FuncKey{func.name(), current_update_id - 1};
         assert(adjoint_funcs.find(func_key) != adjoint_funcs.end());
         Func& func_to_update = adjoint_funcs[func_key];
+
+        bool debug_flag = false;
+
+        if (debug_flag) {
+            debug(0) << "lhs is:";
+            for (const auto &arg : lhs) {
+                debug(0) << " " << arg;
+            }
+            debug(0) << "\n";
+            debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
+        }
 
         // Gather argument & bounds information
         // current_args are the pure variables
@@ -508,17 +512,17 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
 
         // For each free variable on the rhs, replace it with current bounds
+        // e.g. we have in forward pass f(x, y) = g(x)
+        //      then we need to do g'(x) += f(x, y)
+        //      now we need to replace y with a reduction variable over f's bound
+        //      x is automatically excluded since it's
+        //      replaced by the new substitution variable e.g. u_0
         // First gather all free variables
         FuncBounds bounds_subset;
         std::vector<int> arg_id_to_substitute;
         bounds_subset.reserve(current_args.size());
         arg_id_to_substitute.reserve(current_args.size());
         for (int i = 0; i < (int)current_args.size(); i++) {
-            // e.g. we have in forward pass f(x, y) = g(x)
-            //      then we need to do g'(x) += f(x, y)
-            //      now we need to replace y with a reduction variable over f's bound
-            //      x is automatically excluded since it's
-            //      replaced by the new substitution variable e.g. u_0
             if (has_variable(adjoint, current_args[i].name())) {
                 const Interval &interval = current_bounds[i];
                 bounds_subset.emplace_back(interval.min, interval.max - interval.min + 1);
@@ -544,7 +548,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         for (int i = 0; i < (int)lhs.size(); i++) {
             auto &lhs_arg = lhs[i];
             auto rvar_maps = gather_rvariables(lhs_arg);
-            if (rvar_maps.size() == 1) {
+            std::vector<std::string> variables = gather_variables(lhs_arg, current_func.function().args());
+            if (rvar_maps.size() == 1 && variables.size() == 0) {
                 std::string rvar = rvar_maps.begin()->first;
                 // Solve for inverse
                 bool solved;
@@ -554,6 +559,13 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                     continue;
                 }
                 lhs_arg = func_to_update_args[i];
+
+                // Replace other occurence of rvar in lhs
+                for (int j = 0; j < (int)lhs.size(); j++) {
+                    if (j != i) {
+                        lhs[j] = simplify(substitute(rvar, result_rhs, lhs[j]));
+                    }
+                }
                 adjoint = simplify(substitute(rvar, result_rhs, adjoint));
             }
         }
@@ -597,13 +609,15 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             func_to_update(lhs)[op->value_index] = func_to_update(lhs)[op->value_index] + adjoint;
         }
 
-        // debug(0) << "func_to_update.name():" << func_to_update.name() << "\n";
-        // debug(0) << "lhs after canonicalization:";
-        // for (const auto &arg : lhs) {
-        //     debug(0) << " " << arg;
-        // }
-        // debug(0) << "\n";
-        // debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
+        if (debug_flag) {
+            debug(0) << "func_to_update.name():" << func_to_update.name() << "\n";
+            debug(0) << "lhs after canonicalization:";
+            for (const auto &arg : lhs) {
+                debug(0) << " " << arg;
+            }
+            debug(0) << "\n";
+            debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
+        }
         // print_func(Func(func), true, false, false);
         // print_func(func_to_update, true, true, false);
     } else if (op->call_type != Call::Image) {  // Image loads should not be propagated
@@ -718,7 +732,7 @@ void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool
                     Internal::debug(0) << " " << Internal::simplify(val);
                 }
                 Internal::debug(0) << "\n";
-                //rdom = Internal::extract_rdom(Internal::simplify(func.update_values(update_id)));
+                rdom = Internal::extract_rdom(Internal::simplify(func.update_value(update_id)));
             } else {
                 Internal::debug(0) << "    " << func.name() << "(";
                 if (func.args().size() > 0) {
@@ -733,18 +747,18 @@ void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool
                     Internal::debug(0) << " " << Internal::simplify(val);
                 }
                 Internal::debug(0) << "\n";
-                //rdom = Internal::extract_rdom(Internal::simplify(func.values()));
+                rdom = Internal::extract_rdom(Internal::simplify(func.value()));
             }
 
-            // if (rdom.defined()) {
-            //     Internal::debug(0) << "    RDom:";
-            //     for (int i = 0; i < (int)rdom.domain().size(); i++) {
-            //         Internal::debug(0) << " (" <<
-            //             Internal::simplify(rdom.domain()[i].min) << ", " <<
-            //             Internal::simplify(rdom.domain()[i].extent) << ")";
-            //     }
-            //     Internal::debug(0) << "\n";
-            // }
+            if (rdom.defined()) {
+                Internal::debug(0) << "    RDom:";
+                for (int i = 0; i < (int)rdom.domain().size(); i++) {
+                    Internal::debug(0) << " (" <<
+                        Internal::simplify(rdom.domain()[i].min) << ", " <<
+                        Internal::simplify(rdom.domain()[i].extent) << ")";
+                }
+                Internal::debug(0) << "\n";
+            }
         }
     }
 }
