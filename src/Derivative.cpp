@@ -540,33 +540,44 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
 
         std::vector<Var> func_to_update_args = func_to_update.args();
-        // For each expression in lhs, check if it is an expression of a single rvar
+        // For each expression in lhs, check if it is an expression of a single rvar and
+        // spans the same interval of the function's bound
         // if so we can rewrite it back to pure variables
         // e.g.
-        // f(r.x + 1) = g(r.x)
-        // => f(x) = g(x - 1)
+        // f(r.x) = g(r.x)
+        // => f(x) = g(x)
         for (int i = 0; i < (int)lhs.size(); i++) {
             auto &lhs_arg = lhs[i];
-            auto rvar_maps = gather_rvariables(lhs_arg);
-            std::vector<std::string> variables = gather_variables(lhs_arg, current_func.function().args());
-            if (rvar_maps.size() == 1 && variables.size() == 0) {
-                std::string rvar = rvar_maps.begin()->first;
-                // Solve for inverse
-                bool solved;
-                Expr result_rhs;
-                std::tie(solved, result_rhs) = solve_inverse(func_to_update_args[i] == lhs_arg, rvar);
-                if (!solved) {
-                    continue;
-                }
-                lhs_arg = func_to_update_args[i];
-
-                // Replace other occurence of rvar in lhs
-                for (int j = 0; j < (int)lhs.size(); j++) {
-                    if (j != i) {
-                        lhs[j] = simplify(substitute(rvar, result_rhs, lhs[j]));
+            const Variable *var = lhs_arg.as<Variable>();
+            if (var != nullptr && var->reduction_domain.defined()) {
+                ReductionDomain rdom = var->reduction_domain;
+                int rvar_id = -1;
+                for (int rid = 0; rid < (int)rdom.domain().size(); rid++) {
+                    if (rdom.domain()[rid].var == var->name) {
+                        rvar_id = rid;
+                        break;
                     }
                 }
-                adjoint = simplify(substitute(rvar, result_rhs, adjoint));
+                assert(rvar_id != -1);
+                ReductionVariable rvar = rdom.domain()[rvar_id];
+                // Check if the min/max of the rvariable is the same as the target function
+                const Box &target_bounds = func_bounds[func.name()];
+                Interval t_interval = target_bounds[i];
+                t_interval.min = simplify(t_interval.min);
+                t_interval.max = simplify(t_interval.max);
+                Interval r_interval(simplify(rvar.min),
+                                    simplify(rvar.min + rvar.extent - 1));
+                if (equal(r_interval.min, t_interval.min) &&
+                        equal(r_interval.max, t_interval.max)) {
+                    lhs_arg = func_to_update_args[i];
+                    // Replace other occurence of rvar in lhs
+                    for (int j = 0; j < (int)lhs.size(); j++) {
+                        if (j != i) {
+                            lhs[j] = simplify(substitute(rvar.var, func_to_update_args[i], lhs[j]));
+                        }
+                    }
+                    adjoint = simplify(substitute(rvar.var, func_to_update_args[i], adjoint));
+                }
             }
         }
 
