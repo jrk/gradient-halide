@@ -29,6 +29,13 @@ Derivative propagate_adjoints(const Func &output,
                               const Buffer<float> &adjoint);
 Derivative propagate_adjoints(const Func &output);
 void print_func(const Func &func, bool ignore_non_adjoints = true, bool ignore_bc = true, bool recursive = true, int depth = -1);
+// Bounds are {min, max}
+void simple_autoschedule(std::vector<Func> &outputs,
+                         const std::map<std::string, int> &parameters,
+                         const std::vector<std::vector<std::pair<int, int>>> &output_bounds);
+void simple_autoschedule(Func &output,
+                         const std::map<std::string, int> &parameters,
+                         const std::vector<std::pair<int, int>> &output_bounds);
 
 namespace Internal {
 

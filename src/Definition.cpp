@@ -97,6 +97,7 @@ Definition::Definition(const std::vector<Expr> &args, const std::vector<Expr> &v
     if (rdom.defined()) {
         contents->predicate = rdom.predicate();
         for (size_t i = 0; i < rdom.domain().size(); i++) {
+            ReductionVariable rvar = rdom.domain()[i];
             contents->stage_schedule.rvars().push_back(rdom.domain()[i]);
         }
     }

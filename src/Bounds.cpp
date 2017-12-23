@@ -425,8 +425,18 @@ private:
             }
         } else if (a.is_bounded()) {
             // if we can't statically prove that the divisor can't span zero, then we're unbounded
-            int min_sign = static_sign(b.min);
-            int max_sign = static_sign(b.max);
+            Expr b_min = b.min;
+            Expr b_max = b.max;
+            const Variable *b_min_var = b_min.as<Variable>();
+            if (b_min_var != nullptr && scope.contains(b_min_var->name)) {
+                b_min = scope.get(b_min_var->name).min;
+            }
+            const Variable *b_max_var = b_max.as<Variable>();
+            if (b_max_var != nullptr && scope.contains(b_max_var->name)) {
+                b_max = scope.get(b_max_var->name).max;
+            }
+            int min_sign = static_sign(b_min);
+            int max_sign = static_sign(b_max);
             if (min_sign != max_sign || min_sign == 0 || max_sign == 0) {
                 interval = Interval::everything();
             } else {
@@ -1295,11 +1305,13 @@ private:
             string max_name = unique_name('t');
             string min_name = unique_name('t');
             {
-                ScopedBinding<Interval> p(scope, op->name, Interval(Variable::make(op->value.type(), min_name),
-                                                                Variable::make(op->value.type(), max_name)));
+                Expr min_var = Variable::make(op->value.type(), min_name);
+                Expr max_var = Variable::make(op->value.type(), max_name);
+                ScopedBinding<Interval> p(scope, op->name, Interval(min_var, max_var));
+                ScopedBinding<Interval> p_min(scope, min_name, Interval(value_bounds.min, value_bounds.max));
+                ScopedBinding<Interval> p_max(scope, max_name, Interval(value_bounds.min, value_bounds.max));
                 op->body.accept(this);
             }
-
             for (pair<const string, Box> &i : boxes) {
                 Box &box = i.second;
                 for (size_t i = 0; i < box.size(); i++) {

@@ -174,7 +174,8 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             std::vector<Expr> expr_list;
             Tuple tuple = update_id < 0 ? func.values() : func.update_values(update_id);
             std::vector<const BaseExprNode *> output_exprs;
-            for (const auto &expr : tuple.as_vector()) {
+            auto tuple_vector = tuple.as_vector();
+            for (const auto &expr : tuple_vector) {
                 std::vector<Expr> value_expr_list = sort_expressions(expr);
                 expr_list.insert(expr_list.end(), value_expr_list.begin(), value_expr_list.end());
                 output_exprs.push_back((const BaseExprNode *)expr_list.back().get());
@@ -615,9 +616,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // TODO: maybe do some analysis on lhs to avoid applying boundary conditions to
         //       function calls in adjoint
         if (func_to_update.values().size() == 1) {
-            func_to_update(lhs) = func_to_update(lhs) + adjoint;
+            func_to_update(lhs) += adjoint;
         } else {
-            func_to_update(lhs)[op->value_index] = func_to_update(lhs)[op->value_index] + adjoint;
+            func_to_update(lhs)[op->value_index] += adjoint;
         }
 
         if (debug_flag) {
@@ -692,6 +693,229 @@ Derivative propagate_adjoints(const Func &output) {
     return propagate_adjoints(output, adjoint, output_bounds);
 }
 
+void simple_autoschedule(std::vector<Func> &outputs,
+                         const std::map<std::string, int> &parameters,
+                         const std::vector<std::vector<std::pair<int, int>>> &output_bounds) {
+    using namespace Internal;
+    std::vector<FuncBounds> output_bounds_expr;
+    for (const auto &bounds : output_bounds) {
+        FuncBounds func_bounds;
+        for (const auto &bound : bounds) {
+            func_bounds.push_back(std::make_pair<Expr, Expr>(bound.first, bound.second));
+        }
+        output_bounds_expr.push_back(func_bounds);
+    }
+    std::map<std::string, Box> func_bounds = inference_bounds(outputs, output_bounds_expr);
+    std::vector<Function> output_functions;
+    output_functions.reserve(outputs.size());
+    for (const auto &func : outputs) {
+        output_functions.push_back(func.function());
+    }
+    std::map<std::string, Function> env;
+    for (const auto &func : output_functions) {
+        std::map<std::string, Function> local_env = find_transitive_calls(func);
+        env.insert(local_env.begin(), local_env.end());
+    }
+    std::vector<std::string> order = realization_order(output_functions, env).first;
+    // Traverse from the consumers to the producers
+    for (auto it = order.rbegin(); it != order.rend(); it++) {
+        Func func(env[*it]);
+        Box bounds = func_bounds[*it];
+        std::vector<int> int_bounds;
+        for (int i = 0; i < (int)bounds.size(); i++) {
+            Interval interval = bounds[i];
+            Expr extent = simplify(interval.max - interval.min + 1);
+            for (const auto &param : parameters) {
+                extent = substitute(param.first, Expr(param.second), extent);
+            }
+            extent = simplify(extent);
+            const int64_t *extent_int = as_const_int(extent);
+            user_assert(extent_int != nullptr) << "extent:" << extent << " is not constant.\n";
+            int_bounds.push_back(*extent_int);
+        }
+        int rvars_count = 0;
+        int calls_count = 0;
+        auto vals = func.values().as_vector();
+        for (const auto &val : vals) {
+            calls_count += count_calls(val);
+        }
+        for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
+            rvars_count += func.rvars(update_id).size();
+            auto vals = func.update_values(update_id).as_vector();
+            for (const auto &val : vals) {
+                calls_count += count_calls(val);
+            }
+        }
+
+        if (rvars_count == 0 && calls_count <= 5) {
+            // If the function isn't doing much, inline it
+            func.compute_inline();
+            continue;
+        }
+        func.compute_root();
+        // initial definition is easy: everything is pure variables
+        // just parallelize and vectorize if there are enough places to launch threads
+        std::vector<Var> fused_vars;
+        int var_size = 1;
+        if (func.args().size() > 0) {
+            fused_vars.push_back(func.args()[0]);
+            var_size *= int_bounds[0];
+        }
+        for (int arg_id = 1; arg_id < (int)func.args().size(); arg_id++) {
+            Var new_var;
+            Stage(func).fuse(fused_vars.back(), func.args()[arg_id], new_var);
+            fused_vars.push_back(new_var);
+            var_size *= int_bounds[arg_id];
+        }
+        int min_height = 32;
+        int tile_width = 64;
+        if (var_size >= tile_width * min_height) {
+            Var outer, inner;
+            Stage(func).split(fused_vars.back(), outer, inner, tile_width);
+            Stage(func).parallel(outer);
+            Stage(func).vectorize(inner, 16);
+        } else if (var_size >= 16) {
+            Stage(func).vectorize(fused_vars.back(), 16);
+        }
+
+        for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
+            std::vector<Var> pure_args;
+            for (const auto &arg : func.update_args(update_id)) {
+                const Variable *var = arg.as<Variable>();
+                if (var != nullptr &&
+                        !var->param.defined() &&
+                        !var->image.defined() &&
+                        !var->reduction_domain.defined()) {
+                    pure_args.push_back(Var(var->name));
+                }
+            }
+            std::vector<Var> fused_vars;
+            int var_size = 1;
+            if (pure_args.size() > 0) {
+                fused_vars.push_back(pure_args[0]);
+                var_size *= int_bounds[0];
+            }
+            for (int arg_id = 1; arg_id < (int)pure_args.size(); arg_id++) {
+                Var new_var;
+                func.update(update_id).fuse(fused_vars.back(), pure_args[arg_id], new_var);
+                fused_vars.push_back(new_var);
+                var_size *= int_bounds[arg_id];
+            }
+            bool parallelized = false;
+            bool vectorized = false;
+            if (var_size >= tile_width * min_height) {
+                Var outer, inner;
+                func.update(update_id).split(fused_vars.back(), outer, inner, tile_width);
+                func.update(update_id).parallel(outer);
+                func.update(update_id).vectorize(inner, 16);
+                parallelized = true;
+                vectorized = true;
+            } else if (var_size >= min_height) {
+                func.update(update_id).parallel(fused_vars.back());
+                parallelized = true;
+            }
+
+            const std::vector<ReductionVariable> &rvars =
+                func.update(update_id).get_schedule().rvars();
+            if ((!parallelized || !vectorized) && rvars.size() > 0) {
+                std::vector<RVar> fused_rvars;
+                fused_rvars.push_back(RVar(rvars[0].var));
+                Expr extent = rvars[0].extent;
+                for (const auto &param : parameters) {
+                    extent = substitute(param.first, Expr(param.second), extent);
+                }
+                extent = simplify(extent);
+                const int64_t *extent_int = as_const_int(extent);
+                user_assert(extent_int != nullptr) << "extent:" << extent << " is not constant.\n";
+                int rvar_size = *extent_int;
+                for (int arg_id = 1; arg_id < (int)rvars.size(); arg_id++) {
+                    RVar new_var;
+                    func.update(update_id).fuse(fused_rvars.back(), RVar(rvars[arg_id].var), new_var);
+                    fused_rvars.push_back(new_var);
+                    Expr extent = rvars[arg_id].extent;
+                    for (const auto &param : parameters) {
+                        extent = substitute(param.first, Expr(param.second), extent);
+                    }
+                    extent = simplify(extent);
+                    const int64_t *extent_int = as_const_int(extent);
+                    user_assert(extent_int != nullptr) << "extent:" << extent << " is not constant.\n";
+                    rvar_size *= *extent_int;
+                }
+
+                int min_work = 16;
+                if (!parallelized && !vectorized) {
+                    if (rvar_size >= tile_width * min_height * min_work) {
+                        RVar outer, inner;
+                        func.update(update_id).split(fused_rvars.back(), outer, inner, tile_width * min_work);
+                        RVar outer_outer, outer_inner;
+                        func.update(update_id).split(outer, outer_outer, outer_inner, min_height);
+                        RVar inner_outer, inner_inner;
+                        func.update(update_id).split(inner, inner_outer, inner_inner, min_work);
+                        // for outer_outer = 0 to rest (parallelize)
+                        //   for outer_inner = 0 to min_height
+                        //    for inner_outer = 0 to tile_width (vectorize)
+                        //      for inner_inner = 0 to min_work
+                        Var parallel_var, vectorize_var;
+                        Func interm = func.update(update_id).rfactor({{outer_outer, parallel_var}, {inner_outer, vectorize_var}});
+                        print_func(interm, false, false, false);
+                        //print_func(func, false, false, false);
+                        interm.parallel(parallel_var)
+                              .vectorize(vectorize_var, 16);
+                        interm.update()
+                              .parallel(parallel_var)
+                              .vectorize(vectorize_var, 16);
+                    } else if (rvar_size >= 16 * min_work) {
+                        RVar outer, inner;
+                        func.update(update_id).split(fused_rvars.back(), outer, inner, min_work);
+                        // for outer = 0 to rest (vectorize)
+                        //      for inner = 0 to min_work
+                        Var vectorize_var;
+                        /*Func interm = func.update(update_id).rfactor(outer, vectorize_var);
+                        interm.vectorize(vectorize_var, 16);
+                        interm.update()
+                              .vectorize(vectorize_var, 16);*/
+                    }
+                } else if (!vectorized) {
+                    if (rvar_size >= tile_width * min_work) {
+                        RVar outer, inner;
+                        func.update(update_id).split(fused_rvars.back(), outer, inner, tile_width * min_work);
+                        RVar inner_outer, inner_inner;
+                        func.update(update_id).split(inner, inner_outer, inner_inner, min_work);
+                        // for outer = 0 to rest
+                        //   for inner_outer = 0 to tile_width (vectorize)
+                        //      for inner = 0 to min_work
+                        /*Var vectorize_var;
+                        Func interm = func.update(update_id).rfactor(inner_outer, vectorize_var);
+                        interm.vectorize(vectorize_var, 16);
+                        interm.update()
+                              .vectorize(vectorize_var, 16);*/
+                    } else if (rvar_size >= 16 * min_work) {
+                        RVar outer, inner;
+                        func.update(update_id).split(fused_rvars.back(), outer, inner, min_work);
+                        // for outer = 0 to rest (vectorize)
+                        //      for inner = 0 to min_work
+                        /*Var vectorize_var;
+                        Func interm = func.update(update_id).rfactor(outer, vectorize_var);
+                        interm.vectorize(vectorize_var, 16);
+                        interm.update()
+                              .vectorize(vectorize_var, 16);*/
+                    }
+                }
+            }
+        }
+    }
+}
+
+void simple_autoschedule(Func &output,
+                         const std::map<std::string, int> &parameters,
+                         const std::vector<std::pair<int, int>> &output_bounds) {
+    std::vector<Func> outputs{output};
+    std::vector<std::vector<std::pair<int, int>>> vector_output_bounds{output_bounds};
+    return simple_autoschedule(outputs,
+                               parameters,
+                               vector_output_bounds);
+}
+
 void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool recursive, int depth) {
     Internal::debug(0) << "Printing function:" << func.name() << "\n";
     // Topologically sort the functions
@@ -734,7 +958,8 @@ void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool
                 if (func.update_args(update_id).size() > 0) {
                     Internal::debug(0) << Internal::simplify(func.update_args(update_id)[0]);
                     for (int i = 1; i < (int)func.update_args(update_id).size(); i++) {
-                        Internal::debug(0) << ", " << Internal::simplify(func.update_args(update_id)[i]);
+                        Internal::debug(0) << ", " << 
+                            Internal::simplify(func.update_args(update_id)[i]);
                     }
                 }
                 Internal::debug(0) << ") =";
