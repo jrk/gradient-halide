@@ -38,7 +38,10 @@ inline Buffer<float> wrap(THCudaTensor* tensor) {
   Buffer<float> buffer(dims);
 
   float* pData  = THCudaTensor_data(state, tensor);
-  buffer.device_wrap_native(cuda_interface, (uint64_t)pData);
+  int err = buffer.device_wrap_native(cuda_interface, (uint64_t)pData);
+  if (err != 0) {
+    throw "halide_device_wrap failed";
+  }
   buffer.set_device_dirty();
 
   return buffer;

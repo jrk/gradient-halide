@@ -314,7 +314,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
       stream << "void* __user_context;\n";
     }
     do_indent();
-    stream << simple_name << "(";
+    stream << "int err = " << simple_name << "(";
     // if(isCuda) {
     //   stream << "user_context, ";
     // }
@@ -329,6 +329,8 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
       if (i < args.size()-1) stream << ", ";
     }
     stream << ");\n";
+    do_indent();
+    stream << "if (err != 0) throw \"halide_cuda_run failed\";\n";
     stream << "\n";
 
     if(isCuda) {
@@ -371,11 +373,17 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     stream << "\n";
 
     // if(isCuda) {
-    //   do_indent();
-    //   stream << "// Release device\n";
-    //   do_indent();
-    //   stream << "halide_device_release(NULL, cuda_interface);\n";
-    //   stream << "\n";
+      // do_indent();
+      // stream << "// Synchronize device\n";
+      // do_indent();
+      // stream << "halide_device_sync(NULL, cuda_interface);\n";
+      // stream << "\n";
+
+      // do_indent();
+      // stream << "// Release device\n";
+      // do_indent();
+      // stream << "halide_device_release(NULL, cuda_interface);\n";
+      // stream << "\n";
     // }
 
     do_indent();
