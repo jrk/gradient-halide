@@ -347,6 +347,10 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
           do_indent();
           stream 
             << print_name(buffer_args[i].name) << "_buffer"
+            << ".device_sync();\n";
+          do_indent();
+          stream 
+            << print_name(buffer_args[i].name) << "_buffer"
             << ".device_detach_native();\n";
         }
       }
