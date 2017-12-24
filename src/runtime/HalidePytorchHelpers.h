@@ -69,7 +69,7 @@ extern "C" {
 WEAK int halide_cuda_acquire_context(void *user_context, CUcontext *ctx, bool create = true) {
   if(user_context != NULL) {
     Halide::Pytorch::UserContext *user_ctx = (Halide::Pytorch::UserContext*) user_context;
-    std::cerr << "PyWrap get ctx " << *user_ctx->cuda_context << "\n";
+    // std::cerr << "PyWrap get ctx " << *user_ctx->cuda_context << "\n";
     *ctx = *user_ctx->cuda_context;
   } else {
     // std::cerr << "no user context\n";

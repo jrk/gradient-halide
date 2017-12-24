@@ -256,27 +256,17 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
           stream << "int device_id = THCudaTensor_getDevice(state, "
                  << print_name(buffer_args[i].name) << ");\n";
           do_indent();
-          // stream << "std::cerr << \"PyWrap device \" << device_id << \"\\n\";\n";
-          // do_indent();
           stream << "CUcontext ctx = 0;\n";
           do_indent();
           stream << "CUresult res = cuCtxGetCurrent(&ctx);\n";
           do_indent();
           stream << "if(res != 0) throw \"could not acquire cuda context\";\n";
           do_indent();
-          // stream << "std::cerr << \"PyWrap get ctx err \" << res << \"\\n\";\n";
-          // do_indent();
-          // stream << "std::cerr << \"PyWrap ctx \" << ctx << \"\\n\";\n";
-          // do_indent();
           stream << "cudaStream_t stream = THCState_getCurrentStreamOnDevice(state, device_id);\n";
           do_indent();
-          // stream << "std::cerr << \"PyWrap stream \" << stream << \"\\n\";\n";
-          // do_indent();
           stream << "Halide::Pytorch::UserContext user_ctx(device_id, &ctx, &stream);\n";
           do_indent();
           stream << "void* __user_context = (void*) &user_ctx;\n\n";
-          // do_indent();
-          // stream << "halide_set_gpu_device(device_id);\n\n";
         } 
         else {
           do_indent();
