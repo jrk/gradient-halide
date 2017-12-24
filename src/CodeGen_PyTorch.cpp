@@ -256,13 +256,23 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
           stream << "int device_id = THCudaTensor_getDevice(state, "
                  << print_name(buffer_args[i].name) << ");\n";
           do_indent();
-          stream << "halide_set_gpu_device(device_id);\n\n";
+          stream << "CUcontext ctx = 0;\n";
+          do_indent();
+          stream << "CUresult res = cuCtxGetCurrent(&ctx);\n";
+          do_indent();
+          stream << "if(res != 0) throw \"could not acquire cuda context\";\n";
+          do_indent();
+          stream << "cudaStream_t stream = THCState_getCurrentStreamOnDevice(state, device_id);\n";
+          do_indent();
+          stream << "Halide::Pytorch::UserContext user_ctx(device_id, &ctx, &stream);\n";
+          do_indent();
+          stream << "void* __user_context = (void*) &user_ctx;\n\n";
         } 
-        // else {
-        //   do_indent();
-        //   stream << "assert(device_id == THCudaTensor_getDevice(state, "
-        //          << print_name(buffer_args[i].name) << "));\n";
-        // }
+        else {
+          do_indent();
+          stream << "if(device_id != THCudaTensor_getDevice(state, "
+                 << print_name(buffer_args[i].name) << ")) throw \"invalid device\";\n";
+        }
       }
 
       do_indent();
@@ -301,23 +311,9 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     }
 
     do_indent();
-    stream << "// TODO: Check ndimensions\n";
-    stream << "\n";
-
-
-    do_indent();
     stream << "// Run code\n";
     do_indent();
-    if(isCuda) {
-      // TODO: pass on/override halide_cuda_get_stream and
-      // halide_get_gpu_device
-      stream << "void* __user_context;\n";
-    }
-    do_indent();
     stream << "int err = " << simple_name << "(";
-    // if(isCuda) {
-    //   stream << "user_context, ";
-    // }
     for (size_t i = 0; i < args.size(); i++) {
       if (args[i].is_buffer()) {
         stream 
@@ -333,25 +329,29 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     stream << "if (err != 0) throw \"halide_cuda_run failed\";\n";
     stream << "\n";
 
-    if(isCuda) {
-      do_indent();
-      stream << "// Make sure data is on device\n";
-      do_indent();
-      stream << "const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();\n";
-      for (size_t i = 0; i < buffer_args.size(); i++) {
-        if (buffer_args[i].is_buffer()) {
-          do_indent();
-          stream 
-            << print_name(buffer_args[i].name) << "_buffer"
-            << ".copy_to_device(cuda_interface);\n";
-          do_indent();
-          stream 
-            << print_name(buffer_args[i].name) << "_buffer"
-            << ".device_detach_native();\n";
-        }
-      }
-      stream << "\n";
-    }
+    // if(isCuda) {
+    //   do_indent();
+    //   stream << "// Make sure data is on device\n";
+    //   do_indent();
+    //   stream << "const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();\n";
+    //   for (size_t i = 0; i < buffer_args.size(); i++) {
+    //     if (buffer_args[i].is_buffer()) {
+    //       do_indent();
+    //       stream 
+    //         << print_name(buffer_args[i].name) << "_buffer"
+    //         << ".copy_to_device(cuda_interface);\n";
+    //       do_indent();
+    //       stream 
+    //         << print_name(buffer_args[i].name) << "_buffer"
+    //         << ".device_sync();\n";
+    //       do_indent();
+    //       stream 
+    //         << print_name(buffer_args[i].name) << "_buffer"
+    //         << ".device_detach_native();\n";
+    //     }
+    //   }
+    //   stream << "\n";
+    // }
 
     do_indent();
     stream << "// Free references\n";
