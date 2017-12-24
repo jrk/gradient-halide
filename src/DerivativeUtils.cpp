@@ -258,10 +258,20 @@ std::vector<Expr> sort_expressions(const Expr &expr) {
 	return sorter.sort(expr);
 }
 
-std::map<std::string, Box> inference_bounds(const Func &func,
-                                            const FuncBounds &output_bounds) {
+std::map<std::string, Box> inference_bounds(const std::vector<Func> &funcs,
+                                            const std::vector<FuncBounds> &output_bounds) {
+    assert(funcs.size() == output_bounds.size());
+    std::vector<Function> functions;
+    functions.reserve(funcs.size());
+    for (const auto &func : funcs) {
+        functions.push_back(func.function());
+    }
+    std::map<std::string, Function> env;
+    for (const auto &func : functions) {
+        std::map<std::string, Function> local_env = find_transitive_calls(func);
+        env.insert(local_env.begin(), local_env.end());
+    }
     Scope<Interval> scope;
-    std::map<std::string, Function> env = find_transitive_calls(func.function());
     for (const auto &it : env) {
         Func func = Func(it.second);
         for (int i = 0; i < func.num_update_definitions(); i++) {
@@ -271,15 +281,19 @@ std::map<std::string, Box> inference_bounds(const Func &func,
             }
         }
     }
-    std::vector<std::string> order = realization_order({func.function()}, env).first;
+    std::vector<std::string> order = realization_order(functions, env).first;
 
     std::map<std::string, Box> bounds;
-    std::vector<Interval> output_bounds_interval;
-    for (const auto &b : output_bounds) {
-        output_bounds_interval.push_back(Interval(b.first, b.second));
+    for (int i = 0; i < (int)funcs.size(); i++) {
+        const Func &func = funcs[i];
+        const FuncBounds &func_bounds = output_bounds[i];
+        std::vector<Interval> func_bounds_interval;
+        for (const auto &b : func_bounds) {
+            func_bounds_interval.push_back(Interval(b.first, b.second));
+        }
+        Box func_bounds_box(func_bounds_interval);
+        bounds[func.name()] = func_bounds_box;
     }
-    Box output_bounds_box(output_bounds_interval);
-    bounds[func.name()] = output_bounds_box;
     // Traverse from the consumers to the producers
     for (auto it = order.rbegin(); it != order.rend(); it++) {
         Func func = Func(env[*it]);
@@ -315,6 +329,12 @@ std::map<std::string, Box> inference_bounds(const Func &func,
         }
     }
     return bounds;
+}
+
+std::map<std::string, Box> inference_bounds(const Func &func,
+                                            const FuncBounds &output_bounds) {
+    return inference_bounds(std::vector<Func>{func},
+                            std::vector<FuncBounds>{output_bounds});
 }
 
 std::vector<std::pair<Expr, Expr>> rdom_to_vector(const RDom &bounds) {
@@ -423,6 +443,28 @@ std::pair<bool, Expr> solve_inverse(Expr expr, const std::string &var) {
         internal_error << "coult not solve expression\n";
     }
     return std::make_pair(true, result_rhs);
+}
+
+struct CallsCounter : public IRGraphVisitor {
+public:
+    using IRGraphVisitor::visit;
+    int count(Expr expr) {
+        counter = 0;
+        expr.accept(this);
+        return counter;
+    }
+
+    void visit(const Call *op) {
+        IRGraphVisitor::visit(op);
+        counter++;
+    }
+private:
+    int counter = 0;
+};
+
+int count_calls(Expr expr) {
+    CallsCounter counter;
+    return counter.count(expr);
 }
 
 } // namespace Internal
