@@ -1039,7 +1039,7 @@ public:
                 const Stage &s = stages[producing];
                 for (const ReductionVariable &rv : s.rvars) {
                     string var = s.stage_prefix + rv.var;
-                    Interval in = bounds_of_inner_var(var, body);
+                    Interval in(rv.min, rv.min + rv.extent - 1);
                     if (in.is_bounded()) {
                         body = LetStmt::make(var + ".min", in.min, body);
                         body = LetStmt::make(var + ".max", in.max, body);
