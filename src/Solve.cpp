@@ -891,9 +891,26 @@ class SolveForInterval : public IRVisitor {
                     already_solved = false;
                 }
             } else if (const Cast *cast_a = lt->a.as<Cast>()) {
-                // Move cast to rhs
-                Expr e = cast_a->value < Cast::make(cast_a->value.type(), lt->b);
-                cached_solve(e);
+                if (target) {
+                    // Move cast to rhs
+                    Type a_type = cast_a->value.type();
+                    Type b_type = lt->b.type();
+                    Expr e;
+                    if (a_type.is_int() && b_type.is_float()) {
+                        e = cast_a->value < Cast::make(cast_a->value.type(), ceil(lt->b));
+                    } else if (a_type.is_float() && b_type.is_int()) {
+                        e = cast_a->value < Cast::make(cast_a->value.type(), lt->b);
+                    } else if ((a_type.is_int() && b_type.is_int()) ||
+                            (a_type.is_float() && b_type.is_float())) {
+                        e = cast_a->value < lt->b;
+                    } else {
+                        // what can this be?
+                        fail();
+                    }
+                    cached_solve(e);
+                } else {
+                    fail();
+                }
             } else {
                 fail();
             }
@@ -918,9 +935,26 @@ class SolveForInterval : public IRVisitor {
                     already_solved = false;
                 }
             } else if (const Cast *cast_a = gt->a.as<Cast>()) {
-                // Move cast to rhs
-                Expr e = cast_a->value > Cast::make(cast_a->value.type(), gt->b);
-                cached_solve(e);
+                if (target) {
+                    // Move cast to rhs
+                    Type a_type = cast_a->value.type();
+                    Type b_type = gt->b.type();
+                    Expr e;
+                    if (a_type.is_int() && b_type.is_float()) {
+                        e = cast_a->value > Cast::make(cast_a->value.type(), floor(gt->b));
+                    } else if (a_type.is_float() && b_type.is_int()) {
+                        e = cast_a->value > Cast::make(cast_a->value.type(), gt->b);
+                    } else if ((a_type.is_int() && b_type.is_int()) ||
+                            (a_type.is_float() && b_type.is_float())) {
+                        e = cast_a->value > gt->b;
+                    } else {
+                        // what can this be?
+                        fail();
+                    }
+                    cached_solve(e);
+                } else {
+                    fail();
+                }
             } else {
                 fail();
             }
@@ -1024,8 +1058,25 @@ class SolveForInterval : public IRVisitor {
             }
         } else if (const Cast *cast_a = le->a.as<Cast>()) {
             // Move cast to rhs
-            Expr e = cast_a->value <= Cast::make(cast_a->value.type(), le->b);
-            cached_solve(e);
+            if (target) {
+                Type a_type = cast_a->value.type();
+                Type b_type = le->b.type();
+                Expr e;
+                if (a_type.is_int() && b_type.is_float()) {
+                    e = cast_a->value <= Cast::make(cast_a->value.type(), floor(le->b));
+                } else if (a_type.is_float() && b_type.is_int()) {
+                    e = cast_a->value <= Cast::make(cast_a->value.type(), le->b);
+                } else if ((a_type.is_int() && b_type.is_int()) ||
+                           (a_type.is_float() && b_type.is_float())) {
+                    e = cast_a->value <= le->b;
+                } else {
+                    // what can this be?
+                    fail();
+                }
+                cached_solve(e);
+            } else {
+                fail();
+            }
         } else {
             fail();
         }
@@ -1095,9 +1146,26 @@ class SolveForInterval : public IRVisitor {
                 fail();
             }
         }  else if (const Cast *cast_a = ge->a.as<Cast>()) {
-            // Move cast to rhs
-            Expr e = cast_a->value >= Cast::make(cast_a->value.type(), ge->b);
-            cached_solve(e);
+            if (target) {
+                // Move cast to rhs
+                Type a_type = cast_a->value.type();
+                Type b_type = ge->b.type();
+                Expr e;
+                if (a_type.is_int() && b_type.is_float()) {
+                    e = cast_a->value >= Cast::make(cast_a->value.type(), ceil(ge->b));
+                } else if (a_type.is_float() && b_type.is_int()) {
+                    e = cast_a->value >= Cast::make(cast_a->value.type(), ge->b);
+                } else if ((a_type.is_int() && b_type.is_int()) ||
+                           (a_type.is_float() && b_type.is_float())) {
+                    e = cast_a->value >= ge->b;
+                } else {
+                    // what can this be?
+                    fail();
+                }
+                cached_solve(e);
+            } else {
+                fail();
+            }
         } else {
             fail();
         }
@@ -1590,6 +1658,24 @@ void solve_test() {
 
     check_inner_interval(x/5 < 17, Interval::neg_inf, 84);
     check_outer_interval(x/5 < 17, Interval::neg_inf, 84);
+
+    // check for casting
+    check_outer_interval(x/4.f >= 10, 40, Interval::pos_inf);
+    check_outer_interval(x/4.f >= 9.9f, 40, Interval::pos_inf);
+    check_outer_interval(x/4.f >= -10, -40, Interval::pos_inf);
+    check_outer_interval(x/4.f >= -9.9f, -39, Interval::pos_inf);
+    check_outer_interval(x/4.f > 10, 41, Interval::pos_inf);
+    check_outer_interval(x/4.f > 9.9f, 40, Interval::pos_inf);
+    check_outer_interval(x/4.f > -10, -39, Interval::pos_inf);
+    check_outer_interval(x/4.f > -9.9f, -39, Interval::pos_inf);
+    check_outer_interval(x/4.f <= 10, Interval::neg_inf, 40);
+    check_outer_interval(x/4.f <= 9.9f, Interval::neg_inf, 39);
+    check_outer_interval(x/4.f <= -10, Interval::neg_inf, -40);
+    check_outer_interval(x/4.f <= -9.9f, Interval::neg_inf, -40);
+    check_outer_interval(x/4.f < 10, Interval::neg_inf, 39);
+    check_outer_interval(x/4.f < 9.9f, Interval::neg_inf, 39);
+    check_outer_interval(x/4.f < -10, Interval::neg_inf, -41);
+    check_outer_interval(x/4.f < -9.9f, Interval::neg_inf, -40);
 
     check_outer_interval(floor(x / 4.f) == 10, 40, 43);
     check_outer_interval(ceil(x / 4.f) == 10, 37, 40);
