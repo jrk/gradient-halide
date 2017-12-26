@@ -35,7 +35,9 @@ std::vector<std::pair<Expr, Expr>> box_to_vector(const Box &bounds);
 bool equal(const RDom &bounds0, const RDom &bounds1);
 std::vector<std::string> vars_to_strings(const std::vector<Var> &vars);
 ReductionDomain extract_rdom(const Expr &expr);
-std::pair<bool, Expr> solve_inverse(Expr expr, const std::string &var);
+std::pair<bool, Expr> solve_inverse(Expr expr,
+                                    const std::string &new_var,
+                                    const std::string &var);
 int count_calls(Expr expr);
 
 }

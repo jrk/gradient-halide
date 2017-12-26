@@ -441,19 +441,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // inter-dependencies like:
         // g(x, y) = f(x*y, x+y)
         // can't be simplified. In principle this can be inverted by solving a system of equations.
-        std::set<std::string> invalidated_variables;
-        for (int i = 0; i < (int)lhs.size(); i++) {
-            std::vector<std::string> variables =
-                gather_variables(lhs[i], vars_to_strings(current_args));
-            // skip cases where there are cross-dimension dependencies
-            if (variables.size() != 1) {
-                for (const auto &var : variables) {
-                    invalidated_variables.insert(var);
-                }
-                continue;
-            }
-        }
-        // Here we invert the equations (TODO: make this a routine? also the invalidated vars?)
+
+        // (TODO: make this a routine? also the invalidated vars?)
+        std::set<std::string> canonicalized_vars;
         for (int i = 0; i < (int)lhs.size(); i++) {
             // Gather all pure variables at op->args[i], substitute them with new_args
             // For now only support single pure variable
@@ -463,14 +453,12 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 continue;
             }
 
-            // If it appeared in other argument we should also fail
-            if (invalidated_variables.find(variables[0]) != invalidated_variables.end()) {
-                continue;
-            }
-
             bool solved;
             Expr result_rhs;
-            std::tie(solved, result_rhs) = solve_inverse(new_args[i] == lhs[i], variables[0]);
+            std::tie(solved, result_rhs) =
+                solve_inverse(new_args[i] == lhs[i],
+                              new_args[i].name(),
+                              variables[0]);
             if (!solved) {
                 continue;
             }
@@ -481,6 +469,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
             lhs[i] = func_to_update.args()[i];
             canonicalized[i] = true;
+            canonicalized_vars.insert(func_to_update.args()[i].name());
         }
 
         // Sometimes the canonicalization above doesn't work.
@@ -500,7 +489,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 RDom r(bounds);
                 for (int var_id = 0; var_id < (int)variables.size(); var_id++) {
                     for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
-                        if (current_args[arg_id].name() == variables[var_id]) {
+                        if (current_args[arg_id].name() == variables[var_id] &&
+                                canonicalized_vars.find(current_args[arg_id].name()) == canonicalized_vars.end()) {
                             lhs[lhs_id] = substitute(variables[var_id],
                                                      r_bounds[arg_id],
                                                      lhs[lhs_id]);
@@ -518,6 +508,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         //      now we need to replace y with a reduction variable over f's bound
         //      x is automatically excluded since it's
         //      replaced by the new substitution variable e.g. u_0
+
         // First gather all free variables
         FuncBounds bounds_subset;
         std::vector<int> arg_id_to_substitute;
@@ -612,6 +603,15 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             // substitute the new_args back to original variables
             adjoint = substitute(new_args[i].name(), func_to_update_args[i], adjoint);
         }
+
+        /*if (func_to_update.name() == "f_input_0_d_def__") {
+            Expr index = cast<int>(Var("x") * 4.f) + merged_r.x - 3;
+            Func af = adjoint_funcs[FuncKey{"ceil_output", -1}];
+            adjoint = print(adjoint, "x:", Var("x"), "r.x:", merged_r.x, "index:",
+                            index,
+                            "af(index):",
+                            af(index));
+        }*/
 
         // TODO: maybe do some analysis on lhs to avoid applying boundary conditions to
         //       function calls in adjoint
@@ -749,7 +749,6 @@ void simple_autoschedule(std::vector<Func> &outputs,
 
         if (rvars_count == 0 && calls_count <= 5) {
             // If the function isn't doing much, inline it
-            //std::cerr << "[INLINE] func.name():" << func.name() << std::endl;
             func.compute_inline();
             continue;
         }
@@ -1570,6 +1569,39 @@ void test_tuple() {
     CMP(d_input_buf(2), 1.f);
 }
 
+void test_floor_ceil() {
+    Var x("x");
+    float input_data[] = {1.f, 2.f, 3.f};
+    Buffer<float> input(input_data, 3, "input");
+    Func f_input("f_input");
+    f_input(x) = input(x);
+    Func floor_output("floor_output");
+    floor_output(x) = f_input(cast<int>(floor(x / 4.f)));
+    Func ceil_output("ceil_output");
+    ceil_output(x) = f_input(cast<int>(ceil(x / 4.f)));
+    Func output("output");
+    output(x) = ceil_output(x) + floor_output(x);
+    RDom r(0, 8);
+    Func f_loss("f_loss");
+    f_loss() = 0.f;
+    f_loss() += output(r.x);
+    Derivative d = propagate_adjoints(f_loss);
+    std::map<FuncKey, Func> adjoints = d.adjoints;
+    // floor_output(0~3) == input[0]
+    // floor_output(4~7) == input[1]
+    // ceil_output(0) == input[0]
+    // ceil_output(1~4) == input[1]
+    // ceil_output(5~7) = input[2]
+
+    print_func(adjoints[FuncKey{f_input.name(), -1}]);
+
+    Buffer<float> d_input_buf = adjoints[FuncKey{f_input.name(), -1}].realize(3);
+
+    CMP(d_input_buf(0), 5.f);
+    CMP(d_input_buf(1), 8.f);
+    CMP(d_input_buf(2), 3.f);
+}
+
 #if 0
 void test_ATA() {
     Var x("x");
@@ -1637,7 +1669,7 @@ void test_ATA() {
 #endif
 
 void derivative_test() {
-    test_simple_bounds_inference();
+    /*test_simple_bounds_inference();
     test_simple_bounds_inference_update();
     test_scalar();
     test_simple_1d_blur();
@@ -1653,7 +1685,8 @@ void derivative_test() {
     test_repeat_edge();
     test_second_order();
     test_implicit_vars();
-    test_tuple();
+    test_tuple();*/
+    test_floor_ceil();
     debug(0) << "Derivative test passed\n";
 }
 

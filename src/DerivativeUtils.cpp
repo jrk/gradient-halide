@@ -9,6 +9,8 @@
 #include "RealizationOrder.h"
 #include "Solve.h"
 #include "Substitute.h"
+#include "CSE.h"
+#include "Monotonic.h"
 
 namespace Halide {
 namespace Internal {
@@ -399,50 +401,34 @@ ReductionDomain extract_rdom(const Expr &expr) {
     return extractor.gather(expr);
 }
 
-std::pair<bool, Expr> solve_inverse(Expr expr, const std::string &var) {
-    SolverResult result = solve_expression(expr, var);
-    // debug(0) << "solving " << expr << " for " << var << "\n";
-    if (!result.fully_solved) {
-        // debug(0) << "expression not fully solved" << "\n";
+std::pair<bool, Expr> solve_inverse(Expr expr,
+                                    const std::string &new_var,
+                                    const std::string &var) {
+    expr = simplify(expr);
+    Interval interval = solve_for_outer_interval(expr, var);
+    if (!interval.is_bounded()) {
+        return std::make_pair(false, Expr());
+    }
+    Expr rmin = simplify(interval.min);
+    Expr rmax = simplify(interval.max);
+    Expr rextent = simplify(rmax - rmin + 1);
+
+    const int64_t *extent_int = as_const_int(rextent);
+    if (extent_int == nullptr) {
         return std::make_pair(false, Expr());
     }
 
-    // Extract body of the let variable
-    Expr result_rhs = result.result;
-    if (result.result.as<Let>() != nullptr) {
-        const Let *let_expr = result.result.as<Let>();
-        // debug(0) << "we have a let " << result.result << "\n";
-        // debug(0) << let_expr->value << " " << let_expr->body << "\n";
-        result_rhs = substitute(let_expr->name, let_expr->value, let_expr->body);
-        // Extract the body of the And????
-        if (result_rhs.as<And>() != nullptr) {
-            // TODO(mgharbi): this is quite dirty and brittle, what's the right solution?
-            const And *and_expr = result_rhs.as<And>();
-            // debug(0) << "we have an And clause " << and_expr << "\n";
-            result_rhs = and_expr->a;
-        }
-    } else {
-        result_rhs = result.result;
+    // For some reason interval.is_single_point() doesn't work
+    if (extent_int != nullptr && *extent_int == 1) {
+        return std::make_pair(true, rmin);
     }
 
-    // y == u_1 + 1
-    // Sometimes even if the equation is tagged fully_solved it isn't
-    // We still need to check
-    if (result_rhs.as<EQ>() != nullptr) {
-        // Checking whether the lhs is a single variable
-        Expr result_lhs = result_rhs.as<EQ>()->a;
-        const Variable *lhs_var = result_lhs.as<Variable>();
-        if (lhs_var == nullptr) {
-            // debug(0) << "expression not fully solved";
-            return std::make_pair(false, Expr());
-        }
-
-        internal_assert(lhs_var->name == var);
-        result_rhs = result_rhs.as<EQ>()->b;
-    } else {
-        internal_error << "coult not solve expression\n";
-    }
-    return std::make_pair(true, result_rhs);
+    // Create a RDom to loop over the interval
+    RDom r(0, int(*extent_int));
+    Expr cond = substitute(var, rmin + r.x, expr.as<EQ>()->b);
+    cond = substitute(new_var, Var(var), cond) == Var(var);
+    r.where(cond);
+    return std::make_pair(true, rmin + r.x);
 }
 
 struct CallsCounter : public IRGraphVisitor {
