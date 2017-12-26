@@ -520,7 +520,7 @@ private:
             return mutate(Cast::make(op->type, add->a) + add->b);
         } else if (add &&
                    op->type.is_int() &&
-                   op->value.type().is_float() &&
+                   add->type.is_float() &&
                    is_const(add->b) &&
                    op->type.can_represent(*as_const_float(add->b))) {
             // cast<int>(a + int_const) = cast<int>(a) + int_const
@@ -4516,6 +4516,7 @@ private:
                 return expr;
             }
             const Call *call = arg.as<Call>();
+            const Add *add = arg.as<Add>();
             if (const double *f = as_const_float(arg)) {
                 if (op->name == "floor_f32") {
                     return FloatImm::make(arg.type(), std::floor(*f));
@@ -4536,6 +4537,21 @@ private:
                 return call;
             } else if (!arg.same_as(op->args[0])) {
                 return Call::make(op->type, op->name, {arg}, op->call_type);
+            } else if (add != nullptr &&
+                       is_const(add->b) &&
+                       Int(64).can_represent(*as_const_float(add->b))) {
+                // e.g. floor(x + int_const) = floor(x) + int_const
+                if (op->name == "floor_f32") {
+                    return floor(add->a) + add->b;
+                } else if (op->name == "ceil_f32") {
+                    return ceil(add->a) + add->b;
+                } else if (op->name == "round_f32") {
+                    return round(add->a) + add->b;
+                } else if (op->name == "trunc_f32") {
+                    return trunc(add->a) + add->b;
+                } else {
+                    return op;
+                }
             } else {
                 return op;
             }
