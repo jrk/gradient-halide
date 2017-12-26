@@ -878,15 +878,57 @@ class SolveForInterval : public IRVisitor {
     }
 
     void visit(const LT *lt) override {
-        // Normalize to le
-        Expr cond = lt->a <= (lt->b - 1);
-        cond.accept(this);
+        static string b_name = unique_name('b');
+        static string c_name = unique_name('c');
+        if (lt->a.type().is_float()) {
+            if (!already_solved) {
+                SolverResult solved = solve_expression(lt, var, scope);
+                if (!solved.fully_solved) {
+                    fail();
+                } else {
+                    already_solved = true;
+                    solved.result.accept(this);
+                    already_solved = false;
+                }
+            } else if (const Cast *cast_a = lt->a.as<Cast>()) {
+                // Move cast to rhs
+                Expr e = cast_a->value < Cast::make(cast_a->value.type(), lt->b);
+                cached_solve(e);
+            } else {
+                fail();
+            }
+        } else {
+            // Normalize to le
+            Expr cond = lt->a <= (lt->b - 1);
+            cond.accept(this);
+        }
     }
 
     void visit(const GT *gt) override {
-        // Normalize to ge
-        Expr cond = gt->a >= (gt->b + 1);
-        cond.accept(this);
+        static string b_name = unique_name('b');
+        static string c_name = unique_name('c');
+        if (gt->a.type().is_float()) {
+            if (!already_solved) {
+                SolverResult solved = solve_expression(gt, var, scope);
+                if (!solved.fully_solved) {
+                    fail();
+                } else {
+                    already_solved = true;
+                    solved.result.accept(this);
+                    already_solved = false;
+                }
+            } else if (const Cast *cast_a = gt->a.as<Cast>()) {
+                // Move cast to rhs
+                Expr e = cast_a->value > Cast::make(cast_a->value.type(), gt->b);
+                cached_solve(e);
+            } else {
+                fail();
+            }
+        } else {
+            // Normalize to ge
+            Expr cond = gt->a >= (gt->b + 1);
+            cond.accept(this);
+        }
     }
 
     // The LE and GE visitors, when applied to min and max nodes,
@@ -966,6 +1008,24 @@ class SolveForInterval : public IRVisitor {
                 result.max = Let::make(b_name, b, result.max);
                 result.max = Let::make(c_name, c, result.max);
             }
+        } else if (const Call *call_a = le->a.as<Call>()) {
+            if (call_a->name == "floor_f32") {
+                // Rewrite (floor(x) <= c) <==> (x < c + 1)
+                Expr x = call_a->args[0];
+                Expr c = le->b;
+                cached_solve(x < (c + 1));
+            } else if (call_a->name == "ceil_f32") {
+                // Rewrite (ceil(x) <= c) <==> (x <= c)
+                Expr x = call_a->args[0];
+                Expr c = le->b;
+                cached_solve(x <= c);
+            } else {
+                fail();
+            }
+        } else if (const Cast *cast_a = le->a.as<Cast>()) {
+            // Move cast to rhs
+            Expr e = cast_a->value <= Cast::make(cast_a->value.type(), le->b);
+            cached_solve(e);
         } else {
             fail();
         }
@@ -1020,6 +1080,24 @@ class SolveForInterval : public IRVisitor {
                 result.max = Let::make(b_name, b, result.max);
                 result.max = Let::make(c_name, c, result.max);
             }
+        } else if (const Call *call_a = ge->a.as<Call>()) {
+            if (call_a->name == "floor_f32") {
+                // Rewrite (floor(x) >= c) <==> (x >= c)
+                Expr x = call_a->args[0];
+                Expr c = ge->b;
+                cached_solve(x >= c);
+            } else if (call_a->name == "ceil_f32") {
+                // Rewrite (ceil(x) >= c) <==> (x > c - 1)
+                Expr x = call_a->args[0];
+                Expr c = ge->b;
+                cached_solve(x > c - 1);
+            } else {
+                fail();
+            }
+        }  else if (const Cast *cast_a = ge->a.as<Cast>()) {
+            // Move cast to rhs
+            Expr e = cast_a->value >= Cast::make(cast_a->value.type(), ge->b);
+            cached_solve(e);
         } else {
             fail();
         }
@@ -1512,6 +1590,9 @@ void solve_test() {
 
     check_inner_interval(x/5 < 17, Interval::neg_inf, 84);
     check_outer_interval(x/5 < 17, Interval::neg_inf, 84);
+
+    check_outer_interval(floor(x / 4.f) == 10, 40, 43);
+    check_outer_interval(ceil(x / 4.f) == 10, 37, 40);
 
     // Test anding a condition over a domain
     check_and_condition(x > 0, const_true(), Interval(1, y));
