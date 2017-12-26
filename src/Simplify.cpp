@@ -518,6 +518,14 @@ private:
             // In the interest of moving constants outwards so they
             // can cancel, pull the addition outside of the cast.
             return mutate(Cast::make(op->type, add->a) + add->b);
+        } else if (add &&
+                   op->type.is_int() &&
+                   op->value.type().is_float() &&
+                   is_const(add->b) &&
+                   op->type.can_represent(*as_const_float(add->b))) {
+            // cast<int>(a + int_const) = cast<int>(a) + int_const
+            return mutate(Cast::make(op->type, add->a) +
+                          Cast::make(op->type, Expr(*as_const_float(add->b))));
         } else if (value.same_as(op->value)) {
             return op;
         } else {
