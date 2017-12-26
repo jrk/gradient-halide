@@ -749,6 +749,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
 
         if (rvars_count == 0 && calls_count <= 5) {
             // If the function isn't doing much, inline it
+            //std::cerr << "[INLINE] func.name():" << func.name() << std::endl;
             func.compute_inline();
             continue;
         }
@@ -767,21 +768,21 @@ void simple_autoschedule(std::vector<Func> &outputs,
             fused_vars.push_back(new_var);
             var_size *= int_bounds[arg_id];
         }
-        int min_height = 32;
-        int tile_width = 64;
-        if (var_size >= tile_width * min_height) {
+        int min_threads = 8;
+        int vectorize_width = 16;
+        if (var_size >= min_threads * vectorize_width) {
             Var outer, inner;
-            Stage(func).split(fused_vars.back(), outer, inner, tile_width);
-            Stage(func).parallel(outer);
-            Stage(func).vectorize(inner, 16);
-        } else if (var_size >= 16) {
-            Stage(func).vectorize(fused_vars.back(), 16);
+            Stage(func).split(fused_vars.back(), outer, inner, vectorize_width);
+            Stage(func).parallel(outer, min_threads);
+            Stage(func).vectorize(inner, vectorize_width);
+        } else if (var_size >= vectorize_width) {
+            Stage(func).vectorize(fused_vars.back(), vectorize_width);
         }
 
         for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
-            int var_size = 1;
-            std::vector<Var> pure_args;
             std::vector<Expr> update_args = func.update_args(update_id);
+            int update_var_size = 1;
+            std::vector<Var> pure_args;
             for (int arg_id = 0; arg_id < (int)update_args.size(); arg_id++) {
                 Expr arg = update_args[arg_id];
                 const Variable *var = arg.as<Variable>();
@@ -790,23 +791,14 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         !var->image.defined() &&
                         !var->reduction_domain.defined()) {
                     pure_args.push_back(Var(var->name));
-                    var_size *= int_bounds[arg_id];
+                    update_var_size *= int_bounds[arg_id];
                 }
             }
-            bool parallelized = false;
-            bool vectorized = false;
-            if (var_size >= tile_width * min_height) {
-                parallelized = true;
-                vectorized = true;
-            } else if (var_size >= min_height) {
-                parallelized = true;
-            }
-
             const std::vector<ReductionVariable> &rvars =
                 func.update(update_id).get_schedule().rvars();
-            if ((!parallelized || !vectorized) && rvars.size() > 0) {
-                std::vector<RVar> fused_rvars;
-                fused_rvars.push_back(RVar(rvars[0].var));
+            // TODO: gracefully fallback if factorization is impossible
+            if (var_size < min_threads * vectorize_width && rvars.size() > 0) {
+                std::vector<int> rvar_extents;
                 Expr extent = rvars[0].extent;
                 for (const auto &param : parameters) {
                     extent = substitute(param.first, Expr(param.second), extent);
@@ -814,11 +806,9 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 extent = simplify(extent);
                 const int64_t *extent_int = as_const_int(extent);
                 user_assert(extent_int != nullptr) << "extent:" << extent << " is not constant.\n";
+                rvar_extents.push_back(*extent_int);
                 int rvar_size = *extent_int;
                 for (int arg_id = 1; arg_id < (int)rvars.size(); arg_id++) {
-                    RVar new_var;
-                    func.update(update_id).fuse(fused_rvars.back(), RVar(rvars[arg_id].var), new_var);
-                    fused_rvars.push_back(new_var);
                     Expr extent = rvars[arg_id].extent;
                     for (const auto &param : parameters) {
                         extent = substitute(param.first, Expr(param.second), extent);
@@ -827,84 +817,81 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     const int64_t *extent_int = as_const_int(extent);
                     user_assert(extent_int != nullptr) << "extent:" << extent << " is not constant.\n";
                     rvar_size *= *extent_int;
+                    rvar_extents.push_back(*extent_int);
                 }
-
-                int min_work = 16;
-                if (!parallelized && !vectorized) {
-                    if (rvar_size >= tile_width * min_height * min_work) {
-                        RVar outer, inner;
-                        func.update(update_id).split(fused_rvars.back(), outer, inner, tile_width * min_work);
-                        //RVar outer_outer, outer_inner;
-                        //func.update(update_id).split(outer, outer_outer, outer_inner, min_height);
-                        RVar inner_outer, inner_inner;
-                        func.update(update_id).split(inner, inner_outer, inner_inner, min_work);
-                        // for outer_inner = 0 to min_height
-                        //   for outer_outer = 0 to rest (parallelize)
-                        //     for inner_outer = 0 to tile_width (vectorize)
-                        //       for inner_inner = 0 to min_work
-                        Var parallel_var, vectorize_var;
-                        Func interm = func.update(update_id).rfactor({{outer, parallel_var}, {inner_outer, vectorize_var}});
-                        interm.parallel(parallel_var)
-                              .vectorize(vectorize_var, 16);
-                        interm.update()
-                              .parallel(parallel_var)
-                              .vectorize(vectorize_var, 16);
-                    } else if (rvar_size >= 16 * min_work) {
-                        RVar outer, inner;
-                        func.update(update_id).split(fused_rvars.back(), outer, inner, min_work);
-                        // for outer = 0 to rest (vectorize)
-                        //      for inner = 0 to min_work
-                        Var vectorize_var;
-                        Func interm = func.update(update_id).rfactor(outer, vectorize_var);
-                        interm.vectorize(vectorize_var, 16);
-                        interm.update()
-                              .vectorize(vectorize_var, 16);
-                    }
-                } else if (!vectorized) {
-                    if (rvar_size >= tile_width * min_work) {
-                        RVar outer, inner;
-                        func.update(update_id).split(fused_rvars.back(), outer, inner, tile_width * min_work);
-                        RVar inner_outer, inner_inner;
-                        func.update(update_id).split(inner, inner_outer, inner_inner, min_work);
-                        // for outer = 0 to rest
-                        //   for inner_outer = 0 to tile_width (vectorize)
-                        //      for inner = 0 to min_work
-                        Var vectorize_var;
-                        Func interm = func.update(update_id).rfactor(inner_outer, vectorize_var);
-                        interm.compute_root();
-                        interm.vectorize(vectorize_var, 16);
-                        interm.update()
-                              .vectorize(vectorize_var, 16);
-                    } else if (rvar_size >= 16 * min_work) {
-                        RVar outer, inner;
-                        func.update(update_id).split(fused_rvars.back(), outer, inner, min_work);
-                        // for outer = 0 to rest (vectorize)
-                        //      for inner = 0 to min_work
-                        Var vectorize_var;
-                        Func interm = func.update(update_id).rfactor(outer, vectorize_var);
-                        interm.vectorize(vectorize_var, 16);
-                        interm.update()
-                              .vectorize(vectorize_var, 16);
+                int parallel_dim = -1;
+                int vectorize_dim = -1;
+                for (int rvar_id = rvars.size() - 1; rvar_id >= 0; rvar_id--) {
+                    if (rvar_extents[rvar_id] >= min_threads) {
+                        parallel_dim = rvar_id;
+                        break;
                     }
                 }
-
-                std::vector<Var> fused_vars;
-                if (pure_args.size() > 0) {
-                    fused_vars.push_back(pure_args[0]);
+                for (int rvar_id = 0; rvar_id < (int)rvars.size(); rvar_id++) {
+                    if (rvar_id != parallel_dim && rvar_extents[rvar_id] >= vectorize_width) {
+                        vectorize_dim = rvar_id;
+                        break;
+                    }
                 }
-                for (int arg_id = 1; arg_id < (int)pure_args.size(); arg_id++) {
-                    Var new_var;
-                    func.update(update_id).fuse(fused_vars.back(), pure_args[arg_id], new_var);
-                    fused_vars.push_back(new_var);
+                if (parallel_dim != -1 && vectorize_dim != -1) {
+                    //int p_inner_size = rvar_extents[parallel_dim] / min_threads;
+                    RVar p_outer, p_inner;
+                    func.update(update_id).split(RVar(rvars[parallel_dim].var), p_outer, p_inner, min_threads);
+                    RVar v_outer, v_inner;
+                    func.update(update_id).split(RVar(rvars[vectorize_dim].var), v_outer, v_inner, vectorize_width);
+                    Var parallel_var, vectorize_var;
+                    Func interm = func.update(update_id).rfactor({{p_outer, parallel_var}, {v_inner, vectorize_var}});
+                    // Safe to compute_root: the bounds of func is small
+                    interm.compute_root()
+                          .parallel(parallel_var)
+                          .vectorize(vectorize_var);
+                    interm.update()
+                          .parallel(parallel_var)
+                          .vectorize(vectorize_var);
                 }
+            }
+            // Fuse all the pure variables
+            update_var_size = 1;
+            pure_args.clear();
+            update_args = func.update_args(update_id);
+            for (int arg_id = 0; arg_id < (int)update_args.size(); arg_id++) {
+                Expr arg = update_args[arg_id];
+                const Variable *var = arg.as<Variable>();
+                if (var != nullptr &&
+                        !var->param.defined() &&
+                        !var->image.defined() &&
+                        !var->reduction_domain.defined()) {
+                    pure_args.push_back(Var(var->name));
+                    update_var_size *= int_bounds[arg_id];
+                }
+            }
+            bool pure_parallel = false;
+            bool pure_vectorize = false;
+            if (update_var_size >= min_threads * vectorize_width) {
+                pure_parallel = true;
+                pure_vectorize = true;
+            } else if (update_var_size >= min_threads) {
+                pure_parallel = true;
+            }
 
-                if (parallelized && vectorized) {
+            std::vector<Var> fused_vars;
+            if (pure_args.size() > 0) {
+                fused_vars.push_back(pure_args[0]);
+            }
+            for (int arg_id = 1; arg_id < (int)pure_args.size(); arg_id++) {
+                Var new_var;
+                func.update(update_id).fuse(fused_vars.back(), pure_args[arg_id], new_var);
+                fused_vars.push_back(new_var);
+            }
+            // Parallelization on pure variables
+            if (fused_vars.size() > 0) {
+                if (pure_parallel && pure_vectorize) {
                     Var outer, inner;
-                    func.update(update_id).split(fused_vars.back(), outer, inner, tile_width);
-                    func.update(update_id).parallel(outer);
-                    func.update(update_id).vectorize(inner, 16);
-                } else if (parallelized && !vectorized) {
-                    func.update(update_id).parallel(fused_vars.back());
+                    func.update(update_id).split(fused_vars.back(), outer, inner, vectorize_width);
+                    func.update(update_id).parallel(outer, min_threads);
+                    func.update(update_id).vectorize(inner, vectorize_width);
+                } else if (pure_parallel) {
+                    func.update(update_id).parallel(fused_vars.back(), min_threads);
                 }
             }
         }
