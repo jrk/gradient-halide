@@ -781,6 +781,14 @@ void simple_autoschedule(std::vector<Func> &outputs,
     // Traverse from the consumers to the producers
     for (auto it = order.rbegin(); it != order.rend(); it++) {
         Func func(env[*it]);
+        // Skip if the function's schedule is touched
+        bool touched = Stage(func).get_schedule().touched();
+        for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
+            touched = touched || func.update(update_id).get_schedule().touched();
+        }
+        if (touched) {
+            continue;
+        }
         Box bounds = func_bounds[*it];
         std::vector<int> int_bounds;
         for (int i = 0; i < (int)bounds.size(); i++) {
