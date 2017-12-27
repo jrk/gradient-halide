@@ -526,6 +526,14 @@ private:
             // cast<int>(a + int_const) = cast<int>(a) + int_const
             return mutate(Cast::make(op->type, add->a) +
                           Cast::make(op->type, Expr(*as_const_float(add->b))));
+        } else if (add &&
+                   op->type.is_int() &&
+                   add->type.is_float() &&
+                   add->b.as<Cast>() != nullptr &&
+                   add->b.as<Cast>()->value.type().is_int()) {
+            // cast<int>(a + cast<float>(const)) = cast<int>(a) + const
+            return mutate(Cast::make(op->type, add->a) +
+                          add->b.as<Cast>()->value);
         } else if (value.same_as(op->value)) {
             return op;
         } else {
