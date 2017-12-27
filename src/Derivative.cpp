@@ -383,7 +383,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         assert(adjoint_funcs.find(func_key) != adjoint_funcs.end());
         Func& func_to_update = adjoint_funcs[func_key];
 
-        bool debug_flag = false;
+        bool debug_flag = false;//func_to_update.name() == "f_input_0_d_def__";
 
         if (debug_flag) {
             debug(0) << "lhs is:";
@@ -532,15 +532,23 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
 
         std::vector<Var> func_to_update_args = func_to_update.args();
+        // General scattering simplification rules
         // For each expression in lhs, check if it is an expression of a single rvar and
         // spans the same interval of the function's bound
         // if so we can rewrite it back to pure variables
         // e.g.
         // f(r.x) = g(r.x)
         // => f(x) = g(x)
+        // Another common pattern is the reverse of downsampling
+        // if we see s * r.x + r.y and r.y has min == 0 and extent == s
+        // we simplify them to x and replace all occurence of r.x by x/4
+        // e.g.
+        // f(4 * r.x + r.y) = g(r.x) + h(4 * r.x + r.y)
+        // => f(x) = g(x/4) + h(x)
         for (int i = 0; i < (int)lhs.size(); i++) {
-            auto &lhs_arg = lhs[i];
+            Expr lhs_arg = substitute_in_all_lets(lhs[i]);
             const Variable *var = lhs_arg.as<Variable>();
+            const Add *add = lhs_arg.as<Add>();
             if (var != nullptr && var->reduction_domain.defined()) {
                 ReductionDomain rdom = var->reduction_domain;
                 int rvar_id = -1;
@@ -561,7 +569,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                                     simplify(rvar.min + rvar.extent - 1));
                 if (equal(r_interval.min, t_interval.min) &&
                         equal(r_interval.max, t_interval.max)) {
-                    lhs_arg = func_to_update_args[i];
+                    lhs[i] = func_to_update_args[i];
                     // Replace other occurence of rvar in lhs
                     for (int j = 0; j < (int)lhs.size(); j++) {
                         if (j != i) {
@@ -570,6 +578,56 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                     }
                     adjoint = simplify(substitute(rvar.var, func_to_update_args[i], adjoint));
                 }
+            } else if (add != nullptr &&
+                       ((add->a.as<Mul>() != nullptr && add->b.as<Variable>() != nullptr) ||
+                        (add->a.as<Variable>() != nullptr && add->b.as<Mul>() != nullptr))) {
+                // Find pattern s * r.x + r.y where r.y.min == 0 && r.y.extent == s
+                Expr a = add->a, b = add->b;
+                if (add->b.as<Mul>() != nullptr) {
+                    // swap so that b is always the Variable
+                    assert(add->a.as<Variable>() != nullptr);
+                    std::swap(a, b);
+                }
+                const Mul *mul = a.as<Mul>();
+                const Variable *b_var = b.as<Variable>();
+                assert(mul != nullptr && b_var != nullptr);
+                Expr mul_a = mul->a, mul_b = mul->b;
+                if (mul_a.as<Variable>() != nullptr &&
+                        mul_a.as<Variable>()->reduction_domain.defined()) {
+                    std::swap(mul_a, mul_b);
+                }
+                const Variable *mul_b_var = mul_b.as<Variable>();
+                if (mul_b_var == nullptr || !mul_b_var->reduction_domain.defined()) {
+                    continue;
+                }
+                ReductionDomain b_rdom = b_var->reduction_domain;
+                if (!b_rdom.defined()) {
+                    continue;
+                }
+
+                int rvar_id = -1;
+                for (int rid = 0; rid < (int)b_rdom.domain().size(); rid++) {
+                    if (b_rdom.domain()[rid].var == b_var->name) {
+                        rvar_id = rid;
+                        break;
+                    }
+                }
+                assert(rvar_id != -1);
+                ReductionVariable rvar = b_rdom.domain()[rvar_id];
+                if (!equal(rvar.min, Expr(0)) || !equal(rvar.extent, mul_a)) {
+                    continue;
+                }
+
+                // We've finally made sure that the expression has the form we want
+                // Now replace everything
+                // replace s * r.x + r.y with x
+                lhs[i] = func_to_update_args[i];
+                adjoint = substitute(lhs_arg,
+                                     func_to_update_args[i],
+                                     substitute_in_all_lets(adjoint));
+                // replace r.x with x / s
+                adjoint = substitute(mul_b, func_to_update_args[i] / mul_a, adjoint);
+                adjoint = simplify(adjoint);
             }
         }
 
@@ -604,14 +662,17 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             adjoint = substitute(new_args[i].name(), func_to_update_args[i], adjoint);
         }
 
-        /*if (func_to_update.name() == "f_input_0_d_def__") {
-            Expr index = cast<int>(Var("x") * 4.f) + merged_r.x - 3;
-            Func af = adjoint_funcs[FuncKey{"ceil_output", -1}];
-            adjoint = print(adjoint, "x:", Var("x"), "r.x:", merged_r.x, "index:",
-                            index,
-                            "af(index):",
-                            af(index));
-        }*/
+        // Final simplification pass
+        if (debug_flag) {
+            Scope<Interval> bounds;
+            if (merged_r.defined()) {
+                for (int d = 0; d < merged_r.dimensions(); d++) {
+                    bounds.push(merged_r[d].name(),
+                        Interval(merged_r[d].min(), merged_r[d].min() + merged_r[d].extent() - 1));
+                }
+            }
+            adjoint = simplify(adjoint, true, bounds);
+        }
 
         // TODO: maybe do some analysis on lhs to avoid applying boundary conditions to
         //       function calls in adjoint
@@ -1593,13 +1654,40 @@ void test_floor_ceil() {
     // ceil_output(1~4) == input[1]
     // ceil_output(5~7) = input[2]
 
-    print_func(adjoints[FuncKey{f_input.name(), -1}]);
-
     Buffer<float> d_input_buf = adjoints[FuncKey{f_input.name(), -1}].realize(3);
 
     CMP(d_input_buf(0), 5.f);
     CMP(d_input_buf(1), 8.f);
     CMP(d_input_buf(2), 3.f);
+}
+
+void test_downsampling() {
+    Var x("x");
+    Buffer<float> input(10);
+    for (int i = 0; i < 10; i++) {
+        input(i) = float(i);
+    }
+    Func f_input("f_input");
+    f_input(x) = input(x);
+    Func output("output");
+    RDom r(0, 4);
+    output(x) = 0.f;
+    output(x) += f_input(4 * x + r);
+    RDom r_loss(0, 2);
+    Func f_loss("f_loss");
+    f_loss() = 0.f;
+    f_loss() += output(r_loss);
+    Derivative d = propagate_adjoints(f_loss);
+    std::map<FuncKey, Func> adjoints = d.adjoints;
+    // output(0) = \sum input(0~4)
+    // output(1) = \sum input(5~8)
+    Buffer<float> d_input_buf = adjoints[FuncKey{f_input.name(), -1}].realize(10);
+
+    for (int i = 0; i < 8; i++) {
+        CMP(d_input_buf(i), 1.f);
+    }
+    CMP(d_input_buf(8), 0.f);
+    CMP(d_input_buf(9), 0.f);
 }
 
 #if 0
@@ -1669,7 +1757,7 @@ void test_ATA() {
 #endif
 
 void derivative_test() {
-    /*test_simple_bounds_inference();
+    test_simple_bounds_inference();
     test_simple_bounds_inference_update();
     test_scalar();
     test_simple_1d_blur();
@@ -1685,8 +1773,9 @@ void derivative_test() {
     test_repeat_edge();
     test_second_order();
     test_implicit_vars();
-    test_tuple();*/
+    test_tuple();
     test_floor_ceil();
+    test_downsampling();
     debug(0) << "Derivative test passed\n";
 }
 

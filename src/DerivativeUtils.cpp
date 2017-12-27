@@ -404,7 +404,7 @@ ReductionDomain extract_rdom(const Expr &expr) {
 std::pair<bool, Expr> solve_inverse(Expr expr,
                                     const std::string &new_var,
                                     const std::string &var) {
-    expr = simplify(expr);
+    expr = substitute_in_all_lets(simplify(expr));
     Interval interval = solve_for_outer_interval(expr, var);
     if (!interval.is_bounded()) {
         return std::make_pair(false, Expr());
