@@ -11,6 +11,7 @@
 
 #include <vector>
 #include <array>
+#include <set>
 
 namespace Halide {
 
@@ -32,10 +33,12 @@ void print_func(const Func &func, bool ignore_non_adjoints = true, bool ignore_b
 // Bounds are {min, max}
 void simple_autoschedule(std::vector<Func> &outputs,
                          const std::map<std::string, int> &parameters,
-                         const std::vector<std::vector<std::pair<int, int>>> &output_bounds);
+                         const std::vector<std::vector<std::pair<int, int>>> &output_bounds,
+                         const std::set<std::string> &skip_functions = {});
 void simple_autoschedule(Func &output,
                          const std::map<std::string, int> &parameters,
-                         const std::vector<std::pair<int, int>> &output_bounds);
+                         const std::vector<std::pair<int, int>> &output_bounds,
+                         const std::set<std::string> &skip_functions = {});
 
 namespace Internal {
 

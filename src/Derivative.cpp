@@ -756,7 +756,8 @@ Derivative propagate_adjoints(const Func &output) {
 
 void simple_autoschedule(std::vector<Func> &outputs,
                          const std::map<std::string, int> &parameters,
-                         const std::vector<std::vector<std::pair<int, int>>> &output_bounds) {
+                         const std::vector<std::vector<std::pair<int, int>>> &output_bounds,
+                         const std::set<std::string> &skip_functions) {
     using namespace Internal;
     std::vector<FuncBounds> output_bounds_expr;
     for (const auto &bounds : output_bounds) {
@@ -781,12 +782,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
     // Traverse from the consumers to the producers
     for (auto it = order.rbegin(); it != order.rend(); it++) {
         Func func(env[*it]);
-        // Skip if the function's schedule is touched
-        bool touched = Stage(func).get_schedule().touched();
-        for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
-            touched = touched || func.update(update_id).get_schedule().touched();
-        }
-        if (touched) {
+        if (skip_functions.find(func.name()) != skip_functions.end()) {
             continue;
         }
         Box bounds = func_bounds[*it];
@@ -968,12 +964,14 @@ void simple_autoschedule(std::vector<Func> &outputs,
 
 void simple_autoschedule(Func &output,
                          const std::map<std::string, int> &parameters,
-                         const std::vector<std::pair<int, int>> &output_bounds) {
+                         const std::vector<std::pair<int, int>> &output_bounds,
+                         const std::set<std::string> &skip_functions) {
     std::vector<Func> outputs{output};
     std::vector<std::vector<std::pair<int, int>>> vector_output_bounds{output_bounds};
     return simple_autoschedule(outputs,
                                parameters,
-                               vector_output_bounds);
+                               vector_output_bounds,
+                               skip_functions);
 }
 
 void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool recursive, int depth) {
