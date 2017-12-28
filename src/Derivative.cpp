@@ -957,9 +957,9 @@ void simple_autoschedule(std::vector<Func> &outputs,
             }
 
             if ((int)pure_arg_bounds.size() >= 2 &&
-                    pure_arg_bounds[0] >= tile_width &&
-                    pure_arg_bounds[1] >= tile_height &&
-                    (int_bounds[0] / tile_width) * (int_bounds[1] / tile_height) >= min_threads) {
+                     pure_arg_bounds[0] >= tile_width &&
+                     pure_arg_bounds[1] >= tile_height &&
+                    (pure_arg_bounds[0] / tile_width) * (pure_arg_bounds[1] / tile_height) >= min_threads) {
                 Var xo, yo, xi, yi;
                 Var tile_index;
                 if (options.gpu) {

@@ -315,6 +315,11 @@ public:
             {
                 const auto &iter = std::find_if(dims.begin(), dims.end(),
                     [&var](const Dim &d) { return var_name_match(d.var, var); });
+                if (iter == dims.end()) {
+                    user_warning << "Couldn't find " << consumer_name << "." << var << " in " << producing_func.name()
+                        << " when calling is_fused_with_others() in BoundsInference.\n";
+                    return false;
+                }
                 internal_assert(iter != dims.end());
                 var_index = iter - dims.begin();
             }
