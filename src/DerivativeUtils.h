@@ -38,7 +38,7 @@ ReductionDomain extract_rdom(const Expr &expr);
 std::pair<bool, Expr> solve_inverse(Expr expr,
                                     const std::string &new_var,
                                     const std::string &var);
-int count_calls(Expr expr);
+std::map<std::string, int> count_calls(const Func &func, int &num_calls);
 
 }
 }

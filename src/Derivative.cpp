@@ -757,6 +757,7 @@ Derivative propagate_adjoints(const Func &output) {
 void simple_autoschedule(std::vector<Func> &outputs,
                          const std::map<std::string, int> &parameters,
                          const std::vector<std::vector<std::pair<int, int>>> &output_bounds,
+                         const SimpleAutoscheduleOptions &options,
                          const std::set<std::string> &skip_functions) {
     using namespace Internal;
     std::vector<FuncBounds> output_bounds_expr;
@@ -778,13 +779,34 @@ void simple_autoschedule(std::vector<Func> &outputs,
         std::map<std::string, Function> local_env = find_transitive_calls(func);
         env.insert(local_env.begin(), local_env.end());
     }
+    std::set<std::string> output_set;
+    for (const auto &output : outputs) {
+        output_set.insert(output.name());
+    }
     std::vector<std::string> order = realization_order(output_functions, env).first;
+    std::map<std::string, int> called_counts;
+    std::map<std::string, int> call_counts;
+    // Dependency analysis
+    for (auto it = order.begin(); it != order.end(); it++) {
+        Func func(env[*it]);
+        int count = 0;
+        std::map<std::string, int> calls = count_calls(func, count);
+        called_counts.insert(calls.begin(), calls.end());
+        call_counts[func.name()] = count;
+    }
     // Traverse from the consumers to the producers
     for (auto it = order.rbegin(); it != order.rend(); it++) {
         Func func(env[*it]);
         if (skip_functions.find(func.name()) != skip_functions.end()) {
             continue;
         }
+        int rvars_count = 0;
+        if (rvars_count == 0 && call_counts[func.name()] <= 1 && output_set.find(func.name()) == output_set.end()) {
+            // If the function isn't doing much and is not in the outputs, inline it
+            func.compute_inline();
+            continue;
+        }
+
         Box bounds = func_bounds[*it];
         std::vector<int> int_bounds;
         for (int i = 0; i < (int)bounds.size(); i++) {
@@ -798,70 +820,39 @@ void simple_autoschedule(std::vector<Func> &outputs,
             user_assert(extent_int != nullptr) << "extent:" << extent << " is not constant.\n";
             int_bounds.push_back(*extent_int);
         }
-        int rvars_count = 0;
-        int calls_count = 0;
-        auto vals = func.values().as_vector();
-        for (const auto &val : vals) {
-            calls_count += count_calls(val);
-        }
-        for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
-            rvars_count += func.rvars(update_id).size();
-            auto vals = func.update_values(update_id).as_vector();
-            for (const auto &val : vals) {
-                calls_count += count_calls(val);
-            }
-        }
 
-        if (rvars_count == 0 && calls_count <= 5) {
-            // If the function isn't doing much, inline it
-            func.compute_inline();
-            continue;
-        }
         func.compute_root();
         // initial definition is easy: everything is pure variables
         // just parallelize and vectorize if there are enough places to launch threads
-        std::vector<Var> fused_vars;
-        int var_size = 1;
-        if (func.args().size() > 0) {
-            fused_vars.push_back(func.args()[0]);
-            var_size *= int_bounds[0];
-        }
-        for (int arg_id = 1; arg_id < (int)func.args().size(); arg_id++) {
-            Var new_var;
-            Stage(func).fuse(fused_vars.back(), func.args()[arg_id], new_var);
-            fused_vars.push_back(new_var);
-            var_size *= int_bounds[arg_id];
-        }
-        int min_threads = 8;
-        int vectorize_width = 16;
-        if (var_size >= min_threads * vectorize_width) {
-            Var outer, inner;
-            Stage(func).split(fused_vars.back(), outer, inner, vectorize_width);
-            Stage(func).parallel(outer, min_threads);
-            Stage(func).vectorize(inner, vectorize_width);
-        } else if (var_size >= vectorize_width) {
-            Stage(func).vectorize(fused_vars.back(), vectorize_width);
+        int tile_width = 16;
+        int tile_height = 16;
+        int min_gpu_threads = 128;
+        int min_cpu_threads = 8;
+        int min_threads = options.gpu ? min_gpu_threads : min_cpu_threads;
+        int vectorize_width = 8;
+        bool tilable = false;
+        if ((int)int_bounds.size() >= 2 &&
+                int_bounds[0] >= tile_width &&
+                int_bounds[1] >= tile_height &&
+                (int_bounds[0] / tile_width) * (int_bounds[1] / tile_height) >= min_threads) {
+            Var xo, yo, xi, yi;
+            Var tile_index;
+            if (options.gpu) {
+                func.gpu_tile(func.args()[0], func.args()[1], xo, yo, xi, yi, tile_width, tile_height);
+            } else {
+                func.tile(func.args()[0], func.args()[1], xo, yo, xi, yi, tile_width, tile_height)
+                    .fuse(xo, yo, tile_index)
+                    .parallel(tile_index)
+                    .vectorize(xi, vectorize_width);
+            }
+            tilable = true;
         }
 
         for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
-            std::vector<Expr> update_args = func.update_args(update_id);
-            int update_var_size = 1;
-            std::vector<Var> pure_args;
-            for (int arg_id = 0; arg_id < (int)update_args.size(); arg_id++) {
-                Expr arg = update_args[arg_id];
-                const Variable *var = arg.as<Variable>();
-                if (var != nullptr &&
-                        !var->param.defined() &&
-                        !var->image.defined() &&
-                        !var->reduction_domain.defined()) {
-                    pure_args.push_back(Var(var->name));
-                    update_var_size *= int_bounds[arg_id];
-                }
-            }
             const std::vector<ReductionVariable> &rvars =
                 func.update(update_id).get_schedule().rvars();
             // TODO: gracefully fallback if factorization is impossible
-            if (var_size < min_threads * vectorize_width && rvars.size() > 0) {
+            if (!tilable && rvars.size() > 0) {
                 std::vector<int> rvar_extents;
                 Expr extent = rvars[0].extent;
                 for (const auto &param : parameters) {
@@ -871,7 +862,6 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 const int64_t *extent_int = as_const_int(extent);
                 user_assert(extent_int != nullptr) << "extent:" << extent << " is not constant.\n";
                 rvar_extents.push_back(*extent_int);
-                int rvar_size = *extent_int;
                 for (int arg_id = 1; arg_id < (int)rvars.size(); arg_id++) {
                     Expr extent = rvars[arg_id].extent;
                     for (const auto &param : parameters) {
@@ -880,44 +870,80 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     extent = simplify(extent);
                     const int64_t *extent_int = as_const_int(extent);
                     user_assert(extent_int != nullptr) << "extent:" << extent << " is not constant.\n";
-                    rvar_size *= *extent_int;
                     rvar_extents.push_back(*extent_int);
                 }
-                int parallel_dim = -1;
-                int vectorize_dim = -1;
-                for (int rvar_id = rvars.size() - 1; rvar_id >= 0; rvar_id--) {
-                    if (rvar_extents[rvar_id] >= min_threads) {
-                        parallel_dim = rvar_id;
-                        break;
-                    }
-                }
+                // Tile rvar
+                int dim_width = -1;
+                int dim_height = -1;
                 for (int rvar_id = 0; rvar_id < (int)rvars.size(); rvar_id++) {
-                    if (rvar_id != parallel_dim && rvar_extents[rvar_id] >= vectorize_width) {
-                        vectorize_dim = rvar_id;
+                    if (dim_width == -1 && rvar_extents[rvar_id] >= tile_width) {
+                        dim_width = rvar_id;
+                    } else if (dim_height == -1 && rvar_extents[rvar_id] >= tile_height) {
+                        assert(dim_width != -1);
+                        dim_height = rvar_id;
                         break;
                     }
                 }
-                if (parallel_dim != -1 && vectorize_dim != -1) {
-                    //int p_inner_size = rvar_extents[parallel_dim] / min_threads;
-                    RVar p_outer, p_inner;
-                    func.update(update_id).split(RVar(rvars[parallel_dim].var), p_outer, p_inner, min_threads);
-                    RVar v_outer, v_inner;
-                    func.update(update_id).split(RVar(rvars[vectorize_dim].var), v_outer, v_inner, vectorize_width);
-                    Var parallel_var, vectorize_var;
-                    Func interm = func.update(update_id).rfactor({{p_outer, parallel_var}, {v_inner, vectorize_var}});
-                    // Safe to compute_root: the bounds of func is small
-                    interm.compute_root()
-                          .parallel(parallel_var)
-                          .vectorize(vectorize_var);
-                    interm.update()
-                          .parallel(parallel_var)
-                          .vectorize(vectorize_var);
+                if (dim_width != -1 && dim_height != -1) {
+                    if (options.gpu) {
+                        // Each GPU thread covers 8 reductions over x
+                        // Launch height number of threads per block
+                        RVar rxo, rxi;
+                        func.update(update_id)
+                            .split(RVar(rvars[dim_width].var), rxo, rxi, tile_width);
+                        Var xo, y;
+                        Func interm = func.update(update_id)
+                                          .rfactor({{rxo, xo},
+                                                    {RVar(rvars[dim_height].var), y}});
+                        std::vector<VarOrRVar> new_order;
+                        new_order.push_back(rxi);
+                        new_order.push_back(y);
+                        new_order.push_back(xo);
+                        for (const auto &arg : func.args()) {
+                            new_order.push_back(arg);
+                        }
+                        interm.compute_root()
+                              .reorder(y, xo)
+                              .gpu_blocks(xo)
+                              .gpu_threads(y);
+                        interm.update()
+                              .reorder(new_order)
+                              .gpu_blocks(xo)
+                              .gpu_threads(y);
+                    } else {
+                        // Parallel on tiles and vectorize inside tile
+                        RVar rxo, ryo, rxi, ryi;
+                        func.update(update_id)
+                            .split(RVar(rvars[dim_width].var), rxo, rxi, tile_width)
+                            .split(RVar(rvars[dim_height].var), ryo, ryi, tile_height);
+                        Var xo, yo, xi;
+                        Func interm = func.update(update_id)
+                                          .rfactor({{rxo, xo},
+                                                    {ryo, yo},
+                                                    {rxi, xi}});
+                        Var tile_index;
+                        std::vector<VarOrRVar> new_order;
+                        new_order.push_back(ryi);
+                        new_order.push_back(xi);
+                        for (const auto &arg : func.args()) {
+                            new_order.push_back(arg);
+                        }
+                        new_order.push_back(tile_index);
+                        interm.compute_root()
+                              .fuse(xo, yo, tile_index)
+                              .parallel(tile_index)
+                              .vectorize(xi);
+                        interm.update()
+                              .fuse(xo, yo, tile_index)
+                              .reorder(new_order)
+                              .parallel(tile_index)
+                              .vectorize(xi);
+                    }
                 }
             }
-            // Fuse all the pure variables
-            update_var_size = 1;
-            pure_args.clear();
-            update_args = func.update_args(update_id);
+            std::vector<Var> pure_args;
+            std::vector<Expr> update_args = func.update_args(update_id);
+            std::vector<int> pure_arg_bounds;
             for (int arg_id = 0; arg_id < (int)update_args.size(); arg_id++) {
                 Expr arg = update_args[arg_id];
                 const Variable *var = arg.as<Variable>();
@@ -926,36 +952,25 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         !var->image.defined() &&
                         !var->reduction_domain.defined()) {
                     pure_args.push_back(Var(var->name));
-                    update_var_size *= int_bounds[arg_id];
+                    pure_arg_bounds.push_back(int_bounds[arg_id]);
                 }
             }
-            bool pure_parallel = false;
-            bool pure_vectorize = false;
-            if (update_var_size >= min_threads * vectorize_width) {
-                pure_parallel = true;
-                pure_vectorize = true;
-            } else if (update_var_size >= min_threads) {
-                pure_parallel = true;
-            }
 
-            std::vector<Var> fused_vars;
-            if (pure_args.size() > 0) {
-                fused_vars.push_back(pure_args[0]);
-            }
-            for (int arg_id = 1; arg_id < (int)pure_args.size(); arg_id++) {
-                Var new_var;
-                func.update(update_id).fuse(fused_vars.back(), pure_args[arg_id], new_var);
-                fused_vars.push_back(new_var);
-            }
-            // Parallelization on pure variables
-            if (fused_vars.size() > 0) {
-                if (pure_parallel && pure_vectorize) {
-                    Var outer, inner;
-                    func.update(update_id).split(fused_vars.back(), outer, inner, vectorize_width);
-                    func.update(update_id).parallel(outer, min_threads);
-                    func.update(update_id).vectorize(inner, vectorize_width);
-                } else if (pure_parallel) {
-                    func.update(update_id).parallel(fused_vars.back(), min_threads);
+            if ((int)pure_arg_bounds.size() >= 2 &&
+                    pure_arg_bounds[0] >= tile_width &&
+                    pure_arg_bounds[1] >= tile_height &&
+                    (int_bounds[0] / tile_width) * (int_bounds[1] / tile_height) >= min_threads) {
+                Var xo, yo, xi, yi;
+                Var tile_index;
+                if (options.gpu) {
+                    func.update(update_id)
+                        .gpu_tile(pure_args[0], pure_args[1], xo, yo, xi, yi, tile_width, tile_height);
+                } else {
+                    func.update(update_id)
+                        .tile(pure_args[0], pure_args[1], xo, yo, xi, yi, tile_width, tile_height)
+                        .fuse(xo, yo, tile_index)
+                        .parallel(tile_index)
+                        .vectorize(xi, vectorize_width);
                 }
             }
         }
@@ -965,12 +980,14 @@ void simple_autoschedule(std::vector<Func> &outputs,
 void simple_autoschedule(Func &output,
                          const std::map<std::string, int> &parameters,
                          const std::vector<std::pair<int, int>> &output_bounds,
+                         const SimpleAutoscheduleOptions &options,
                          const std::set<std::string> &skip_functions) {
     std::vector<Func> outputs{output};
     std::vector<std::vector<std::pair<int, int>>> vector_output_bounds{output_bounds};
     return simple_autoschedule(outputs,
                                parameters,
                                vector_output_bounds,
+                               options,
                                skip_functions);
 }
 

@@ -434,23 +434,52 @@ std::pair<bool, Expr> solve_inverse(Expr expr,
 struct CallsCounter : public IRGraphVisitor {
 public:
     using IRGraphVisitor::visit;
-    int count(Expr expr) {
+    void count(const Func &func) {
+        dim = func.dimensions();
         counter = 0;
-        expr.accept(this);
-        return counter;
+        calls.clear();
+        std::vector<Expr> vals = func.values().as_vector();
+        for (Expr val : vals) {
+            val.accept(this);
+        }
+        for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
+            vals = func.update_values(update_id).as_vector();
+            for (Expr val : vals) {
+                val.accept(this);
+            }
+        }
     }
 
     void visit(const Call *op) {
         IRGraphVisitor::visit(op);
-        counter++;
+        if (op->func.defined()) {
+            counter++;
+            Function func(op->func);
+            if (calls.find(func.name()) != calls.end()) {
+                calls[func.name()] += 1;
+            } else {
+                calls[func.name()] = 1;
+            }
+            // Hack: when the functions have different dimensionality
+            // make the calls count a large number so we don't inline it
+            // this prevents excessive memory allocation/recomputation
+            // TODO: write a proper function to deal with this
+            if (func.dimensions() != dim) {
+                calls[func.name()] += 128;
+            }
+        }
     }
-private:
+
     int counter = 0;
+    std::map<std::string, int> calls;
+    int dim;
 };
 
-int count_calls(Expr expr) {
+std::map<std::string, int> count_calls(const Func &func, int &num_calls) {
     CallsCounter counter;
-    return counter.count(expr);
+    counter.count(func);
+    num_calls = counter.counter;
+    return counter.calls;
 }
 
 } // namespace Internal
