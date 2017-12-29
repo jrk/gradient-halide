@@ -339,7 +339,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
           do_indent();
           stream 
             << print_name(buffer_args[i].name) << "_buffer"
-            << ".copy_to_device(cuda_interface);\n";
+            << ".copy_to_device(cuda_interface, __user_context);\n";
           // do_indent();
           // stream 
           //   << print_name(buffer_args[i].name) << "_buffer"
