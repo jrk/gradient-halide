@@ -329,29 +329,29 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     stream << "if (err != 0) throw \"halide_cuda_run failed\";\n";
     stream << "\n";
 
-    // if(isCuda) {
-    //   do_indent();
-    //   stream << "// Make sure data is on device\n";
-    //   do_indent();
-    //   stream << "const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();\n";
-    //   for (size_t i = 0; i < buffer_args.size(); i++) {
-    //     if (buffer_args[i].is_buffer()) {
-    //       do_indent();
-    //       stream 
-    //         << print_name(buffer_args[i].name) << "_buffer"
-    //         << ".copy_to_device(cuda_interface);\n";
-    //       do_indent();
-    //       stream 
-    //         << print_name(buffer_args[i].name) << "_buffer"
-    //         << ".device_sync();\n";
-    //       do_indent();
-    //       stream 
-    //         << print_name(buffer_args[i].name) << "_buffer"
-    //         << ".device_detach_native();\n";
-    //     }
-    //   }
-    //   stream << "\n";
-    // }
+    if(isCuda) {
+      do_indent();
+      stream << "// Make sure data is on device\n";
+      do_indent();
+      stream << "const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();\n";
+      for (size_t i = 0; i < buffer_args.size(); i++) {
+        if (buffer_args[i].is_buffer()) {
+          do_indent();
+          stream 
+            << print_name(buffer_args[i].name) << "_buffer"
+            << ".copy_to_device(cuda_interface);\n";
+          // do_indent();
+          // stream 
+          //   << print_name(buffer_args[i].name) << "_buffer"
+          //   << ".device_sync();\n";
+          // do_indent();
+          // stream 
+          //   << print_name(buffer_args[i].name) << "_buffer"
+          //   << ".device_detach_native();\n";
+        }
+      }
+      stream << "\n";
+    }
 
     do_indent();
     stream << "// Free references\n";
