@@ -886,30 +886,31 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 }
                 if (dim_width != -1 && dim_height != -1) {
                     if (options.gpu) {
+                        assert(dim_width != dim_height);
                         // Each GPU thread covers 8 reductions over x
                         // Launch height number of threads per block
                         RVar rxo, rxi;
                         func.update(update_id)
                             .split(RVar(rvars[dim_width].var), rxo, rxi, tile_width);
-                        Var xo, y;
+                        Var xo, yt;
                         Func interm = func.update(update_id)
                                           .rfactor({{rxo, xo},
-                                                    {RVar(rvars[dim_height].var), y}});
+                                                    {RVar(rvars[dim_height].var), yt}});
                         std::vector<VarOrRVar> new_order;
                         new_order.push_back(rxi);
-                        new_order.push_back(y);
+                        new_order.push_back(yt);
                         new_order.push_back(xo);
                         for (const auto &arg : func.args()) {
                             new_order.push_back(arg);
                         }
                         interm.compute_root()
-                              .reorder(y, xo)
+                              .reorder(yt, xo)
                               .gpu_blocks(xo)
-                              .gpu_threads(y);
+                              .gpu_threads(yt);
                         interm.update()
                               .reorder(new_order)
                               .gpu_blocks(xo)
-                              .gpu_threads(y);
+                              .gpu_threads(yt);
                     } else {
                         // Parallel on tiles and vectorize inside tile
                         RVar rxo, ryo, rxi, ryi;
@@ -963,8 +964,8 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 Var xo, yo, xi, yi;
                 Var tile_index;
                 if (options.gpu) {
-                    func.update(update_id)
-                        .gpu_tile(pure_args[0], pure_args[1], xo, yo, xi, yi, tile_width, tile_height);
+                    //func.update(update_id)
+                    //    .gpu_tile(pure_args[0], pure_args[1], xo, yo, xi, yi, tile_width, tile_height);
                 } else {
                     func.update(update_id)
                         .tile(pure_args[0], pure_args[1], xo, yo, xi, yi, tile_width, tile_height)
