@@ -964,8 +964,8 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 Var xo, yo, xi, yi;
                 Var tile_index;
                 if (options.gpu) {
-                    //func.update(update_id)
-                    //    .gpu_tile(pure_args[0], pure_args[1], xo, yo, xi, yi, tile_width, tile_height);
+                    func.update(update_id)
+                        .gpu_tile(pure_args[0], pure_args[1], xo, yo, xi, yi, tile_width, tile_height);
                 } else {
                     func.update(update_id)
                         .tile(pure_args[0], pure_args[1], xo, yo, xi, yi, tile_width, tile_height)
