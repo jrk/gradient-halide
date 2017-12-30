@@ -260,7 +260,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
           do_indent();
           stream << "CUresult res = cuCtxGetCurrent(&ctx);\n";
           do_indent();
-          stream << "if(res != 0) throw \"could not acquire cuda context\";\n";
+          stream << "if(res != 0) throw Halide::Pytorch::CudaContextException();\n";
           do_indent();
           stream << "cudaStream_t stream = THCState_getCurrentStreamOnDevice(state, device_id);\n";
           do_indent();
@@ -271,7 +271,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
         else {
           do_indent();
           stream << "if(device_id != THCudaTensor_getDevice(state, "
-                 << print_name(buffer_args[i].name) << ")) throw \"invalid device\";\n";
+                 << print_name(buffer_args[i].name) << ")) throw Halide::Pytorch::InvalidDeviceException();\n";
         }
       }
 
@@ -326,7 +326,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     }
     stream << ");\n";
     do_indent();
-    stream << "if (err != 0) throw \"halide_cuda_run failed\";\n";
+    stream << "if (err != 0) throw Halide::Pytorch::CudaRunException();\n";
     stream << "\n";
 
     if(isCuda) {
@@ -338,8 +338,15 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
         if (buffer_args[i].is_buffer()) {
           do_indent();
           stream 
-            << print_name(buffer_args[i].name) << "_buffer"
-            << ".copy_to_device(cuda_interface, __user_context);\n";
+            << "if ("
+            << print_name(buffer_args[i].name) << "_buffer.host_dirty() )"
+            << " throw Halide::Pytorch::DeviceNotSynchronizedException();\n";
+
+          // << ".copy_to_device(cuda_interface, __user_context);\n";
+          // do_indent();
+          // stream 
+          //   << print_name(buffer_args[i].name) << "_buffer"
+          //   << ".copy_to_device(cuda_interface, __user_context);\n";
           // do_indent();
           // stream 
           //   << print_name(buffer_args[i].name) << "_buffer"
