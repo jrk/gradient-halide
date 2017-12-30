@@ -683,6 +683,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             if (!merged_r.defined() && rvars.size() == 0) {
                 return true;
             }
+            if (!merged_r.defined()) {
+                return false;
+            }
             if ((int)rvars.size() != merged_r.dimensions()) {
                 return false;
             }
