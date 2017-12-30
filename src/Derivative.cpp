@@ -114,21 +114,20 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             FuncKey func_key{func.name(), update_id};
             internal_assert(func_bounds.find(func.name()) != func_bounds.end());
 
-            // Set up boundary condition if this is the first visit
+            // Set up boundary condition if this is the first visit to the function
             if (update_id == func.num_update_definitions() - 1) {
                 Func &adjoint_func = adjoint_funcs[func_key];
                 const Box &bounds = func_bounds[func.name()];
                 if (adjoint_func.values().size() == 1) {
                     adjoint_func = BoundaryConditions::constant_exterior(
                             adjoint_func, 0.f, box_to_vector(bounds),
-			    adjoint_func.name() + "_ce");
+                            adjoint_func.name() + "_ce");
                 } else {
                     std::vector<Expr> values(adjoint_func.values().size(), Expr(0.f));
                     adjoint_func = BoundaryConditions::constant_exterior(
                             adjoint_func, Tuple(values), box_to_vector(bounds),
-			    adjoint_func.name() + "_ce");
+                            adjoint_func.name() + "_ce");
                 }
-                adjoint_funcs[func_key] = adjoint_func;
             }
 
             // Initialize the next adjoint function by propagating the adjoints to next update
@@ -661,25 +660,85 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             // substitute the new_args back to original variables
             adjoint = substitute(new_args[i].name(), func_to_update_args[i], adjoint);
         }
+        adjoint = simplify(adjoint);
 
-        // Final simplification pass
-        if (debug_flag) {
-            Scope<Interval> bounds;
-            if (merged_r.defined()) {
-                for (int d = 0; d < merged_r.dimensions(); d++) {
-                    bounds.push(merged_r[d].name(),
-                        Interval(merged_r[d].min(), merged_r[d].min() + merged_r[d].extent() - 1));
+        // Finally we update the function definitions, possibly merge with previous updates
+        auto can_merge = [&]() -> bool {
+            if (func_to_update.num_update_definitions() == 0) {
+                return false;
+            }
+            int update_id = func_to_update.num_update_definitions() - 1;
+            std::vector<Expr> prev_lhs =
+                func_to_update.update_args(update_id);
+            assert(prev_lhs.size() == lhs.size());
+            // If previous update has different left hand side, can't merge
+            for (int i = 0; i < (int)prev_lhs.size(); i++) {
+                if (!equal(lhs[i], prev_lhs[i])) {
+                    return false;
                 }
             }
-            adjoint = simplify(adjoint, true, bounds);
-        }
+            // If previous update has a different set of reduction variables, can't merge
+            const std::vector<ReductionVariable> &rvars =
+                func_to_update.update(update_id).get_schedule().rvars();
+            if (!merged_r.defined() && rvars.size() == 0) {
+                return true;
+            }
+            if ((int)rvars.size() != merged_r.dimensions()) {
+                return false;
+            }
+
+            for (int i = 0; i < (int)rvars.size(); i++) {
+                if (!equal(rvars[i].min, merged_r[i].min())) {
+                    return false;
+                }
+                if (!equal(rvars[i].extent, merged_r[i].extent())) {
+                    return false;
+                }
+            }
+            return true;
+        };
 
         // TODO: maybe do some analysis on lhs to avoid applying boundary conditions to
         //       function calls in adjoint
-        if (func_to_update.values().size() == 1) {
-            func_to_update(lhs) += adjoint;
+        if (!can_merge()) {
+            if (func_to_update.values().size() == 1) {
+                func_to_update(lhs) += adjoint;
+            } else {
+                func_to_update(lhs)[op->value_index] += adjoint;
+            }
         } else {
-            func_to_update(lhs)[op->value_index] += adjoint;
+            Definition &def =
+                func_to_update.function().update(
+                    func_to_update.num_update_definitions() - 1);
+            std::vector<Expr> &values = def.values();
+            ReductionDomain rdom;
+            for (const auto &val : values) {
+                rdom = extract_rdom(val);
+                if (rdom.defined()) {
+                    break;
+                }
+            }
+            if (rdom.defined()) {
+                // Make sure we're using the same set of reduction variables
+                for (int i = 0; i < merged_r.dimensions(); i++) {
+                    adjoint = substitute(merged_r[i].name(), RVar(rdom, i), adjoint);
+                }
+            }
+
+            if (values.size() == 1) {
+                values[0] = values[0] + adjoint;
+            } else {
+                const Add *add = values[op->value_index].as<Add>();
+                if (add != nullptr &&
+                        add->b.as<Call>() != nullptr &&
+                        add->b.as<Call>()->is_intrinsic(Call::undef)) {
+                    // Sometimes the expression is an undef for the case of a tuple.
+                    // Make sure we don't include the undefs
+                    values[op->value_index] = add->a + adjoint;
+                } else {
+                    values[op->value_index] = values[op->value_index] + adjoint;
+                }
+            }
         }
 
         if (debug_flag) {
@@ -1044,7 +1103,7 @@ void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool
                     Internal::debug(0) << " " << Internal::simplify(val);
                 }
                 Internal::debug(0) << "\n";
-                rdom = Internal::extract_rdom(Internal::simplify(func.update_value(update_id)));
+                //rdom = Internal::extract_rdom(Internal::simplify(func.update_value(update_id)));
             } else {
                 Internal::debug(0) << "    " << func.name() << "(";
                 if (func.args().size() > 0) {
@@ -1059,7 +1118,7 @@ void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool
                     Internal::debug(0) << " " << Internal::simplify(val);
                 }
                 Internal::debug(0) << "\n";
-                rdom = Internal::extract_rdom(Internal::simplify(func.value()));
+                //rdom = Internal::extract_rdom(Internal::simplify(func.value()));
             }
 
             if (rdom.defined()) {
