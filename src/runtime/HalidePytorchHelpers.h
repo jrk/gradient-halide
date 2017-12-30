@@ -23,25 +23,25 @@ struct DeviceNotSynchronizedException : public std::exception {
   const char* what() const throw() {
     return "Halide output buffer is on CPU, please compute it on GPU.";
   }
-}
+};
 
 struct InvalidDeviceException : public std::exception {
   const char* what() const throw() {
     return "Halide operators attempts to access a buffer on the wrong device";
   }
-}
+};
 
 struct CudaContextException : public std::exception {
   const char* what() const throw() {
     return "Could not acquire CUDA context.";
   }
-}
+};
 
 struct CudaRunException : public std::exception {
   const char* what() const throw() {
     return "Could not run Halide CUDA op.";
   }
-}
+};
 
 inline Buffer<float> wrap(THFloatTensor* tensor) {
   int ndims = THFloatTensor_nDimension(tensor);
