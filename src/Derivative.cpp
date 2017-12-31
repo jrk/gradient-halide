@@ -566,8 +566,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 t_interval.max = simplify(t_interval.max);
                 Interval r_interval(simplify(rvar.min),
                                     simplify(rvar.min + rvar.extent - 1));
-                if (equal(r_interval.min, t_interval.min) &&
-                        equal(r_interval.max, t_interval.max)) {
+                if (can_prove(r_interval.min <= t_interval.min &&
+                              r_interval.max >= t_interval.max)) {
                     lhs[i] = func_to_update_args[i];
                     // Replace other occurence of rvar in lhs
                     for (int j = 0; j < (int)lhs.size(); j++) {
@@ -680,11 +680,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             // If previous update has a different set of reduction variables, can't merge
             const std::vector<ReductionVariable> &rvars =
                 func_to_update.update(update_id).get_schedule().rvars();
-            if (!merged_r.defined() && rvars.size() == 0) {
-                return true;
-            }
             if (!merged_r.defined()) {
-                return false;
+                return rvars.size() == 0;
             }
             if ((int)rvars.size() != merged_r.dimensions()) {
                 return false;
@@ -820,6 +817,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                          const std::map<std::string, int> &parameters,
                          const std::vector<std::vector<std::pair<int, int>>> &output_bounds,
                          const SimpleAutoscheduleOptions &options,
+                         const std::set<std::string> &dont_inline,
                          const std::set<std::string> &skip_functions) {
     using namespace Internal;
     std::vector<FuncBounds> output_bounds_expr;
@@ -846,29 +844,48 @@ void simple_autoschedule(std::vector<Func> &outputs,
         output_set.insert(output.name());
     }
     std::vector<std::string> order = realization_order(output_functions, env).first;
-    std::map<std::string, int> called_counts;
-    std::map<std::string, int> call_counts;
+    std::map<std::string, std::set<std::string>> dependencies;
     // Dependency analysis
     for (auto it = order.begin(); it != order.end(); it++) {
         Func func(env[*it]);
-        int count = 0;
-        std::map<std::string, int> calls = count_calls(func, count);
-        called_counts.insert(calls.begin(), calls.end());
-        call_counts[func.name()] = count;
+        std::set<std::string> calls = find_dependency(func);
+        for (const auto &call : calls) {
+            dependencies[call].insert(func.name());
+        }
     }
+    std::vector<std::string> new_order;
+    for (auto it = order.begin(); it != order.end(); it++) {
+        if (output_set.find(*it) != output_set.end() ||
+                dont_inline.find(*it) != dont_inline.end()) {
+            new_order.push_back(*it);
+            continue;
+        }
+        if (skip_functions.find(*it) != skip_functions.end()) {
+            continue;
+        }
+        const std::set<std::string> &set = dependencies[*it];
+        // If a function is called by only one function, and the callee doesn't have reductions
+        // inline the callee
+        if (set.size() == 1) {
+            Func caller(env[*set.begin()]);
+            Func callee(env[*it]);
+            bool has_rvars = false;
+            for (int update_id = 0; update_id < callee.num_update_definitions(); update_id++) {
+                if (callee.rvars(update_id).size() > 0) {
+                    has_rvars = true;
+                    break;
+                }
+            }
+            if (!has_rvars) {
+                continue;
+            }
+        }
+        new_order.push_back(*it);
+    }
+    order = new_order;
     // Traverse from the consumers to the producers
     for (auto it = order.rbegin(); it != order.rend(); it++) {
         Func func(env[*it]);
-        if (skip_functions.find(func.name()) != skip_functions.end()) {
-            continue;
-        }
-        int rvars_count = 0;
-        if (rvars_count == 0 && call_counts[func.name()] <= 1 && output_set.find(func.name()) == output_set.end()) {
-            // If the function isn't doing much and is not in the outputs, inline it
-            func.compute_inline();
-            continue;
-        }
-
         Box bounds = func_bounds[*it];
         std::vector<int> int_bounds;
         for (int i = 0; i < (int)bounds.size(); i++) {
@@ -908,6 +925,23 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     .vectorize(xi, vectorize_width);
             }
             tilable = true;
+        } else if (options.gpu) {
+            // Even if there's not enough parallelism it's still a good idea to launch gpu tiles to avoid memory copy
+            if (func.args().size() == 0) {
+                func.gpu_single_thread();
+            } else {
+                // Fuse variables
+                std::vector<Var> fused_vars;
+                fused_vars.push_back(func.args()[0]);
+                for (int i = 1; i < (int)func.args().size(); i++) {
+                    Var new_var;
+                    func.fuse(fused_vars.back(), func.args()[i], new_var);
+                    fused_vars.push_back(new_var);
+                }
+                // Launch GPU threads
+                Var block, thread;
+                func.gpu_tile(fused_vars.back(), block, thread, 1);
+            }
         }
 
         for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
@@ -960,11 +994,11 @@ void simple_autoschedule(std::vector<Func> &outputs,
                                                     {RVar(rvars[dim_height].var), yt}});
                         std::vector<VarOrRVar> new_order;
                         new_order.push_back(rxi);
-                        new_order.push_back(yt);
-                        new_order.push_back(xo);
                         for (const auto &arg : func.args()) {
                             new_order.push_back(arg);
                         }
+                        new_order.push_back(yt);
+                        new_order.push_back(xo);
                         interm.compute_root()
                               .reorder(yt, xo)
                               .gpu_blocks(xo)
@@ -1035,6 +1069,129 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         .parallel(tile_index)
                         .vectorize(xi, vectorize_width);
                 }
+            } else if (options.gpu) {
+                // Even if there's not enough parallelism it's still a good idea to launch gpu tiles to avoid memory copy
+                if (pure_args.size() == 0) {
+                    func.update(update_id).gpu_single_thread();
+                } else {
+                    // Fuse variables
+                    std::vector<Var> fused_vars;
+                    fused_vars.push_back(pure_args[0]);
+                    for (int i = 1; i < (int)pure_args.size(); i++) {
+                        Var new_var;
+                        func.update(update_id).fuse(fused_vars.back(), pure_args[i], new_var);
+                        fused_vars.push_back(new_var);
+                    }
+                    // Launch GPU threads
+                    Var block, thread;
+                    func.update(update_id).gpu_tile(fused_vars.back(), block, thread, 1);
+                }
+            }
+
+            // Special pattern: if we see f(r.x, r.y, ...) = f(r.x, r.y, ...) + ...
+            // we will parallelize over r
+            auto is_parallelizable_reduction = [&]() -> bool {
+                if (update_args.size() == 0) {
+                    return false;
+                }
+                for (const auto &arg : update_args) {
+                    const Variable *var = arg.as<Variable>();
+                    if (!(var != nullptr &&
+                              !var->param.defined() &&
+                              !var->image.defined() &&
+                              var->reduction_domain.defined())) {
+                        return false;
+                    }
+                }
+                std::vector<Expr> update_vals = func.update_values(update_id).as_vector();
+                for (const auto &val : update_vals) {
+                    const Add *add = val.as<Add>();
+                    if (add == nullptr) {
+                        return false;
+                    }
+                    const Call *call = add->a.as<Call>();
+                    if (call == nullptr) {
+                        return false;
+                    }
+                    if (!call->func.defined()) {
+                        return false;
+                    }
+                    Function called_func(call->func);
+                    if (called_func.name() != func.name()) {
+                        return false;
+                    }
+                    
+                    for (int arg_id = 0; arg_id < (int)call->args.size(); arg_id++) {
+                        const Variable *var = call->args[arg_id].as<Variable>();
+                        if (!(var != nullptr &&
+                                    !var->param.defined() &&
+                                    !var->image.defined() &&
+                                    var->reduction_domain.defined())) {
+                            return false;
+                        }
+                        const Variable *update_var = update_args[arg_id].as<Variable>();
+                        if (var->name != update_var->name) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            };
+
+            if (is_parallelizable_reduction()) {
+                std::vector<RVar> rvar_args;
+                std::vector<int> rvar_arg_bounds;
+                for (int arg_id = 0; arg_id < (int)update_args.size(); arg_id++) {
+                    const Variable *var = update_args[arg_id].as<Variable>();
+                    assert(var != nullptr);
+                    rvar_args.push_back(RVar(var->name));
+                    assert(var->reduction_domain.defined());
+                    ReductionDomain rdom = var->reduction_domain;
+                    const auto &domain = rdom.domain();
+                    Expr extent = domain[arg_id].extent;
+                    for (const auto &param : parameters) {
+                        extent = substitute(param.first, Expr(param.second), extent);
+                    }
+                    extent = simplify(extent);
+                    const int64_t *extent_int = as_const_int(extent);
+                    user_assert(extent_int != nullptr) << "extent:" << extent << " is not constant.\n";
+                    rvar_arg_bounds.push_back(*extent_int);
+                }
+
+                if ((int)rvar_arg_bounds.size() >= 2 &&
+                         rvar_arg_bounds[0] >= tile_width &&
+                         rvar_arg_bounds[1] >= tile_height &&
+                        (rvar_arg_bounds[0] / tile_width) * (rvar_arg_bounds[1] / tile_height) >= min_threads) {
+                    RVar xo, yo, xi, yi;
+                    RVar tile_index;
+                    if (options.gpu) {
+                        func.update(update_id)
+                            .allow_race_conditions()
+                            .gpu_tile(rvar_args[0], rvar_args[1], xo, yo, xi, yi, tile_width, tile_height);
+                    } else {
+                        func.update(update_id)
+                            .allow_race_conditions()
+                            .tile(rvar_args[0], rvar_args[1], xo, yo, xi, yi, tile_width, tile_height)
+                            .fuse(xo, yo, tile_index)
+                            .parallel(tile_index)
+                            .vectorize(xi, vectorize_width);
+                    }
+                } else if (options.gpu) {
+                    // Even if there's not enough parallelism it's still a good idea to launch gpu tiles to avoid memory copy
+                    // Fuse variables
+                    std::vector<RVar> fused_vars;
+                    fused_vars.push_back(rvar_args[0]);
+                    for (int i = 1; i < (int)rvar_args.size(); i++) {
+                        RVar new_var;
+                        func.update(update_id).fuse(fused_vars.back(), rvar_args[i], new_var);
+                        fused_vars.push_back(new_var);
+                    }
+                    // Launch GPU threads
+                    RVar block, thread;
+                    func.update(update_id)
+                        .allow_race_conditions()
+                        .gpu_tile(fused_vars.back(), block, thread, 1);
+                }
             }
         }
     }
@@ -1044,6 +1201,7 @@ void simple_autoschedule(Func &output,
                          const std::map<std::string, int> &parameters,
                          const std::vector<std::pair<int, int>> &output_bounds,
                          const SimpleAutoscheduleOptions &options,
+                         const std::set<std::string> &dont_inline,
                          const std::set<std::string> &skip_functions) {
     std::vector<Func> outputs{output};
     std::vector<std::vector<std::pair<int, int>>> vector_output_bounds{output_bounds};
@@ -1051,6 +1209,7 @@ void simple_autoschedule(Func &output,
                                parameters,
                                vector_output_bounds,
                                options,
+                               dont_inline,
                                skip_functions);
 }
 

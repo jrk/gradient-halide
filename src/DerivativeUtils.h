@@ -38,7 +38,8 @@ ReductionDomain extract_rdom(const Expr &expr);
 std::pair<bool, Expr> solve_inverse(Expr expr,
                                     const std::string &new_var,
                                     const std::string &var);
-std::map<std::string, int> count_calls(const Func &func, int &num_calls);
+std::set<std::string> find_dependency(const Func &func);
+bool is_pointwise(const Func &caller, const Func &callee);
 
 }
 }

@@ -431,13 +431,11 @@ std::pair<bool, Expr> solve_inverse(Expr expr,
     return std::make_pair(true, rmin + r.x);
 }
 
-struct CallsCounter : public IRGraphVisitor {
+struct DependencyFinder : public IRGraphVisitor {
 public:
     using IRGraphVisitor::visit;
-    void count(const Func &func) {
-        dim = func.dimensions();
-        counter = 0;
-        calls.clear();
+    void find(const Func &func) {
+        dependency.clear();
         std::vector<Expr> vals = func.values().as_vector();
         for (Expr val : vals) {
             val.accept(this);
@@ -453,33 +451,83 @@ public:
     void visit(const Call *op) {
         IRGraphVisitor::visit(op);
         if (op->func.defined()) {
-            counter++;
             Function func(op->func);
-            if (calls.find(func.name()) != calls.end()) {
-                calls[func.name()] += 1;
-            } else {
-                calls[func.name()] = 1;
+            dependency.insert(func.name());
+        }
+    }
+
+    std::set<std::string> dependency;
+};
+
+std::set<std::string> find_dependency(const Func &func) {
+    DependencyFinder finder;
+    finder.find(func);
+    return finder.dependency;
+}
+
+struct PointwiseOpChecker : public IRGraphVisitor {
+public:
+    using IRGraphVisitor::visit;
+    bool check(const Func &caller_, const Func &callee_) {
+        result = true;
+        caller = caller_;
+        callee = callee_;
+        // return false if the dimensionality of caller and callee are different
+        if (caller.dimensions() != callee.dimensions()) {
+            return false;
+        }
+        std::vector<Expr> vals;
+        vals = caller.values().as_vector();
+        for (Expr val : vals) {
+            val.accept(this);
+        }
+        if (!result) {
+            return false;
+        }
+        for (int update_id = 0; update_id < caller.num_update_definitions(); update_id++) {
+            vals = caller.update_values(update_id).as_vector();
+            for (Expr val : vals) {
+                val.accept(this);
             }
-            // Hack: when the functions have different dimensionality
-            // make the calls count a large number so we don't inline it
-            // this prevents excessive memory allocation/recomputation
-            // TODO: write a proper function to deal with this
-            if (func.dimensions() != dim) {
-                calls[func.name()] += 128;
+            if (!result) {
+                return false;
+            }
+        }
+        return result;
+    }
+
+    void visit(const Call *op) {
+        IRGraphVisitor::visit(op);
+        if (op->func.defined()) {
+            Function func(op->func);
+            if (func.name() == callee.name()) {
+                // Check: is the calling arguments the same as callee arguments?
+                if (op->args.size() != callee.args().size()) {
+                    result = false;
+                    return;
+                }
+                for (int i = 0; i < (int)op->args.size(); i++) {
+                    const Variable *var = op->args[i].as<Variable>();
+                    if (var == nullptr) {
+                        result = false;
+                        return;
+                    }
+                    if (var->name != callee.args()[i].name()) {
+                        result = false;
+                        return;
+                    }
+                }
             }
         }
     }
 
-    int counter = 0;
-    std::map<std::string, int> calls;
-    int dim;
+    bool result;
+    Func caller, callee;
 };
 
-std::map<std::string, int> count_calls(const Func &func, int &num_calls) {
-    CallsCounter counter;
-    counter.count(func);
-    num_calls = counter.counter;
-    return counter.calls;
+bool is_pointwise(const Func &caller, const Func &callee) {
+    PointwiseOpChecker checker;
+    return checker.check(caller, callee);
 }
 
 } // namespace Internal
