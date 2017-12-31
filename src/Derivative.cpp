@@ -903,7 +903,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
         func.compute_root();
         // initial definition is easy: everything is pure variables
         // just parallelize and vectorize if there are enough places to launch threads
-        int tile_width = 16;
+        int tile_width = options.gpu ? 32 : 16; // set to warp size (32) for gpu
         int tile_height = 16;
         int min_gpu_threads = 128;
         int min_cpu_threads = 8;
@@ -983,35 +983,36 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 if (dim_width != -1 && dim_height != -1) {
                     if (options.gpu) {
                         assert(dim_width != dim_height);
-                        // Each GPU thread covers tile_width reductions over x
+                        // Each GPU thread covers tile_height reductions over y
+			// Make sure the threads number is multiple of 32 (size of a warp)
                         RVar rxo, rxi, ryo, ryi;
                         func.update(update_id)
                             .split(RVar(rvars[dim_width].var), rxo, rxi, tile_width)
 			    .split(RVar(rvars[dim_height].var), ryo, ryi, tile_height);
-                        Var xo, yo, yi;
+                        Var xo, yo, xi;
                         Func interm = func.update(update_id)
-                                          .rfactor({{ryi, yi},
+                                          .rfactor({{rxi, xi},
 					            {rxo, xo},
                                                     {ryo, yo}});
                         std::vector<VarOrRVar> new_order;
-                        new_order.push_back(rxi);
+                        new_order.push_back(ryi);
+			new_order.push_back(xi);
+                        new_order.push_back(xo);
+                        new_order.push_back(yo);
                         for (const auto &arg : func.args()) {
                             new_order.push_back(arg);
                         }
-			new_order.push_back(yi);
-                        new_order.push_back(xo);
-                        new_order.push_back(yo);
 			Var tile_index;
                         interm.compute_root()
-                              .reorder(yi, xo, yo)
+                              .reorder(xi, xo, yo)
 			      .fuse(xo, yo, tile_index)
                               .gpu_blocks(tile_index)
-                              .gpu_threads(yi);
+                              .gpu_threads(xi);
                         interm.update()
                               .reorder(new_order)
 			      .fuse(xo, yo, tile_index)
                               .gpu_blocks(tile_index)
-                              .gpu_threads(yi);
+                              .gpu_threads(xi);
                     } else {
                         // Parallel on tiles and vectorize inside tile
                         RVar rxo, ryo, rxi, ryi;
@@ -1080,7 +1081,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     func.update(update_id).gpu_single_thread();
                 } else {
                     // Fuse variables
-                    std::vector<Var> fused_vars;
+		    std::vector<Var> fused_vars;
                     fused_vars.push_back(pure_args[0]);
                     for (int i = 1; i < (int)pure_args.size(); i++) {
                         Var new_var;
