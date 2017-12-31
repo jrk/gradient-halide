@@ -5,6 +5,8 @@
 #include "HalideRuntimeCuda.h"
 #include <vector>
 #include <iostream>
+#include <string>
+#include <sstream>
 #include <exception>
 
 #include "TH/TH.h"
@@ -20,8 +22,14 @@ namespace Halide {
 namespace Pytorch {
 
 struct DeviceNotSynchronizedException : public std::exception {
+  std::string buffer_name;
+  DeviceNotSynchronizedException(std::string buffer_name) : buffer_name(buffer_name) { }
   const char* what() const throw() {
-    return "Halide output buffer is on CPU, please compute it on GPU.";
+    std::stringstream buf;
+    buf << "Halide output buffer "
+        << buffer_name
+        << " is on CPU, please compute it on GPU.";
+    return buf.str().c_str();
   }
 };
 

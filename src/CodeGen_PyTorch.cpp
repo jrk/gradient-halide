@@ -340,7 +340,9 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
           stream 
             << "if ("
             << print_name(buffer_args[i].name) << "_buffer.host_dirty() )"
-            << " throw Halide::Pytorch::DeviceNotSynchronizedException();\n";
+            << " throw Halide::Pytorch::DeviceNotSynchronizedException(\""
+            << print_name(buffer_args[i].name)
+            << "\");\n";
 
           // << ".copy_to_device(cuda_interface, __user_context);\n";
           // do_indent();
