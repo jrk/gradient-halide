@@ -863,12 +863,12 @@ void simple_autoschedule(std::vector<Func> &outputs,
         if (skip_functions.find(*it) != skip_functions.end()) {
             continue;
         }
+        Func callee(env[*it]);
         const std::set<std::string> &set = dependencies[*it];
         // If a function is called by only one function, and the callee doesn't have reductions
         // inline the callee
         if (set.size() == 1) {
             Func caller(env[*set.begin()]);
-            Func callee(env[*it]);
             bool has_rvars = false;
             for (int update_id = 0; update_id < callee.num_update_definitions(); update_id++) {
                 if (callee.rvars(update_id).size() > 0) {
@@ -983,30 +983,35 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 if (dim_width != -1 && dim_height != -1) {
                     if (options.gpu) {
                         assert(dim_width != dim_height);
-                        // Each GPU thread covers 8 reductions over x
-                        // Launch height number of threads per block
-                        RVar rxo, rxi;
+                        // Each GPU thread covers tile_width reductions over x
+                        RVar rxo, rxi, ryo, ryi;
                         func.update(update_id)
-                            .split(RVar(rvars[dim_width].var), rxo, rxi, tile_width);
-                        Var xo, yt;
+                            .split(RVar(rvars[dim_width].var), rxo, rxi, tile_width)
+			    .split(RVar(rvars[dim_height].var), ryo, ryi, tile_height);
+                        Var xo, yo, yi;
                         Func interm = func.update(update_id)
-                                          .rfactor({{rxo, xo},
-                                                    {RVar(rvars[dim_height].var), yt}});
+                                          .rfactor({{ryi, yi},
+					            {rxo, xo},
+                                                    {ryo, yo}});
                         std::vector<VarOrRVar> new_order;
                         new_order.push_back(rxi);
                         for (const auto &arg : func.args()) {
                             new_order.push_back(arg);
                         }
-                        new_order.push_back(yt);
+			new_order.push_back(yi);
                         new_order.push_back(xo);
+                        new_order.push_back(yo);
+			Var tile_index;
                         interm.compute_root()
-                              .reorder(yt, xo)
-                              .gpu_blocks(xo)
-                              .gpu_threads(yt);
+                              .reorder(yi, xo, yo)
+			      .fuse(xo, yo, tile_index)
+                              .gpu_blocks(tile_index)
+                              .gpu_threads(yi);
                         interm.update()
                               .reorder(new_order)
-                              .gpu_blocks(xo)
-                              .gpu_threads(yt);
+			      .fuse(xo, yo, tile_index)
+                              .gpu_blocks(tile_index)
+                              .gpu_threads(yi);
                     } else {
                         // Parallel on tiles and vectorize inside tile
                         RVar rxo, ryo, rxi, ryi;
