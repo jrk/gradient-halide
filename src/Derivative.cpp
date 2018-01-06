@@ -357,6 +357,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
       } else if (op->name == "pow_f32") {
           accumulate(op->args[0], adjoint * op->args[1] * pow(op->args[0], op->args[1] - 1.f));
           accumulate(op->args[1], adjoint * pow(op->args[0], op->args[1]) * log(op->args[0]));
+      } else if (op->name == "halide_print") {
+          accumulate(op->args[0], 0.f);
       } else {
           internal_error << "The derivative of " << op->name << " is not implemented.";
       }
@@ -766,6 +768,13 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             accumulate(op->args[2], adjoint * (op->args[1] - op->args[0]));
         } else if (op->is_intrinsic(Call::likely)) {
             accumulate(op->args[0], adjoint);
+        } else if (op->is_intrinsic(Call::return_second)) {
+            accumulate(op->args[0], 0.f);
+            accumulate(op->args[1], adjoint);
+        } else if (op->is_intrinsic(Call::stringify)) {
+            for (const auto &arg : op->args) {
+                accumulate(arg, 0.f);
+            }
         } else if (op->is_intrinsic(Call::undef)) {
             // do nothing
         } else {
@@ -984,11 +993,11 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     if (options.gpu) {
                         assert(dim_width != dim_height);
                         // Each GPU thread covers tile_height reductions over y
-			// Make sure the threads number is multiple of 32 (size of a warp)
+                        // Make sure the threads number is multiple of 32 (size of a warp)
                         RVar rxo, rxi, ryo, ryi;
                         func.update(update_id)
                             .split(RVar(rvars[dim_width].var), rxo, rxi, tile_width)
-			    .split(RVar(rvars[dim_height].var), ryo, ryi, tile_height);
+                            .split(RVar(rvars[dim_height].var), ryo, ryi, tile_height);
                         Var xo, yo, xi;
                         Func interm = func.update(update_id)
                                           .rfactor({{rxi, xi},
@@ -996,21 +1005,21 @@ void simple_autoschedule(std::vector<Func> &outputs,
                                                     {ryo, yo}});
                         std::vector<VarOrRVar> new_order;
                         new_order.push_back(ryi);
-			new_order.push_back(xi);
+                        new_order.push_back(xi);
                         new_order.push_back(xo);
                         new_order.push_back(yo);
                         for (const auto &arg : func.args()) {
                             new_order.push_back(arg);
                         }
-			Var tile_index;
+                        Var tile_index;
                         interm.compute_root()
                               .reorder(xi, xo, yo)
-			      .fuse(xo, yo, tile_index)
+                              .fuse(xo, yo, tile_index)
                               .gpu_blocks(tile_index)
                               .gpu_threads(xi);
                         interm.update()
                               .reorder(new_order)
-			      .fuse(xo, yo, tile_index)
+                              .fuse(xo, yo, tile_index)
                               .gpu_blocks(tile_index)
                               .gpu_threads(xi);
                     } else {
