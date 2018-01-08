@@ -20,7 +20,13 @@ using FuncKey = std::pair<std::string, int>;
 
 struct Derivative {
     std::map<FuncKey, Func> adjoints;
-
+    Func operator()(const Func &func) const {
+        auto it = adjoints.find(FuncKey{func.name(), -1});
+        if (it == adjoints.end()) {
+            return Func();
+        }
+        return it->second;
+    }
 };
 
 // Bounds are {min, max}
