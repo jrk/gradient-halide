@@ -20,6 +20,7 @@ using FuncKey = std::pair<std::string, int>;
 
 struct Derivative {
     std::map<FuncKey, Func> adjoints;
+
 };
 
 // Bounds are {min, max}
@@ -29,7 +30,12 @@ Derivative propagate_adjoints(const Func &output,
 Derivative propagate_adjoints(const Func &output,
                               const Buffer<float> &adjoint);
 Derivative propagate_adjoints(const Func &output);
-void print_func(const Func &func, bool ignore_non_adjoints = true, bool ignore_bc = true, bool recursive = true, int depth = -1);
+struct PrintFuncOptions {
+    bool ignore_non_adjoints = false;
+    bool ignore_bc = false;
+    int depth = -1;
+};
+void print_func(const Func &func, const PrintFuncOptions &options = PrintFuncOptions());
 
 struct SimpleAutoscheduleOptions {
     bool gpu = false;

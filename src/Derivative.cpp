@@ -935,7 +935,8 @@ void simple_autoschedule(std::vector<Func> &outputs,
             }
             tilable = true;
         } else if (options.gpu) {
-            // Even if there's not enough parallelism it's still a good idea to launch gpu tiles to avoid memory copy
+            // Even if there's not enough parallelism it's still a good idea to launch
+            // gpu tiles to avoid memory copy
             if (func.args().size() == 0) {
                 func.gpu_single_thread();
             } else {
@@ -1085,12 +1086,13 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         .vectorize(xi, vectorize_width);
                 }
             } else if (options.gpu) {
-                // Even if there's not enough parallelism it's still a good idea to launch gpu tiles to avoid memory copy
+                // Even if there's not enough parallelism it's still a good idea to launch
+                // gpu tiles to avoid memory copy
                 if (pure_args.size() == 0) {
                     func.update(update_id).gpu_single_thread();
                 } else {
                     // Fuse variables
-		    std::vector<Var> fused_vars;
+                    std::vector<Var> fused_vars;
                     fused_vars.push_back(pure_args[0]);
                     for (int i = 1; i < (int)pure_args.size(); i++) {
                         Var new_var;
@@ -1176,7 +1178,8 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 if ((int)rvar_arg_bounds.size() >= 2 &&
                          rvar_arg_bounds[0] >= tile_width &&
                          rvar_arg_bounds[1] >= tile_height &&
-                        (rvar_arg_bounds[0] / tile_width) * (rvar_arg_bounds[1] / tile_height) >= min_threads) {
+                        (rvar_arg_bounds[0] / tile_width) *
+                        (rvar_arg_bounds[1] / tile_height) >= min_threads) {
                     RVar xo, yo, xi, yi;
                     RVar tile_index;
                     if (options.gpu) {
@@ -1192,7 +1195,8 @@ void simple_autoschedule(std::vector<Func> &outputs,
                             .vectorize(xi, vectorize_width);
                     }
                 } else if (options.gpu) {
-                    // Even if there's not enough parallelism it's still a good idea to launch gpu tiles to avoid memory copy
+                    // Even if there's not enough parallelism it's still a good idea to 
+                    // launch gpu tiles to avoid memory copy
                     // Fuse variables
                     std::vector<RVar> fused_vars;
                     fused_vars.push_back(rvar_args[0]);
@@ -1228,7 +1232,7 @@ void simple_autoschedule(Func &output,
                                skip_functions);
 }
 
-void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool recursive, int depth) {
+void print_func(const Func &func, const PrintFuncOptions &options) {
     Internal::debug(0) << "Printing function:" << func.name() << "\n";
     // Topologically sort the functions
     std::map<std::string, Internal::Function> env =
@@ -1242,23 +1246,19 @@ void print_func(const Func &func, bool ignore_bc, bool ignore_non_adjoints, bool
     }
 
     int lowest_index = 0;
-    if (depth >= 0) {
-        lowest_index = (int)funcs.size() - 1 - depth;
+    if (options.depth >= 0) {
+        lowest_index = (int)funcs.size() - 1 - options.depth;
     }
 
     for (int i = (int)funcs.size() - 1; i >= lowest_index; i--) {
-        // TODO: "recursive" is a bit misleading here since there' no actual recursion of print_func
-        if (!recursive && funcs[i].name() != func.name()) {
-            continue;
-        }
         const char *ce = "constant_exterior";
         const char *re = "repeat_edge";
-        if (ignore_bc && (funcs[i].name().substr(0, strlen(ce)) == std::string(ce) ||
+        if (options.ignore_bc && (funcs[i].name().substr(0, strlen(ce)) == std::string(ce) ||
                 funcs[i].name().substr(0, strlen(re)) == std::string(re) ||
-		funcs[i].name().find("_ce") != std::string::npos)) {
+                funcs[i].name().find("_ce") != std::string::npos)) {
             continue;
         }
-        if (ignore_non_adjoints && funcs[i].name().find("_d_def__") == std::string::npos) {
+        if (options.ignore_non_adjoints && funcs[i].name().find("_d_def__") == std::string::npos) {
             continue;
         }
         Func func = funcs[i];
