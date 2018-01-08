@@ -101,6 +101,23 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             adjoint_funcs[func_key] = adjoint_func;
         }
     }
+    // Also create stubs for buffers
+    std::map<std::string, Buffer<>> buffers;
+    for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
+        const Func &func = funcs[func_id];
+        std::map<std::string, Buffer<>> func_buffers = find_buffers(func);
+        buffers.insert(func_buffers.begin(), func_buffers.end());
+    }
+    for (const auto &it : buffers) {
+        Func adjoint_func(it.first + "_d__");
+        std::vector<Var> args;
+        for (int i = 0; i < it.second.dimensions(); i++) {
+            args.push_back(Var());
+        }
+        adjoint_func(args) = 0.f;
+        FuncKey func_key{it.first, -1};
+        adjoint_funcs[func_key] = adjoint_func;
+    }
 
     // Traverse functions from producers to consumers for reverse accumulation
     for (int func_id = funcs.size() - 1; func_id >=  0; func_id--) {
@@ -362,10 +379,10 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
       } else {
           internal_error << "The derivative of " << op->name << " is not implemented.";
       }
-    } else if (op->call_type == Call::Halide) { // Halide function call
-        Function func(op->func);
+    } else if (op->call_type == Call::Halide ||
+               op->call_type == Call::Image) { // Halide function call
         // We are scattering to this function
-        // debug(0) << "Scattering to " << func.name() << "\n";
+        // debug(0) << "Scattering to " << op->name << "\n";
 
         // TODO: check if we need this elsewhere
         // Add Let expressions
@@ -378,11 +395,18 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // If target is the current function itself, send to previous update
         // e.g. f(x) = ...
         //      f(x) = f(x) + 1
-        FuncKey func_key = func.name() != current_func.name() ?
-                           FuncKey{func.name(), func.updates().size() - 1} :
-                           FuncKey{func.name(), current_update_id - 1};
+        FuncKey func_key;
+        if (op->func.defined()) {
+            Function func(op->func);
+            func_key = func.name() != current_func.name() ?
+                       FuncKey{func.name(), func.updates().size() - 1} :
+                       FuncKey{func.name(), current_update_id - 1};
+        } else {
+            func_key = FuncKey{op->name, -1};
+        }
         assert(adjoint_funcs.find(func_key) != adjoint_funcs.end());
         Func& func_to_update = adjoint_funcs[func_key];
+        assert(func_to_update.dimensions() == (int)lhs.size());
 
         bool debug_flag = false;//func_to_update.name() == "f_input_0_d_def__";
 
@@ -486,12 +510,14 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         for (int lhs_id = 0; lhs_id < (int)lhs.size(); lhs_id++) {
             Expr lhs_arg = lhs[lhs_id];
             if (!canonicalized[lhs_id]) {
-                std::vector<std::string> variables = gather_variables(lhs_arg, current_func.function().args());
+                std::vector<std::string> variables =
+                    gather_variables(lhs_arg, current_func.function().args());
                 RDom r(bounds);
                 for (int var_id = 0; var_id < (int)variables.size(); var_id++) {
                     for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
                         if (current_args[arg_id].name() == variables[var_id] &&
-                                canonicalized_vars.find(current_args[arg_id].name()) == canonicalized_vars.end()) {
+                                canonicalized_vars.find(current_args[arg_id].name()) ==
+                                    canonicalized_vars.end()) {
                             lhs[lhs_id] = substitute(variables[var_id],
                                                      r_bounds[arg_id],
                                                      lhs[lhs_id]);
@@ -562,7 +588,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 assert(rvar_id != -1);
                 ReductionVariable rvar = rdom.domain()[rvar_id];
                 // Check if the min/max of the rvariable is the same as the target function
-                const Box &target_bounds = func_bounds[func.name()];
+                const Box &target_bounds = func_bounds[op->name];
                 Interval t_interval = target_bounds[i];
                 t_interval.min = simplify(t_interval.min);
                 t_interval.max = simplify(t_interval.max);
@@ -754,7 +780,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
         // print_func(Func(func), true, false, false);
         // print_func(func_to_update, true, true, false);
-    } else if (op->call_type != Call::Image) {  // Image loads should not be propagated
+    } else {
         // op->call_type is Call::Intrinsic or Call::PureIntrinsic
         if (op->is_intrinsic(Call::abs)) {
             accumulate(op->args[0], adjoint*select(op->args[0] > 0, 1.0f, -1.0f));
@@ -1433,10 +1459,8 @@ void test_simple_1d_blur_no_clamp() {
     Var x("x");
     float input_data[] = {1.f, 2.f};
     Buffer<float> input(input_data, 2, "input");
-    Func f_input("f_input");
-    f_input(x) = input(x);
     Func blur("blur");
-    blur(x) = f_input(x) + f_input(x + 1);
+    blur(x) = input(x) + input(x + 1);
     RDom r(0, 1);
     Func f_loss("f_loss");
     f_loss() = 0.f;
@@ -1449,7 +1473,7 @@ void test_simple_1d_blur_no_clamp() {
     Buffer<float> d_blur_buf = adjoints[FuncKey{blur.name(), -1}].realize(1);
 
     CMP(d_blur_buf(0), 2 * blur_buf(0));
-    Buffer<float> d_clamped_buf = adjoints[FuncKey{f_input.name(), -1}].realize(1);
+    Buffer<float> d_clamped_buf = adjoints[FuncKey{input.name(), -1}].realize(1);
     CMP(d_clamped_buf(0), d_blur_buf(0));
 }
 
@@ -1949,72 +1973,6 @@ void test_downsampling() {
     CMP(d_input_buf(8), 0.f);
     CMP(d_input_buf(9), 0.f);
 }
-
-#if 0
-void test_ATA() {
-    Var x("x");
-    std::mt19937 rng;
-    std::uniform_real_distribution<float> dist(0.f, 1.f);
-    Buffer<float> input(5, "input");
-    for (int i = 0; i < 5; i++) {
-        input(i) = dist(rng);
-    }
-    Func clamped("clamped");
-    Expr clamped_x = Halide::clamp(x, 0, input.width() - 1);
-    clamped(x) = input(clamped_x);
-    Buffer<float> kernel(3, "kernel");
-    for (int i = 0; i < 3; i++) {
-        kernel(i) = dist(rng);
-    }
-    Func kernel_func("kernel_func");
-    kernel_func(x) = kernel(x);
-    Func Ax("Ax");
-    RDom support(0, 3);
-    Ax(x) = 0.f;
-    Ax(x) += clamped(x + support.x - 1) * kernel_func(support.x);
-    Func ATAx("ATAx");
-    ATAx(x) = 0.f;
-    ATAx(x) += Ax(x + support.x - 1) * kernel_func(2 - support.x);
-
-    Buffer<float> adjoints(5);
-    for (int i = 0; i < 5; i++) {
-        adjoints(i) = dist(rng);
-    }
-
-    Derivative d = propagate_adjoints(ATAx, adjoints);
-
-    RDom r(0, 4);
-    Func f_loss("f_loss");
-    f_loss() = 0.f;
-    f_loss() += convolved(r.x) * convolved(r.x);
-    Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
-    Buffer<float> convolved_buf = convolved.realize(4);
-    // d loss / d blur = 2 * blur(x)
-    Buffer<float> d_convolved_buf = adjoints[FuncKey{convolved.name(), -1}].realize(4);
-
-    for (int i = 0; i < 4; i++) {
-        CMP(d_convolved_buf(i), 2 * convolved_buf(i));
-    }
-    // d loss / d clamped = d_convolved convolve with flipped kernel
-    Buffer<float> d_clamped_buf = adjoints[FuncKey{clamped.name(), -1}].realize(4);
-    for (int i = 0; i < 4; i++) {
-        float target = d_convolved_buf(i) * kernel_data[0];
-        if (i >= 1) {
-            target += d_convolved_buf(i - 1) * kernel_data[1];
-        }
-        CMP(d_clamped_buf(i), target);
-    }
-    // loss = (k0 + 2k1)^2 + (2k0 + 3k1)^2 + (3k0 + 4k1)^2 + (4k0 + 4k1)^2
-    //      = k0^2 + 4k0k1 + 4k1^2 + 4k0^2 + 12 k0k1 + 9k1^2 + 9k0^2 + 24 k0k1 + 16 k1^2 + 16k0^2 + 32k0k1 + 16k1^2
-    //      = 30 k0^2 + 72 k0k1 + 45 k1^2
-    // d loss / d kernel(0) = 2 * 30 + 72 = 132
-    // d loss / d kernel(1) = 2 * 45 + 72 = 162
-    Buffer<float> d_kernel_buf = adjoints[FuncKey{kernel_func.name(), -1}].realize(2);
-    CMP(d_kernel_buf(0), 132);
-    CMP(d_kernel_buf(1), 162);
-}
-#endif
 
 void derivative_test() {
     test_simple_bounds_inference();

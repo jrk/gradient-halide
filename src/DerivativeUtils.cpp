@@ -530,5 +530,38 @@ bool is_pointwise(const Func &caller, const Func &callee) {
     return checker.check(caller, callee);
 }
 
+struct BufferFinder : public IRGraphVisitor {
+public:
+    using IRGraphVisitor::visit;
+    std::map<std::string, Buffer<>> find(const Func &func) {
+        buffers.clear();
+        std::vector<Expr> vals = func.values().as_vector();
+        for (Expr val : vals) {
+            val.accept(this);
+        }
+        for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
+            vals = func.update_values(update_id).as_vector();
+            for (Expr val : vals) {
+                val.accept(this);
+            }
+        }
+        return buffers;
+    }
+
+    void visit(const Call *op) {
+        IRGraphVisitor::visit(op);
+        if (op->call_type == Call::Image) {
+            buffers[op->name] = op->image;
+        }
+    }
+
+    std::map<std::string, Buffer<>> buffers;
+};
+
+std::map<std::string, Buffer<>> find_buffers(const Func &func) {
+    BufferFinder finder;
+    return finder.find(func);
+}
+
 } // namespace Internal
 } // namespace Halide
