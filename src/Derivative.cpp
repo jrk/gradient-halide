@@ -380,10 +380,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
           internal_error << "The derivative of " << op->name << " is not implemented.";
       }
     } else if (op->call_type == Call::Halide ||
-               op->call_type == Call::Image) { // Halide function call
-        // We are scattering to this function
-        // debug(0) << "Scattering to " << op->name << "\n";
-
+               op->call_type == Call::Image) { // Halide function call or Halid buffer
         // TODO: check if we need this elsewhere
         // Add Let expressions
         adjoint = add_let_expression(adjoint, let_var_mapping, let_variables);
@@ -411,6 +408,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         bool debug_flag = false;//func_to_update.name() == "f_input_0_d_def__";
 
         if (debug_flag) {
+            debug(0) << "Scattering to " << op->name << "\n";
             debug(0) << "lhs is:";
             for (const auto &arg : lhs) {
                 debug(0) << " " << arg;
@@ -777,11 +775,11 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
             debug(0) << "\n";
             debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
+            print_func(func_to_update);
         }
-        // print_func(Func(func), true, false, false);
-        // print_func(func_to_update, true, true, false);
     } else {
-        // op->call_type is Call::Intrinsic or Call::PureIntrinsic
+        internal_assert(op->call_type == Call::Intrinsic ||
+                        op->call_type == Call::PureIntrinsic);
         if (op->is_intrinsic(Call::abs)) {
             accumulate(op->args[0], adjoint*select(op->args[0] > 0, 1.0f, -1.0f));
         } else if (op->is_intrinsic(Call::lerp)) {
@@ -808,6 +806,140 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
     }
 }
+
+Expr forward_accumulation(const Expr &expr,
+                          const std::map<std::string, Func> &tangents,
+                          Scope<Expr> &scope) {
+    if (const Cast *op = expr.as<Cast>()) {
+        Expr t = forward_accumulation(op->value, tangents, scope);
+        return Cast::make(op->type, t);
+    } else if (const Add *op = expr.as<Add>()) {
+        // d/dx f(x) + g(x) = d/dx f(x) + d/dx g(x)
+        Expr a = forward_accumulation(op->a, tangents, scope);
+        Expr b = forward_accumulation(op->b, tangents, scope);
+        return a + b;
+    } else if (const Sub *op = expr.as<Sub>()) {
+        // d/dx f(x) - g(x) = d/dx f(x) - d/dx g(x)
+        Expr a = forward_accumulation(op->a, tangents, scope);
+        Expr b = forward_accumulation(op->b, tangents, scope);
+        return a - b;
+    } else if (const Mul *op = expr.as<Mul>()) {
+        // d/dx f(x) g(x) = g(x) d/dx f(x) + f(x) d/dx g(x)
+        Expr a = forward_accumulation(op->a, tangents, scope);
+        Expr b = forward_accumulation(op->b, tangents, scope);
+        return simplify(op->a * b + a * op->b);
+    } else if (const Div *op = expr.as<Div>()) {
+        // d/dx f(x) / g(x) = (f'g - g'f) / g^2
+        Expr a = forward_accumulation(op->a, tangents, scope);
+        Expr b = forward_accumulation(op->b, tangents, scope);
+        return simplify(((op->b * a - op->a * b) / (op->b * op->b)));
+    } else if (const Min *op = expr.as<Min>()) {
+        Expr a = forward_accumulation(op->a, tangents, scope);
+        Expr b = forward_accumulation(op->b, tangents, scope);
+        return simplify(select(op->a < op->b, a, b));
+    } else if (const Max *op = expr.as<Max>()) {
+        Expr a = forward_accumulation(op->a, tangents, scope);
+        Expr b = forward_accumulation(op->b, tangents, scope);
+        return simplify(select(op->a > op->b, a, b));
+    } else if (const Select *op = expr.as<Select>()) {
+        Expr true_value = forward_accumulation(op->true_value, tangents, scope);
+        Expr false_value = forward_accumulation(op->false_value, tangents, scope);
+        return select(op->condition, true_value, false_value);
+    } else if (const Let *op = expr.as<Let>()) {
+        Expr value = forward_accumulation(op->value, tangents, scope);
+        std::string fwd_name = op->name + ".fwd";
+        scope.push(fwd_name, Variable::make(op->type, fwd_name));
+        Expr body = forward_accumulation(op->body, tangents, scope);
+        scope.pop(fwd_name);
+        return Let::make(op->name, op->value,
+                Let::make(fwd_name, value, body));
+    } else if (const Variable *op = expr.as<Variable>()) {
+        if (scope.contains(op->name)) {
+            return scope.get(op->name);
+        } else {
+            return Expr(Cast::make(op->type, Expr(0)));
+        }
+    } else if (const Call *op = expr.as<Call>()) {
+        if (op->call_type == Call::Extern) {
+            if (op->name == "exp_f32") {
+                // d/dx exp(f(x)) = exp(f(x)) f'
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                return expr * d;
+            } else if (op->name == "sin_f32") {
+                // d/dx sin(f(x)) = cos(f(x)) f'
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                return cos(op->args[0]) * d;
+            } else if (op->name == "cos_f32") {
+                // d/dx cos(f(x)) = -sin(f(x)) f'
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                return -sin(op->args[0]) * d;
+            } else if (op->name == "ceil_f32") {
+                return Expr(Cast::make(op->type, Expr(0)));
+            } else if (op->name == "floor_f32") {
+                return Expr(Cast::make(op->type, Expr(0)));
+            } else if (op->name == "sqrt_f32") {
+                // d/dx f(x)^(0.5) = 0.5 * f(x)^(-0.5) f'
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                return (0.5f * d / expr);
+            } else if (op->name == "pow_f32") {
+                // d/dx pow(f(x), g(x)) = pow(f(x), g(x)-1) * 
+                //                        (g(x) f'(x) + f(x) log(f(x))g'(x))
+                Expr a = forward_accumulation(op->args[0], tangents, scope);
+                Expr b = forward_accumulation(op->args[1], tangents, scope);
+                return pow(op->args[0], op->args[1] - 1.f) *
+                    (op->args[1] * a + op->args[0] * log(op->args[0]) * b);
+            } else if (op->name == "halide_print") {
+                return Expr(0.f);
+            } else {
+                internal_error << "The derivative of " << op->name << " is not implemented.";
+            }
+        } else if (op->call_type == Call::Image || op->call_type == Call::Halide) {
+            auto it = tangents.find(op->name);
+            if (it != tangents.end()) {
+                Func tangent = it->second;
+                return tangent(op->args);
+            } else {
+                return Expr(Cast::make(op->type, Expr(0)));
+            }
+        } else {
+            internal_assert(op->call_type == Call::Intrinsic ||
+                            op->call_type == Call::PureIntrinsic);
+            if (op->is_intrinsic(Call::abs)) {
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                return select(op->args[0] > 0, d, -d);
+            } else if (op->is_intrinsic(Call::lerp)) {
+                // z = a(x) * (1 - w(x)) + b(x) * w(x)
+                // dz/dx = -(w - 1) a' + (b - a) w' + w b'
+                Expr a = forward_accumulation(op->args[0], tangents, scope);
+                Expr b = forward_accumulation(op->args[1], tangents, scope);
+                Expr w = forward_accumulation(op->args[2], tangents, scope);
+                return -(op->args[2] - 1.f) * a + (op->args[1] - op->args[0]) * w + op->args[2] * b;
+            } else if (op->is_intrinsic(Call::likely)) {
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                return likely(d);
+            } else if (op->is_intrinsic(Call::return_second)) {
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                return d;
+            } else if (op->is_intrinsic(Call::stringify)) {
+                return 0.f;
+            } else if (op->is_intrinsic(Call::undef)) {
+                return 0.f;
+            } else {
+                internal_error << "The derivative of intrinsic " << op->name << " is not implemented.";
+            }
+        }
+    } else {
+        return Cast::make(expr.type(), Expr(0));
+    }
+    return Expr(0.f);
+}
+
+Expr forward_accumulation(const Expr &expr,
+                          const std::map<std::string, Func> &tangents) {
+    Scope<Expr> scope;
+    return forward_accumulation(expr, tangents, scope);
+}
+
 } // namespace Internal
 
 
@@ -846,6 +978,47 @@ Derivative propagate_adjoints(const Func &output) {
         output_bounds.push_back({0, 0});
     }
     return propagate_adjoints(output, adjoint, output_bounds);
+}
+
+Func propagate_tangents(const Func &output,
+                        const std::map<std::string, Func> &tangents) {
+    // Topologically sort the functions
+    std::map<std::string, Internal::Function> env =
+        Internal::find_transitive_calls(output.function());
+    std::vector<std::string> order =
+        Internal::realization_order({output.function()}, env).first;
+    std::vector<Func> funcs;
+    funcs.reserve(order.size());
+    for (const auto &func_name : order) {
+        Func func(env[func_name]);
+        funcs.push_back(Func(env[func_name]));
+    }
+
+    std::vector<Func> transformed_funcs;
+    transformed_funcs.reserve(order.size());
+    std::map<std::string, Func> updated_tangents = tangents;
+    for (const Func &func : funcs) {
+        Func transformed_func(func.name() + "_d");
+        Tuple v = func.values();
+        std::vector<Expr> tv;
+        for (const Expr &e : v.as_vector()) {
+            tv.push_back(Internal::forward_accumulation(e, updated_tangents));
+        }
+        transformed_func(func.args()) = Tuple(tv);
+        updated_tangents[func.name()] = transformed_func;
+        for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
+            Tuple v = func.update_values(update_id);
+            std::vector<Expr> tv;
+            for (const Expr &e : v.as_vector()) {
+                tv.push_back(Internal::forward_accumulation(e, updated_tangents));
+            }
+            transformed_func(func.update_args(update_id)) = Tuple(tv);
+            updated_tangents[func.name()] = transformed_func;
+        }
+        transformed_funcs.push_back(transformed_func);
+    }
+
+    return transformed_funcs.back();
 }
 
 void simple_autoschedule(std::vector<Func> &outputs,
@@ -1631,10 +1804,8 @@ void test_1d_to_2d() {
     Var x("x"), y("y");
     float input_data[] = {1.f, 2.f};
     Buffer<float> input(input_data, 2, "input");
-    Func f_input("f_input");
-    f_input(x) = input(x);
     Func f_output("output");
-    f_output(x, y) = f_input(y);
+    f_output(x, y) = input(y);
 
     RDom r(0, 2, 0, 2);
     Func f_loss("f_loss");
@@ -1653,7 +1824,7 @@ void test_1d_to_2d() {
     CMP(d_output(0, 1), 4);
     CMP(d_output(1, 1), 4);
 
-    Buffer<float> d_input = adjoints[FuncKey{f_input.name(), -1}].realize(2);
+    Buffer<float> d_input = adjoints[FuncKey{input.name(), -1}].realize(2);
     CMP(d_input(0), 4);
     CMP(d_input(1), 8);
 }
@@ -1764,6 +1935,8 @@ void test_sparse_update() {
     Func f_output("f_output");
     f_output(x) = f_input(x);
     f_output(1) = 0.f;
+    // XXX: if we do input(1) Halide returns a float
+    // which means it is impossible to propagate to input, so we need a surrogate
     f_output(2) = f_input(1);
 
     Func f_loss("f_loss");
@@ -1773,7 +1946,7 @@ void test_sparse_update() {
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
-    Buffer<float> d_input = adjoints[FuncKey{f_input.name(), -1}].realize(3);
+    Buffer<float> d_input = adjoints[FuncKey{input.name(), -1}].realize(3);
     CMP(d_input(0), 1.0f);
     CMP(d_input(1), 1.0f);
     CMP(d_input(2), 0.0f);
@@ -1783,12 +1956,10 @@ void test_rdom_update() {
     Var x("x");
     float input_data[] = {1.0f, 2.0f, 3.0f};
     Buffer<float> input(input_data, 3, "input");
-    Func f_input("f_input");
-    f_input(x) = input(x);
     Func f_output("f_output");
     RDom r0(1, 2), r1(3, 4);
-    f_output(x) = f_input(x);
-    f_output(r0) = f_input(r0 - 1);
+    f_output(x) = input(x);
+    f_output(r0) = input(r0 - 1);
     f_output(r1) = 0.f;
 
     Func f_loss("f_loss");
@@ -1798,7 +1969,7 @@ void test_rdom_update() {
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
-    Buffer<float> d_input = adjoints[FuncKey{f_input.name(), -1}].realize(3);
+    Buffer<float> d_input = adjoints[FuncKey{input.name(), -1}].realize(3);
     CMP(d_input(0), 2.0f);
     CMP(d_input(1), 1.0f);
     CMP(d_input(2), 0.0f);
@@ -1808,9 +1979,7 @@ void test_repeat_edge() {
     Var x("x");
     float input_data[] = {1.f, 2.f};
     Buffer<float> input(input_data, 2, "input");
-    Func f_input("f_input");
-    f_input(x) = input(x);
-    Func clamped = BoundaryConditions::repeat_edge(f_input, {{0, 2}});
+    Func clamped = BoundaryConditions::repeat_edge(input);
     Func blur("blur");
     blur(x) = clamped(x) + clamped(x + 1);
     RDom r(0, 3);
@@ -1822,7 +1991,7 @@ void test_repeat_edge() {
     // loss = (i0 + i1) + (i1 + i1) + (i1 + i1) = i0 + 5 * i1
 
     Buffer<float> d_blur_buf = blur.realize(3);
-    Buffer<float> d_input_buf = adjoints[FuncKey{f_input.name(), -1}].realize(2);
+    Buffer<float> d_input_buf = adjoints[FuncKey{input.name(), -1}].realize(2);
     // d loss / d i0 = 1
     // d loss / d i1 = 5
     CMP(d_input_buf(0), 1.f);
@@ -1833,15 +2002,13 @@ void test_second_order() {
     Var x("x");
     float input_data[] = {1.f};
     Buffer<float> input(input_data, 1, "input");
-    Func f_input("f_input");
-    f_input(x) = input(x);
     Func polynomial("polynomial");
     // x^2 + 3x + 4.f
-    polynomial(x) = f_input(x) * f_input(x) + 3.f * f_input(x) + 4.f;
+    polynomial(x) = input(x) * input(x) + 3.f * input(x) + 4.f;
     Derivative d = propagate_adjoints(polynomial);
-    Func d_input = d.adjoints[FuncKey{f_input.name(), -1}];
+    Func d_input = d.adjoints[FuncKey{input.name(), -1}];
     Derivative d2 = propagate_adjoints(d_input);
-    Func d2_input = d2.adjoints[FuncKey{f_input.name(), -1}];
+    Func d2_input = d2.adjoints[FuncKey{input.name(), -1}];
 
     Buffer<float> buf = d_input.realize(1);
     Buffer<float> buf2 = d2_input.realize(1);
@@ -1856,10 +2023,8 @@ void test_implicit_vars() {
     Var x("x");
     float input_data[] = {1.f, 2.f};
     Buffer<float> input(input_data, 2, "input");
-    Func f_input("f_input");
-    f_input(x) = input(x);
     Func copy("copy");
-    copy(_) = f_input(_);
+    copy(_) = input(_);
     RDom r(0, 2);
     Func f_loss("f_loss");
     f_loss() = 0.f;
@@ -1867,7 +2032,7 @@ void test_implicit_vars() {
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
-    Buffer<float> d_input_buf = adjoints[FuncKey{f_input.name(), -1}].realize(2);
+    Buffer<float> d_input_buf = adjoints[FuncKey{input.name(), -1}].realize(2);
     CMP(d_input_buf(0), 1.f);
     CMP(d_input_buf(1), 1.f);
     Buffer<float> d_copy_buf = adjoints[FuncKey{copy.name(), -1}].realize(2);
@@ -1879,10 +2044,8 @@ void test_tuple() {
     Var x("x");
     float input_data[] = {1.f, 2.f, 3.f};
     Buffer<float> input(input_data, 3, "input");
-    Func f_input("f_input");
-    f_input(x) = input(x);
     Func tuple("tuple");
-    tuple(x) = Tuple(f_input(x), f_input(x + 1));
+    tuple(x) = Tuple(input(x), input(x + 1));
     tuple(x) += Tuple(1.f, 1.f);
     Func reduce("reduce");
     reduce(x) = tuple(x)[0] + tuple(x)[1];
@@ -1908,7 +2071,7 @@ void test_tuple() {
     CMP(d_tuple_buf_1(0), 1.f);
     CMP(d_tuple_buf_1(1), 1.f);
 
-    Buffer<float> d_input_buf = adjoints[FuncKey{f_input.name(), -1}].realize(3);
+    Buffer<float> d_input_buf = adjoints[FuncKey{input.name(), -1}].realize(3);
     CMP(d_input_buf(0), 1.f);
     CMP(d_input_buf(1), 2.f);
     CMP(d_input_buf(2), 1.f);
@@ -1918,12 +2081,10 @@ void test_floor_ceil() {
     Var x("x");
     float input_data[] = {1.f, 2.f, 3.f};
     Buffer<float> input(input_data, 3, "input");
-    Func f_input("f_input");
-    f_input(x) = input(x);
     Func floor_output("floor_output");
-    floor_output(x) = f_input(cast<int>(floor(x / 4.f)));
+    floor_output(x) = input(cast<int>(floor(x / 4.f)));
     Func ceil_output("ceil_output");
-    ceil_output(x) = f_input(cast<int>(ceil(x / 4.f)));
+    ceil_output(x) = input(cast<int>(ceil(x / 4.f)));
     Func output("output");
     output(x) = ceil_output(x) + floor_output(x);
     RDom r(0, 8);
@@ -1931,14 +2092,12 @@ void test_floor_ceil() {
     f_loss() = 0.f;
     f_loss() += output(r.x);
     Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
     // floor_output(0~3) == input[0]
     // floor_output(4~7) == input[1]
     // ceil_output(0) == input[0]
     // ceil_output(1~4) == input[1]
     // ceil_output(5~7) = input[2]
-
-    Buffer<float> d_input_buf = adjoints[FuncKey{f_input.name(), -1}].realize(3);
+    Buffer<float> d_input_buf = d(input).realize(3);
 
     CMP(d_input_buf(0), 5.f);
     CMP(d_input_buf(1), 8.f);
@@ -1951,27 +2110,45 @@ void test_downsampling() {
     for (int i = 0; i < 10; i++) {
         input(i) = float(i);
     }
-    Func f_input("f_input");
-    f_input(x) = input(x);
     Func output("output");
     RDom r(0, 4);
     output(x) = 0.f;
-    output(x) += f_input(4 * x + r);
+    output(x) += input(4 * x + r);
     RDom r_loss(0, 2);
     Func f_loss("f_loss");
     f_loss() = 0.f;
     f_loss() += output(r_loss);
     Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
     // output(0) = \sum input(0~4)
     // output(1) = \sum input(5~8)
-    Buffer<float> d_input_buf = adjoints[FuncKey{f_input.name(), -1}].realize(10);
+    Buffer<float> d_input_buf = d(input).realize(10);
 
     for (int i = 0; i < 8; i++) {
         CMP(d_input_buf(i), 1.f);
     }
     CMP(d_input_buf(8), 0.f);
     CMP(d_input_buf(9), 0.f);
+}
+
+void test_forward() {
+    Var x("x");
+    Buffer<float> input(10);
+    for (int i = 0; i < 10; i++) {
+        input(i) = float(i);
+    }
+    Func output("output");
+    RDom r(0, 2);
+    output(x) = 0.f;
+    output(x) += input(x + r);
+    Func d_input("d_input");
+    d_input(x) = 1.f;
+    Func d_output = propagate_tangents(output, {{input.name(), d_input}});
+    // d_output(x) = \sum d_input(x + r)
+    Buffer<float> d_output_buf = d_output.realize(5);
+
+    for (int i = 0; i < 5; i++) {
+        CMP(d_output_buf(i), 2.f);
+    }
 }
 
 void derivative_test() {
@@ -1994,6 +2171,7 @@ void derivative_test() {
     test_tuple();
     test_floor_ceil();
     test_downsampling();
+    test_forward();
     debug(0) << "Derivative test passed\n";
 }
 

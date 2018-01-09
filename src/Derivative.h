@@ -27,6 +27,14 @@ struct Derivative {
         }
         return it->second;
     }
+
+    Func operator()(const Buffer<> &buffer) const {
+        auto it = adjoints.find(FuncKey{buffer.name(), -1});
+        if (it == adjoints.end()) {
+            return Func();
+        }
+        return it->second;
+    }
 };
 
 // Bounds are {min, max}
@@ -36,6 +44,9 @@ Derivative propagate_adjoints(const Func &output,
 Derivative propagate_adjoints(const Func &output,
                               const Buffer<float> &adjoint);
 Derivative propagate_adjoints(const Func &output);
+Func propagate_tangents(const Func &output,
+                        const std::map<std::string, Func> &tangents);
+
 struct PrintFuncOptions {
     bool ignore_non_adjoints = false;
     bool ignore_bc = false;
