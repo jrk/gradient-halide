@@ -985,8 +985,9 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     if (dim_width == -1 && rvar_extents[rvar_id] >= tile_width) {
                         dim_width = rvar_id;
                     } else if (dim_height == -1 && rvar_extents[rvar_id] >= tile_height) {
-                        assert(dim_width != -1);
-                        dim_height = rvar_id;
+                        if (dim_width != -1) {
+                          dim_height = rvar_id;
+                        }
                         break;
                     }
                 }
@@ -1007,20 +1008,26 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         std::vector<VarOrRVar> new_order;
                         new_order.push_back(ryi);
                         new_order.push_back(xi);
-                        new_order.push_back(xo);
-                        new_order.push_back(yo);
-                        for (const auto &arg : func.args()) {
-                            new_order.push_back(arg);
-                        }
                         Var tile_index;
+                        new_order.push_back(tile_index);  // We want the tile somewhat inner, to avoid warp memory issues
+                        // new_order.push_back(yo);
+                        for (const auto &arg : interm.update_args()) {
+                            const Variable * var = arg.as<Variable>();
+                            if (var && !var->reduction_domain.defined()) {
+                                if (var->name == xi.name() || var->name == xo.name() || var->name == yo.name()) {
+                                  continue;
+                                }
+                                new_order.push_back(Var(var->name));
+                            }
+                        }
                         interm.compute_root()
                               .reorder(xi, xo, yo)
                               .fuse(xo, yo, tile_index)
                               .gpu_blocks(tile_index)
                               .gpu_threads(xi);
                         interm.update()
-                              .reorder(new_order)
                               .fuse(xo, yo, tile_index)
+                              .reorder(new_order)
                               .gpu_blocks(tile_index)
                               .gpu_threads(xi);
                     } else {
@@ -1037,9 +1044,15 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         Var tile_index;
                         std::vector<VarOrRVar> new_order;
                         new_order.push_back(ryi);
-                        new_order.push_back(xi);
-                        for (const auto &arg : func.args()) {
-                            new_order.push_back(arg);
+                        // new_order.push_back(xi);
+                        for (const auto &arg : interm.update_args()) {
+                            const Variable * var = arg.as<Variable>();
+                            if (var && !var->reduction_domain.defined()) {
+                                if (var->name == xo.name() || var->name == yo.name()) {
+                                  continue;
+                                }
+                                new_order.push_back(Var(var->name));
+                            }
                         }
                         new_order.push_back(tile_index);
                         interm.compute_root()
