@@ -1183,8 +1183,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 for (int rvar_id = 0; rvar_id < (int)rvars.size(); rvar_id++) {
                     if (dim_width == -1 && rvar_extents[rvar_id] >= tile_width) {
                         dim_width = rvar_id;
-                    } else if (dim_height == -1 && rvar_extents[rvar_id] >= tile_height) {
-                        assert(dim_width != -1);
+                    } else if (dim_width != -1 && dim_height == -1 && rvar_extents[rvar_id] >= tile_height) {
                         dim_height = rvar_id;
                         break;
                     }
