@@ -1208,8 +1208,12 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         new_order.push_back(xi);
                         new_order.push_back(xo);
                         new_order.push_back(yo);
-                        for (const auto &arg : func.args()) {
-                            new_order.push_back(arg);
+                        for (const auto &arg : interm.update_args()) {
+                            const Variable *var = arg.as<Variable>();
+                            if (var != nullptr && !var->reduction_domain.defined() &&
+                                    var->name != xi.name() && var->name != xo.name() && var->name != yo.name()) {
+                                new_order.push_back(Var(var->name));
+                            }
                         }
                         Var tile_index;
                         interm.compute_root()
@@ -1237,8 +1241,12 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         std::vector<VarOrRVar> new_order;
                         new_order.push_back(ryi);
                         new_order.push_back(xi);
-                        for (const auto &arg : func.args()) {
-                            new_order.push_back(arg);
+                        for (const auto &arg : interm.update_args()) {
+                            const Variable *var = arg.as<Variable>();
+                            if (var != nullptr && !var->reduction_domain.defined() &&
+                                    var->name != xi.name() && var->name != xo.name() && var->name != yo.name()) {
+                                new_order.push_back(Var(var->name));
+                            }
                         }
                         new_order.push_back(tile_index);
                         interm.compute_root()
