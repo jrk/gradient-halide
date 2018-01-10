@@ -4545,21 +4545,44 @@ private:
                 return call;
             } else if (!arg.same_as(op->args[0])) {
                 return Call::make(op->type, op->name, {arg}, op->call_type);
-            } else if (add != nullptr &&
-                       is_const(add->b) &&
-                       Int(64).can_represent(*as_const_float(add->b))) {
+            } else if (add != nullptr) {
                 // e.g. floor(x + int_const) = floor(x) + int_const
-                if (op->name == "floor_f32") {
-                    return floor(add->a) + add->b;
-                } else if (op->name == "ceil_f32") {
-                    return ceil(add->a) + add->b;
-                } else if (op->name == "round_f32") {
-                    return round(add->a) + add->b;
-                } else if (op->name == "trunc_f32") {
-                    return trunc(add->a) + add->b;
-                } else {
-                    return op;
+                // e.g. floor(int_x + float_const) = int_x + floor(int_const)
+                if (is_const(add->b) &&
+                       Int(64).can_represent(*as_const_float(add->b))) {
+                    if (op->name == "floor_f32") {
+                        return floor(add->a) + add->b;
+                    } else if (op->name == "ceil_f32") {
+                        return ceil(add->a) + add->b;
+                    } else if (op->name == "round_f32") {
+                        return round(add->a) + add->b;
+                    } else if (op->name == "trunc_f32") {
+                        return trunc(add->a) + add->b;
+                    } else {
+                        return op;
+                    }
                 }
+                const Mul *mul = add->a.as<Mul>();
+                if (mul != nullptr) {
+                    if (is_const(mul->b) &&
+                            Int(64).can_represent(*as_const_float(mul->b))) {
+                        const Cast *cast = mul->a.as<Cast>();
+                        if (cast->value.type().is_int()) {
+                            if (op->name == "floor_f32") {
+                                return mul->a * mul->b + floor(add->b);
+                            } else if (op->name == "ceil_f32") {
+                                return mul->a * mul->b + ceil(add->b);
+                            } else if (op->name == "round_f32") {
+                                return mul->a * mul->b + round(add->b);
+                            } else if (op->name == "trunc_f32") {
+                                return mul->a * mul->b + trunc(add->b);
+                            } else {
+                                return op;
+                            }
+                        }
+                    }
+                }
+                return op;
             } else {
                 return op;
             }
