@@ -40,7 +40,7 @@ std::pair<bool, Expr> solve_inverse(Expr expr,
                                     const std::string &var);
 std::set<std::string> find_dependency(const Func &func);
 bool is_pointwise(const Func &caller, const Func &callee);
-std::map<std::string, Buffer<>> find_buffers(const Func &func);
+std::map<std::string, int> find_buffers_dimensions(const Func &func);
 
 }
 }

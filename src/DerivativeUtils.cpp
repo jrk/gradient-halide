@@ -530,11 +530,11 @@ bool is_pointwise(const Func &caller, const Func &callee) {
     return checker.check(caller, callee);
 }
 
-struct BufferFinder : public IRGraphVisitor {
+struct BufferDimensionsFinder : public IRGraphVisitor {
 public:
     using IRGraphVisitor::visit;
-    std::map<std::string, Buffer<>> find(const Func &func) {
-        buffers.clear();
+    std::map<std::string, int> find(const Func &func) {
+        buffers_dimensions.clear();
         std::vector<Expr> vals = func.values().as_vector();
         for (Expr val : vals) {
             val.accept(this);
@@ -545,21 +545,26 @@ public:
                 val.accept(this);
             }
         }
-        return buffers;
+        return buffers_dimensions;
     }
 
     void visit(const Call *op) {
         IRGraphVisitor::visit(op);
         if (op->call_type == Call::Image) {
-            buffers[op->name] = op->image;
+            if (op->image.defined()) {
+                buffers_dimensions[op->name] = op->image.dimensions();
+            } else {
+                assert(op->param.defined());
+                buffers_dimensions[op->name] = op->param.dimensions();
+            }
         }
     }
 
-    std::map<std::string, Buffer<>> buffers;
+    std::map<std::string, int> buffers_dimensions;
 };
 
-std::map<std::string, Buffer<>> find_buffers(const Func &func) {
-    BufferFinder finder;
+std::map<std::string, int> find_buffers_dimensions(const Func &func) {
+    BufferDimensionsFinder finder;
     return finder.find(func);
 }
 

@@ -102,16 +102,16 @@ void ReverseAccumulationVisitor::propagate_adjoints(
         }
     }
     // Also create stubs for buffers
-    std::map<std::string, Buffer<>> buffers;
+    std::map<std::string, int> buffers_dimensions;
     for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
         const Func &func = funcs[func_id];
-        std::map<std::string, Buffer<>> func_buffers = find_buffers(func);
-        buffers.insert(func_buffers.begin(), func_buffers.end());
+        std::map<std::string, int> func_buffers_dimensions = find_buffers_dimensions(func);
+        buffers_dimensions.insert(func_buffers_dimensions.begin(), func_buffers_dimensions.end());
     }
-    for (const auto &it : buffers) {
+    for (const auto &it : buffers_dimensions) {
         Func adjoint_func(it.first + "_d__");
         std::vector<Var> args;
-        for (int i = 0; i < it.second.dimensions(); i++) {
+        for (int i = 0; i < it.second; i++) {
             args.push_back(Var());
         }
         adjoint_func(args) = 0.f;
