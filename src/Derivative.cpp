@@ -422,8 +422,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         Func& func_to_update = adjoint_funcs[func_key];
         assert(func_to_update.dimensions() == (int)lhs.size());
 
-        bool debug_flag = func_to_update.name() == "loss_2_d_def___ce_0_d_def__" ||
-            func_to_update.name() == "loss_1_d_def__$1";
+        bool debug_flag = false;//func_to_update.name() == "loss_2_d_def___ce_0_d_def__" ||
+            //func_to_update.name() == "loss_1_d_def__$1";
 
         if (debug_flag) {
             debug(0) << "Scattering to " << op->name << "\n";
@@ -1065,7 +1065,13 @@ void simple_autoschedule(std::vector<Func> &outputs,
                          const SimpleAutoscheduleOptions &options,
                          const std::set<std::string> &dont_inline,
                          const std::set<std::string> &skip_functions) {
-    assert(outputs.size() == output_bounds.size());
+    user_assert(outputs.size() == output_bounds.size()) <<
+        "[simple_autoschedule] outputs size and output_bounds size don't match \n";
+    for (int i = 0; i < (int)output_bounds.size(); i++) {
+        user_assert(outputs[i].dimensions() == (int)output_bounds[i].size()) <<
+            "[simple_autoschedule] outputs dimensionality don't match with output_bounds. " <<
+            outputs[i].name() << "\n";
+    }
     using namespace Internal;
     std::vector<FuncBounds> output_bounds_expr;
     for (const auto &bounds : output_bounds) {

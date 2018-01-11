@@ -299,9 +299,12 @@ std::map<std::string, Box> inference_bounds(const std::vector<Func> &funcs,
     // Traverse from the consumers to the producers
     for (auto it = order.rbegin(); it != order.rend(); it++) {
         Func func = Func(env[*it]);
+        assert(bounds.find(*it) != bounds.end());
         const Box &current_bounds = bounds[*it];
+        assert(func.args().size() == current_bounds.size());
         for (int i = 0; i < (int)current_bounds.size(); i++) {
-            scope.push(func.args()[i].name(), current_bounds[i]);
+            std::string arg = func.args()[i].name();
+            scope.push(arg, current_bounds[i]);
         }
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
             Tuple tuple = update_id == -1 ? func.values() : func.update_values(update_id);
