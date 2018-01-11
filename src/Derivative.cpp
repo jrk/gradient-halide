@@ -212,8 +212,8 @@ void ReverseAccumulationVisitor::propagate_adjoints(
 
             // TODO: replace let_var_mapping with Scope
             // Gather let variables
-            //let_var_mapping.clear();
-            //let_variables.clear();
+            let_var_mapping.clear();
+            let_variables.clear();
             for (auto it = expr_list.begin(); it != expr_list.end(); it++) {
                 Expr expr = *it;
                 if (expr.get()->node_type == IRNodeType::Let) {
