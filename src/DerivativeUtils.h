@@ -41,6 +41,7 @@ std::pair<bool, Expr> solve_inverse(Expr expr,
 std::set<std::string> find_dependency(const Func &func);
 bool is_pointwise(const Func &caller, const Func &callee);
 std::map<std::string, int> find_buffers_dimensions(const Func &func);
+std::set<std::string> find_implicit_variables(Expr expr);
 
 }
 }

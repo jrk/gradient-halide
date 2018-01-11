@@ -568,5 +568,30 @@ std::map<std::string, int> find_buffers_dimensions(const Func &func) {
     return finder.find(func);
 }
 
+struct ImplicitVariablesFinder : public IRGraphVisitor {
+public:
+    using IRGraphVisitor::visit;
+    std::set<std::string> find(Expr expr) {
+        implicit_variables.clear();
+        expr.accept(this);
+        return implicit_variables;
+    }
+
+    void visit(const Variable *op) {
+        IRGraphVisitor::visit(op);
+        if (Var::is_implicit(op->name)) {
+            implicit_variables.insert(op->name);
+        }
+    }
+
+    std::set<std::string> implicit_variables;
+};
+
+
+std::set<std::string> find_implicit_variables(Expr expr) {
+    ImplicitVariablesFinder finder;
+    return finder.find(expr);
+}
+
 } // namespace Internal
 } // namespace Halide

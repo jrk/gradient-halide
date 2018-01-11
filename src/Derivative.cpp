@@ -87,14 +87,21 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             Func adjoint_func(func.name() + "_" + std::to_string(update_id + 1) + "_d_def__");
             bool is_final_output = func_id == (int)funcs.size() - 1 &&
                                    update_id == func.num_update_definitions() - 1;
+            std::vector<Var> args = func.args();
+            for (auto &arg : args) {
+                if (arg.is_implicit()) {
+                    // replace implicit variables with non implicit ones
+                    arg = Var();
+                }
+            }
             if (is_final_output) {
-                adjoint_func(func.args()) = adjoint(func.args());
+                adjoint_func(args) = adjoint(args);
             } else {
                 if (func.values().size() == 1) {
-                    adjoint_func(func.args()) = 0.f;
+                    adjoint_func(args) = 0.f;
                 } else {
                     std::vector<Expr> init(func.values().size(), Expr(0.f));
-                    adjoint_func(func.args()) = Tuple(init);
+                    adjoint_func(args) = Tuple(init);
                 }
             }
             FuncKey func_key{func.name(), update_id};
@@ -161,8 +168,14 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 Func &next_adjoint_func = adjoint_funcs[next_func_key];
                 std::vector<Var> next_args = next_adjoint_func.args();
                 std::vector<Expr> update_args = func.update_args(update_id);
+                // Replace implicit variables
+                for (auto &arg : update_args) {
+                    std::set<std::string> implicit_variables = find_implicit_variables(arg);
+                    for (const auto &var : implicit_variables) {
+                        arg = substitute(var, next_args[Var::implicit_index(var)], arg);
+                    }
+                }
                 // Check if next_args are the same as update_args
-                // e.g.
                 // If they are the same simply set everything to zero
                 bool is_noop = true;
                 for (int i = 0 ; i < (int)next_args.size(); i++) {
@@ -199,12 +212,14 @@ void ReverseAccumulationVisitor::propagate_adjoints(
 
             // TODO: replace let_var_mapping with Scope
             // Gather let variables
-            let_var_mapping.clear();
-            let_variables.clear();
+            //let_var_mapping.clear();
+            //let_variables.clear();
             for (auto it = expr_list.begin(); it != expr_list.end(); it++) {
                 Expr expr = *it;
                 if (expr.get()->node_type == IRNodeType::Let) {
                     const Let *op = expr.as<Let>();
+                    // Assume Let variables are unique
+                    assert(let_var_mapping.find(op->name) == let_var_mapping.end());
                     let_var_mapping[op->name] = op->value;
                     let_variables.push_back(op->name);
                 }
@@ -217,7 +232,8 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 update_args = func.update_args(update_id);
             } else {
                 update_args.reserve(func.args().size());
-                for (const auto &var : func.args()) {
+                Func adjoint_func = adjoint_funcs[func_key];
+                for (const auto &var : adjoint_func.args()) {
                     update_args.push_back(var);
                 }
             }
@@ -231,6 +247,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 // Propagate adjoints
                 it->accept(this);
             }
+            expr_adjoints.clear();
         }
     }
 }
@@ -405,7 +422,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         Func& func_to_update = adjoint_funcs[func_key];
         assert(func_to_update.dimensions() == (int)lhs.size());
 
-        bool debug_flag = false;//func_to_update.name() == "f_input_0_d_def__";
+        bool debug_flag = func_to_update.name() == "loss_2_d_def___ce_0_d_def__" ||
+            func_to_update.name() == "loss_1_d_def__$1";
 
         if (debug_flag) {
             debug(0) << "Scattering to " << op->name << "\n";
@@ -415,12 +433,18 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
             debug(0) << "\n";
             debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
+            debug(0) << "current_func:" << "\n";
+            PrintFuncOptions options;
+            options.depth = 1;
+            print_func(current_func, options);
         }
 
         // Gather argument & bounds information
         // current_args are the pure variables
         // current_update_args are the actual updates at left hand side
-        std::vector<Var> current_args = current_func.args();
+        Func current_adjoint_func =
+            adjoint_funcs[FuncKey{current_func.name(), current_update_id}];
+        std::vector<Var> current_args = current_adjoint_func.args();
         std::vector<Expr> current_update_args;
         if (current_update_id >= 0) {
             current_update_args = current_func.update_args(current_update_id);
@@ -431,6 +455,20 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
         }
         const Box &current_bounds = func_bounds[current_func.name()];
+
+        // Replace implicit variables
+        for (auto &arg : lhs) {
+            std::set<std::string> implicit_variables = find_implicit_variables(arg);
+            for (const auto &var : implicit_variables) {
+                arg = substitute(var, current_args[Var::implicit_index(var)], arg);
+            }
+        }
+        {
+            std::set<std::string> implicit_variables = find_implicit_variables(adjoint);
+            for (const auto &var : implicit_variables) {
+                adjoint = substitute(var, current_args[Var::implicit_index(var)], adjoint);
+            }
+        }
 
         // We want to do this:
         // func_to_update(op->args) += adjoint(current_update_args);
@@ -448,7 +486,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             new_args_set.insert(new_args.back().name());
         }
 
-        std::vector<bool> canonicalized(lhs.size(), false);
         // We canonicalize the left hand side arguments (op->args) so that it's always x, y, z, ...
         //
         // Given:
@@ -464,8 +501,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // inter-dependencies like:
         // g(x, y) = f(x*y, x+y)
         // can't be simplified. In principle this can be inverted by solving a system of equations.
-
         // (TODO: make this a routine? also the invalidated vars?)
+        std::vector<bool> canonicalized(lhs.size(), false);
         std::set<std::string> canonicalized_vars;
         for (int i = 0; i < (int)lhs.size(); i++) {
             // Gather all pure variables at op->args[i], substitute them with new_args
@@ -509,7 +546,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             Expr lhs_arg = lhs[lhs_id];
             if (!canonicalized[lhs_id]) {
                 std::vector<std::string> variables =
-                    gather_variables(lhs_arg, current_func.function().args());
+                    gather_variables(lhs_arg, current_adjoint_func.function().args());
                 RDom r(bounds);
                 for (int var_id = 0; var_id < (int)variables.size(); var_id++) {
                     for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
@@ -556,7 +593,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
         }
 
-        std::vector<Var> func_to_update_args = func_to_update.args();
         // General scattering simplification rules
         // For each expression in lhs, check if it is an expression of a single rvar and
         // spans the same interval of the function's bound
@@ -570,6 +606,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // e.g.
         // f(4 * r.x + r.y) = g(r.x) + h(4 * r.x + r.y)
         // => f(x) = g(x/4) + h(x)
+        std::vector<Var> func_to_update_args = func_to_update.args();
         for (int i = 0; i < (int)lhs.size(); i++) {
             Expr lhs_arg = substitute_in_all_lets(lhs[i]);
             const Variable *var = lhs_arg.as<Variable>();
@@ -724,6 +761,16 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             return true;
         };
 
+        if (debug_flag) {
+            debug(0) << "func_to_update.name():" << func_to_update.name() << "\n";
+            debug(0) << "lhs after canonicalization:";
+            for (const auto &arg : lhs) {
+                debug(0) << " " << arg;
+            }
+            debug(0) << "\n";
+            debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
+        }
+
         // TODO: maybe do some analysis on lhs to avoid applying boundary conditions to
         //       function calls in adjoint
         if (!can_merge()) {
@@ -768,18 +815,10 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
 
         if (debug_flag) {
-            debug(0) << "func_to_update.name():" << func_to_update.name() << "\n";
-            debug(0) << "lhs after canonicalization:";
-            for (const auto &arg : lhs) {
-                debug(0) << " " << arg;
-            }
-            debug(0) << "\n";
-            debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
-            print_func(func_to_update);
+            //print_func(func_to_update);
         }
     } else {
-        internal_assert(op->call_type == Call::Intrinsic ||
-                        op->call_type == Call::PureIntrinsic);
+        internal_assert(op->is_intrinsic());
         if (op->is_intrinsic(Call::abs)) {
             accumulate(op->args[0], adjoint*select(op->args[0] > 0, 1.0f, -1.0f));
         } else if (op->is_intrinsic(Call::lerp)) {
@@ -860,7 +899,7 @@ Expr forward_accumulation(const Expr &expr,
             return Expr(Cast::make(op->type, Expr(0)));
         }
     } else if (const Call *op = expr.as<Call>()) {
-        if (op->call_type == Call::Extern) {
+        if (op->is_extern()) {
             if (op->name == "exp_f32") {
                 // d/dx exp(f(x)) = exp(f(x)) f'
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
@@ -902,8 +941,7 @@ Expr forward_accumulation(const Expr &expr,
                 return Expr(Cast::make(op->type, Expr(0)));
             }
         } else {
-            internal_assert(op->call_type == Call::Intrinsic ||
-                            op->call_type == Call::PureIntrinsic);
+            internal_assert(op->is_intrinsic());
             if (op->is_intrinsic(Call::abs)) {
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return select(op->args[0] > 0, d, -d);
@@ -1027,6 +1065,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                          const SimpleAutoscheduleOptions &options,
                          const std::set<std::string> &dont_inline,
                          const std::set<std::string> &skip_functions) {
+    assert(outputs.size() == output_bounds.size());
     using namespace Internal;
     std::vector<FuncBounds> output_bounds_expr;
     for (const auto &bounds : output_bounds) {
@@ -1210,7 +1249,8 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         for (const auto &arg : interm.update_args()) {
                             const Variable *var = arg.as<Variable>();
                             if (var != nullptr && !var->reduction_domain.defined() &&
-                                    var->name != xi.name() && var->name != xo.name() && var->name != yo.name()) {
+                                    var->name != xi.name() && var->name != xo.name() &&
+                                    var->name != yo.name()) {
                                 new_order.push_back(Var(var->name));
                             }
                         }
@@ -1243,7 +1283,8 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         for (const auto &arg : interm.update_args()) {
                             const Variable *var = arg.as<Variable>();
                             if (var != nullptr && !var->reduction_domain.defined() &&
-                                    var->name != xi.name() && var->name != xo.name() && var->name != yo.name()) {
+                                    var->name != xi.name() && var->name != xo.name() &&
+                                    var->name != yo.name()) {
                                 new_order.push_back(Var(var->name));
                             }
                         }
@@ -2137,6 +2178,37 @@ void test_downsampling() {
     CMP(d_input_buf(9), 0.f);
 }
 
+void test_transpose() {
+    // TODO: occasionally this gives nan, investigate why
+    Var x("x"), y("y");
+    Buffer<float> input(5, 5);
+    for (int i = 0; i < 5; i++) {
+        for (int j = 0; j < 5; j++) {
+            input(i + j) = float(i + j);
+        }
+    }
+    Buffer<float> target(5, 5);
+    for (int i = 0; i < 5; i++) {
+        for (int j = 0; j < 5; j++) {
+            target(i + j) = float(i * j);
+        }
+    }
+    Func output("output");
+    output(x, y) = input(y, x);
+    RDom r(0, 5, 0, 5);
+    Func loss("loss");
+    loss() = 0.f;
+    loss() += pow(output(r.x, r.y) - target(r.x, r.y), 2);
+    Derivative d = propagate_adjoints(loss);
+    Buffer<float> d_input_buf = d(input).realize(5, 5);
+    for (int i = 0; i < 5; i++) {
+        for (int j = 0; j < 5; j++) {
+            std::cerr << "i:" << i << ", j:" << j << std::endl;
+            CMP(d_input_buf(i, j), 2.f * (input(i, j) - target(j, i)));
+        }
+    }
+}
+
 void test_forward() {
     Var x("x");
     Buffer<float> input(10);
@@ -2178,6 +2250,7 @@ void derivative_test() {
     test_tuple();
     test_floor_ceil();
     test_downsampling();
+    //test_transpose();
     test_forward();
     debug(0) << "Derivative test passed\n";
 }
