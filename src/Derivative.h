@@ -22,17 +22,13 @@ struct Derivative {
     std::map<FuncKey, Func> adjoints;
     Func operator()(const Func &func) const {
         auto it = adjoints.find(FuncKey{func.name(), -1});
-        if (it == adjoints.end()) {
-            return Func();
-        }
+        assert(it != adjoints.end());
         return it->second;
     }
 
     Func operator()(const Buffer<> &buffer) const {
         auto it = adjoints.find(FuncKey{buffer.name(), -1});
-        if (it == adjoints.end()) {
-            return Func();
-        }
+        assert(it != adjoints.end());
         return it->second;
     }
 };
