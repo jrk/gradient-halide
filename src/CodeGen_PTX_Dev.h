@@ -59,6 +59,7 @@ protected:
     void visit(const Allocate *);
     void visit(const Free *);
     void visit(const AssertStmt *);
+    void visit(const Store *);
     // @}
 
     std::string march() const;
@@ -71,6 +72,8 @@ protected:
     /** Map from simt variable names (e.g. foo.__block_id_x) to the llvm
      * ptx intrinsic functions to call to get them. */
     std::string simt_intrinsic(const std::string &name);
+
+    Scope<> internal_allocations;
 };
 
 }}
