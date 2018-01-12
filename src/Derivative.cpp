@@ -422,8 +422,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         Func& func_to_update = adjoint_funcs[func_key];
         assert(func_to_update.dimensions() == (int)lhs.size());
 
-        bool debug_flag = false;//func_to_update.name() == "loss_2_d_def___ce_0_d_def__" ||
-            //func_to_update.name() == "loss_1_d_def__$1";
+        bool debug_flag = func_key.first == "f_input";
 
         if (debug_flag) {
             debug(0) << "Scattering to " << op->name << "\n";
@@ -1036,11 +1035,13 @@ Func propagate_tangents(const Func &output,
     transformed_funcs.reserve(order.size());
     std::map<std::string, Func> updated_tangents = tangents;
     for (const Func &func : funcs) {
-        Func transformed_func(func.name() + "_d");
+        Func transformed_func(func.name() + "_fwd");
         Tuple v = func.values();
         std::vector<Expr> tv;
         for (const Expr &e : v.as_vector()) {
-            tv.push_back(Internal::forward_accumulation(e, updated_tangents));
+            Expr new_expr = Internal::forward_accumulation(e, updated_tangents);
+            //new_expr = print_when(is_nan(new_expr) != 0, new_expr, std::string("NaN founds in ") + transformed_func.name());
+            tv.push_back(new_expr);
         }
         transformed_func(func.args()) = Tuple(tv);
         updated_tangents[func.name()] = transformed_func;
@@ -1048,7 +1049,9 @@ Func propagate_tangents(const Func &output,
             Tuple v = func.update_values(update_id);
             std::vector<Expr> tv;
             for (const Expr &e : v.as_vector()) {
-                tv.push_back(Internal::forward_accumulation(e, updated_tangents));
+                Expr new_expr = Internal::forward_accumulation(e, updated_tangents);
+                //new_expr = print_when(is_nan(new_expr) != 0, new_expr, std::string("NaN founds in ") + transformed_func.name());
+                tv.push_back(new_expr);
             }
             transformed_func(func.update_args(update_id)) = Tuple(tv);
             updated_tangents[func.name()] = transformed_func;
@@ -2073,6 +2076,65 @@ void test_second_order() {
     CMP(buf2(0), 2.f);
 }
 
+void test_second_order_conv() {
+    Var x("x");
+    Buffer<float> input(10, "input");
+    for (int i = 0; i < 10; i++) {
+        input(i) = float(i) / 10.f;
+    }
+    Buffer<float> target(10, "target");
+    for (int i = 0; i < 10; i++) {
+        target(i) = float(i + 1) / 10.f;
+    }
+    Buffer<float> kernel(3, "kernel");
+    kernel(0) = kernel(1) = kernel(2) = 1.f;
+    Func input_re = BoundaryConditions::repeat_edge(input);
+    RDom rc(0, 3);
+    Func conv("conv");
+    conv(x) = 0.f;
+    conv(x) += input_re(x + rc - 1) * kernel(rc);
+    RDom rl(0, 9);
+    Func loss0("loss0");
+    loss0() = 0.f;
+    loss0() += pow(conv(rl) - target(rl), 2.f);
+    Derivative d = propagate_adjoints(loss0);
+    Func d_input = d(input);
+    Func loss1("loss1");
+    loss1() = 0.f;
+    loss1() += d_input(rl);
+    Derivative d2 = propagate_adjoints(loss1);
+
+    Buffer<float> conv_buf = conv.realize(9);
+    Buffer<float> d_conv_buf = d(conv).realize(9);
+    // d_conv(x) = 2 * (conv(x) - target(x))
+    for (int i = 0; i < 9; i++) {
+        CMP(d_conv_buf(i), 2.f * (conv_buf(i) - target(i)));
+    }
+    // d_input(x) = d_conv(x + 1) + d_conv(x) + d_conv(x - 1)
+    Buffer<float> d_input_buf = d_input.realize(10);
+    CMP(d_input_buf(0), d_conv_buf(0) + d_conv_buf(1));
+    for (int i = 1; i < 8; i++) {
+        CMP(d_input_buf(i), d_conv_buf(i+1) + d_conv_buf(i) + d_conv_buf(i-1));
+    }
+    CMP(d_input_buf(8), d_conv_buf(7) + d_conv_buf(8));
+    CMP(d_input_buf(9), d_conv_buf(8));
+    print_func(d2(conv));
+    Buffer<float> d2_conv_buf = d2(conv).realize(9);
+    // d2_conv(x) = 6
+    for (int i = 0; i < 8; i++) {
+        CMP(d2_conv_buf(i), 6.f);
+    }
+    CMP(d2_conv_buf(8), 4.f);
+    // d2_input(x) = d2_conv(x + 1) + d2_conv(x) + d2_conv(x - 1)
+    Buffer<float> d2_input_buf = d2(input).realize(10);
+    CMP(d2_input_buf(0), d2_conv_buf(0) + d2_conv_buf(1));
+    for (int i = 1; i <= 7; i++) {
+        CMP(d2_input_buf(i), d2_conv_buf(i) + d2_conv_buf(i + 1) + d2_conv_buf(i - 1));
+    }
+    CMP(d2_input_buf(8), d2_conv_buf(8) + d2_conv_buf(7));
+    CMP(d2_input_buf(9), d2_conv_buf(7));
+}
+
 void test_implicit_vars() {
     Var x("x");
     float input_data[] = {1.f, 2.f};
@@ -2185,18 +2247,17 @@ void test_downsampling() {
 }
 
 void test_transpose() {
-    // TODO: occasionally this gives nan, investigate why
     Var x("x"), y("y");
     Buffer<float> input(5, 5);
     for (int i = 0; i < 5; i++) {
         for (int j = 0; j < 5; j++) {
-            input(i + j) = float(i + j);
+            input(i, j) = float(i + j);
         }
     }
     Buffer<float> target(5, 5);
     for (int i = 0; i < 5; i++) {
         for (int j = 0; j < 5; j++) {
-            target(i + j) = float(i * j);
+            target(i, j) = float(i * j);
         }
     }
     Func output("output");
@@ -2206,10 +2267,10 @@ void test_transpose() {
     loss() = 0.f;
     loss() += pow(output(r.x, r.y) - target(r.x, r.y), 2);
     Derivative d = propagate_adjoints(loss);
-    Buffer<float> d_input_buf = d(input).realize(5, 5);
+    Func d_input = d(input);
+    Buffer<float> d_input_buf = d_input.realize(5, 5);
     for (int i = 0; i < 5; i++) {
         for (int j = 0; j < 5; j++) {
-            std::cerr << "i:" << i << ", j:" << j << std::endl;
             CMP(d_input_buf(i, j), 2.f * (input(i, j) - target(j, i)));
         }
     }
@@ -2236,6 +2297,58 @@ void test_forward() {
     }
 }
 
+void test_reverse_forward() {
+    Var x("x");
+    Buffer<float> input(10, "input");
+    for (int i = 0; i < 10; i++) {
+        input(i) = float(i);
+    }
+    Buffer<float> target(10, "target");
+    for (int i = 0; i < 10; i++) {
+        target(i) = float(i + 1);
+    }
+    Buffer<float> kernel(2, "kernel");
+    kernel(0) = kernel(1) = 1.f;
+    Func input_re = BoundaryConditions::repeat_edge(input);
+    Func output("output");
+    RDom r(0, 2);
+    output(x) = 0.f;
+    output(x) += input_re(x + r) * kernel(r);
+    RDom ro(0, 9);
+    Func loss("loss");
+    loss() = 0.f;
+    loss() += pow(output(ro) - target(ro), 2);
+    Derivative d = propagate_adjoints(loss);
+    Buffer<float> output_buf = output.realize(9);
+    Func d_output = d(output);
+    // d_output(x) = 2 * (output(x) - target(x))
+    Buffer<float> d_output_buf = d_output.realize(9);
+    for (int i = 0; i < 9; i++) {
+        CMP(d_output_buf(i), 2.f * (output_buf(i) - target(i)));
+    }
+    Func d_input = d(input);
+    Buffer<float> d_input_buf = d_input.realize(10);
+    // d_input(x) = d_output(x) + d_output(x - 1)
+    CMP(d_input_buf(0), d_output_buf(0));
+    for (int i = 1; i < 9; i++) {
+        CMP(d_input_buf(i), d_output_buf(i) + d_output_buf(i - 1));
+    }
+    CMP(d_input_buf(9), d_output_buf(8));
+    Func d2_output = propagate_tangents(d_output, {{input.name(), d_input}});
+    Buffer<float> d2_output_buf = d2_output.realize(9);
+    // d2_output(x) = 2 * (d_input(x) + d_input(x + 1))
+    for (int i = 0; i < 9; i++) {
+        CMP(d2_output_buf(i), 2.f * (d_input_buf(i) + d_input_buf(i + 1)));
+    }
+    Func d2_input = propagate_tangents(d_input, {{input.name(), d_input}});
+    Buffer<float> d2_input_buf = d2_input.realize(10);
+    // d2_input(x) = d2_output(x) + d2_output(x - 1)
+    CMP(d2_input_buf(0), d2_output_buf(0));
+    for (int i = 1; i < 10; i++) {
+        CMP(d2_input_buf(i), d2_output_buf(i) + d2_output_buf(i - 1));
+    }   
+}
+
 void derivative_test() {
     test_simple_bounds_inference();
     test_simple_bounds_inference_update();
@@ -2252,12 +2365,14 @@ void derivative_test() {
     test_rdom_update();
     test_repeat_edge();
     test_second_order();
+    //test_second_order_conv();
     test_implicit_vars();
     test_tuple();
     test_floor_ceil();
     test_downsampling();
-    //test_transpose();
+    test_transpose();
     test_forward();
+    test_reverse_forward();
     debug(0) << "Derivative test passed\n";
 }
 
