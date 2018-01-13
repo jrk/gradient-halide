@@ -1,8 +1,11 @@
 #include "CodeGen_PTX_Dev.h"
 #include "CodeGen_Internal.h"
+#include "CSE.h"
+#include "ExprUsesVar.h"
 #include "IROperator.h"
 #include "IRPrinter.h"
 #include "Debug.h"
+#include "Simplify.h"
 #include "Target.h"
 #include "LLVM_Headers.h"
 #include "LLVM_Runtime_Linker.h"
@@ -189,6 +192,8 @@ void CodeGen_PTX_Dev::visit(const Allocate *alloc) {
     user_assert(!alloc->new_expr.defined()) << "Allocate node inside PTX kernel has custom new expression.\n" <<
         "(Memoization is not supported inside GPU kernels at present.)\n";
 
+    ScopedBinding<> bind(internal_allocations, alloc->name);
+
     if (alloc->name == "__shared") {
         // PTX uses zero in address space 3 as the base address for shared memory
         Value *shared_base = Constant::getNullValue(PointerType::get(i8_t, 3));
@@ -228,6 +233,28 @@ void CodeGen_PTX_Dev::visit(const AssertStmt *op) {
     // Discard the error message for now.
     Expr trap = Call::make(Int(32), "halide_ptx_trap", {}, Call::Extern);
     codegen(IfThenElse::make(!op->condition, Evaluate::make(trap)));
+}
+
+void CodeGen_PTX_Dev::visit(const Store *op) {
+    // Check for += to global and deploy the house atomics
+    if (!internal_allocations.contains(op->name) &&
+        expr_uses_var(op->value, op->name) &&
+        is_one(op->predicate) &&
+        op->value.type().is_scalar() &&
+        op->value.type().bits() >= 32) {
+        // It's a recursive definition
+        Expr equiv_load = Load::make(op->value.type(), op->name, op->index, Buffer<>(), op->param, op->predicate);
+        Expr delta = simplify(simplify(common_subexpression_elimination(op->value - equiv_load)));
+        if (!expr_uses_var(delta, op->name)) {
+            // It's expressible as a +=
+            debug(1) << "Creating atomic +=\n" << Stmt(op);
+            Value *ptr = codegen_buffer_pointer(op->name, op->value.type(), op->index);
+            Value *val = codegen(delta);
+            builder->CreateAtomicRMW(AtomicRMWInst::Add, ptr, val, AtomicOrdering::Unordered);
+            return;
+        }
+    }
+    CodeGen_LLVM::visit(op);
 }
 
 string CodeGen_PTX_Dev::march() const {
