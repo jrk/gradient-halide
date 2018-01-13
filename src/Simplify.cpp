@@ -4509,6 +4509,12 @@ private:
             const double *f1 = as_const_float(arg1);
             if (f0 && f1) {
                 return FloatImm::make(arg0.type(), std::pow(*f0, *f1));
+            } else if (f1 != nullptr && *f1 == 1.0) {
+                // pow(x, 1) = x
+                return arg0;
+            } else if (f1 != nullptr && *f1 == 0.0) {
+                // pow(x, 0) = 1
+                return FloatImm::make(arg0.type(), 1.0);
             } else if (!arg0.same_as(op->args[0]) || !arg1.same_as(op->args[1])) {
                 return Call::make(op->type, op->name, {arg0, arg1}, op->call_type);
             } else {

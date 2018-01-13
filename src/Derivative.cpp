@@ -1524,16 +1524,28 @@ void print_func(const Func &func, const PrintFuncOptions &options) {
             if (update_id >= 0) {
                 Internal::debug(0) << "    update:" << func.name() << "(";
                 if (func.update_args(update_id).size() > 0) {
-                    Internal::debug(0) << Internal::simplify(func.update_args(update_id)[0]);
+                    Expr e = func.update_args(update_id)[0];
+                    for (const auto &it : options.variables) {
+                        e = substitute(it.first, it.second, e);
+                    }
+                    Internal::debug(0) << Internal::simplify(e);
                     for (int i = 1; i < (int)func.update_args(update_id).size(); i++) {
+                        Expr e = func.update_args(update_id)[i];
+                        for (const auto &it : options.variables) {
+                            e = substitute(it.first, it.second, e);
+                        }
                         Internal::debug(0) << ", " << 
-                            Internal::simplify(func.update_args(update_id)[i]);
+                            Internal::simplify(e);
                     }
                 }
                 Internal::debug(0) << ") =";
                 auto vals = func.update_values(update_id).as_vector();
                 for (auto val : vals) {
-                    Internal::debug(0) << " " << Internal::simplify(val);
+                    Expr e = val;
+                    for (const auto &it : options.variables) {
+                        e = substitute(it.first, it.second, e);
+                    }
+                    Internal::debug(0) << " " << Internal::simplify(e);
                 }
                 Internal::debug(0) << "\n";
                 //rdom = Internal::extract_rdom(Internal::simplify(func.update_value(update_id)));
@@ -1548,7 +1560,11 @@ void print_func(const Func &func, const PrintFuncOptions &options) {
                 Internal::debug(0) << ") =";
                 auto vals = func.values().as_vector();
                 for (auto val : vals) {
-                    Internal::debug(0) << " " << Internal::simplify(val);
+                    Expr e = val;
+                    for (const auto &it : options.variables) {
+                        e = substitute(it.first, it.second, e);
+                    }
+                    Internal::debug(0) << " " << Internal::simplify(e);
                 }
                 Internal::debug(0) << "\n";
                 //rdom = Internal::extract_rdom(Internal::simplify(func.value()));

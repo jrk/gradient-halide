@@ -47,6 +47,7 @@ struct PrintFuncOptions {
     bool ignore_non_adjoints = false;
     bool ignore_bc = false;
     int depth = -1;
+    std::map<std::string, Expr> variables;
 };
 void print_func(const Func &func, const PrintFuncOptions &options = PrintFuncOptions());
 
