@@ -422,7 +422,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         Func& func_to_update = adjoint_funcs[func_key];
         assert(func_to_update.dimensions() == (int)lhs.size());
 
-        bool debug_flag = func_key.first == "f_input";
+        bool debug_flag = false;//func_key.first == "f_input";
 
         if (debug_flag) {
             debug(0) << "Scattering to " << op->name << "\n";
@@ -727,7 +727,15 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // Finally we update the function definitions, possibly merge with previous updates
         auto can_merge = [&]() -> bool {
             if (func_to_update.num_update_definitions() == 0) {
-                return false;
+                // If lhs are not pure variables we can't merge to pure definition
+                for (int i = 0; i < (int)lhs.size(); i++) {
+                    if (!equal(lhs[i], func_to_update.args()[i])) {
+                        return false;
+                    }
+                }
+                ReductionDomain rdom = extract_rdom(adjoint);
+                // If there are rdoms in adjoint we can't merge
+                return !rdom.defined();
             }
             int update_id = func_to_update.num_update_definitions() - 1;
             std::vector<Expr> prev_lhs =
@@ -779,9 +787,10 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 func_to_update(lhs)[op->value_index] += adjoint;
             }
         } else {
-            Definition &def =
+            Definition &def = func_to_update.num_update_definitions() == 0 ?
+                func_to_update.function().definition() :
                 func_to_update.function().update(
-                    func_to_update.num_update_definitions() - 1);
+                        func_to_update.num_update_definitions() - 1);
             std::vector<Expr> &values = def.values();
             ReductionDomain rdom;
             for (const auto &val : values) {
@@ -791,6 +800,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 }
             }
             if (rdom.defined()) {
+                assert(func_to_update.num_update_definitions() > 0);
                 // Make sure we're using the same set of reduction variables
                 for (int i = 0; i < merged_r.dimensions(); i++) {
                     adjoint = substitute(merged_r[i].name(), RVar(rdom, i), adjoint);
@@ -798,7 +808,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
 
             if (values.size() == 1) {
-                values[0] = values[0] + adjoint;
+                values[0] = simplify(values[0] + adjoint);
             } else {
                 const Add *add = values[op->value_index].as<Add>();
                 if (add != nullptr &&
@@ -806,9 +816,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                         add->b.as<Call>()->is_intrinsic(Call::undef)) {
                     // Sometimes the expression is an undef for the case of a tuple.
                     // Make sure we don't include the undefs
-                    values[op->value_index] = add->a + adjoint;
+                    values[op->value_index] = simplify(add->a + adjoint);
                 } else {
-                    values[op->value_index] = values[op->value_index] + adjoint;
+                    values[op->value_index] = simplify(values[op->value_index] + adjoint);
                 }
             }
         }
@@ -886,9 +896,9 @@ Expr forward_accumulation(const Expr &expr,
     } else if (const Let *op = expr.as<Let>()) {
         Expr value = forward_accumulation(op->value, tangents, scope);
         std::string fwd_name = op->name + ".fwd";
-        scope.push(fwd_name, Variable::make(op->type, fwd_name));
+        scope.push(op->name, Variable::make(op->type, fwd_name));
         Expr body = forward_accumulation(op->body, tangents, scope);
-        scope.pop(fwd_name);
+        scope.pop(op->name);
         return Let::make(op->name, op->value,
                 Let::make(fwd_name, value, body));
     } else if (const Variable *op = expr.as<Variable>()) {
