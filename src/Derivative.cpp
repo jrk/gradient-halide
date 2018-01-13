@@ -905,7 +905,7 @@ Expr forward_accumulation(const Expr &expr,
         if (scope.contains(op->name)) {
             return scope.get(op->name);
         } else {
-            return Expr(Cast::make(op->type, Expr(0)));
+            return 0.f;
         }
     } else if (const Call *op = expr.as<Call>()) {
         if (op->is_extern()) {
@@ -922,9 +922,9 @@ Expr forward_accumulation(const Expr &expr,
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return -sin(op->args[0]) * d;
             } else if (op->name == "ceil_f32") {
-                return Expr(Cast::make(op->type, Expr(0)));
+                return 0.f;
             } else if (op->name == "floor_f32") {
-                return Expr(Cast::make(op->type, Expr(0)));
+                return 0.f;
             } else if (op->name == "sqrt_f32") {
                 // d/dx f(x)^(0.5) = 0.5 * f(x)^(-0.5) f'
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
@@ -937,7 +937,7 @@ Expr forward_accumulation(const Expr &expr,
                 return pow(op->args[0], op->args[1] - 1.f) *
                     (op->args[1] * a + op->args[0] * log(op->args[0]) * b);
             } else if (op->name == "halide_print") {
-                return Expr(0.f);
+                return 0.f;
             } else {
                 internal_error << "The derivative of " << op->name << " is not implemented.";
             }
@@ -947,7 +947,7 @@ Expr forward_accumulation(const Expr &expr,
                 Func tangent = it->second;
                 return tangent(op->args);
             } else {
-                return Expr(Cast::make(op->type, Expr(0)));
+                return 0.f;
             }
         } else {
             internal_assert(op->is_intrinsic());
@@ -976,9 +976,9 @@ Expr forward_accumulation(const Expr &expr,
             }
         }
     } else {
-        return Cast::make(expr.type(), Expr(0));
+        return 0.f;
     }
-    return Expr(0.f);
+    return 0.f;
 }
 
 Expr forward_accumulation(const Expr &expr,
