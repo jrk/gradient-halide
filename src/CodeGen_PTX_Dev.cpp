@@ -250,7 +250,15 @@ void CodeGen_PTX_Dev::visit(const Store *op) {
             debug(1) << "Creating atomic +=\n" << Stmt(op);
             Value *ptr = codegen_buffer_pointer(op->name, op->value.type(), op->index);
             Value *val = codegen(delta);
-            builder->CreateAtomicRMW(AtomicRMWInst::Add, ptr, val, AtomicOrdering::Unordered);
+            if (op->value.type().is_float() && op->value.type().bits() == 32) {
+                llvm::Function *intrin = module->getFunction("llvm.nvvm.atomic.load.add.f32.p0f32");
+                internal_assert(intrin);
+                value = builder->CreateCall(intrin, {ptr, val});
+            } else {
+                builder->CreateAtomicRMW(AtomicRMWInst::Add, ptr, val, AtomicOrdering::Unordered);
+            }
+
+
             return;
         }
     }
