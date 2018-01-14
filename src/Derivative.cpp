@@ -139,7 +139,8 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             internal_assert(func_bounds.find(func.name()) != func_bounds.end());
 
             // Set up boundary condition if this is the first visit to the function
-            if (update_id == func.num_update_definitions() - 1) {
+            if (update_id == func.num_update_definitions() - 1 &&
+                    func.dimensions() > 0) {
                 Func &adjoint_func = adjoint_funcs[func_key];
                 const Box &bounds = func_bounds[func.name()];
                 if (adjoint_func.values().size() == 1) {
