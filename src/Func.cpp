@@ -1488,7 +1488,7 @@ void reorder_vars(vector<Dim> &dims_old, const VarOrRVar *vars, size_t size,
     const auto &prover_result = prove_associativity(func_name, args, values);
 
     // Look for illegal reorderings
-    if (!prover_result.associative()) {
+    if (!prover_result.commutative()) {
         for (size_t i = 0; i < idx.size(); i++) {
             if (dims[idx[i]].is_pure()) continue;
             for (size_t j = i+1; j < idx.size(); j++) {
