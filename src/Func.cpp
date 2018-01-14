@@ -1458,7 +1458,8 @@ Stage &Stage::tile(VarOrRVar x, VarOrRVar y,
 
 namespace {
 // An helper function for reordering vars in a schedule.
-void reorder_vars(vector<Dim> &dims_old, const VarOrRVar *vars, size_t size, const Stage &stage) {
+void reorder_vars(vector<Dim> &dims_old, const VarOrRVar *vars, size_t size,
+        const Stage &stage, const Function &function, const Definition &definition) {
     vector<Dim> dims = dims_old;
 
     // Tag all the vars with their locations in the dims list.
@@ -1478,18 +1479,28 @@ void reorder_vars(vector<Dim> &dims_old, const VarOrRVar *vars, size_t size, con
             << stage.dump_argument_list();
     }
 
-    // Look for illegal reorderings
-    for (size_t i = 0; i < idx.size(); i++) {
-        if (dims[idx[i]].is_pure()) continue;
-        for (size_t j = i+1; j < idx.size(); j++) {
-            if (dims[idx[j]].is_pure()) continue;
+    const string &func_name = function.name();
+    const vector<Expr> &args = definition.args();
+    const vector<Expr> &values = definition.values();
 
-            if (idx[i] > idx[j]) {
-                user_error
-                    << "In schedule for " << stage.name()
-                    << ", can't reorder RVars " << vars[i].name()
-                    << " and " << vars[j].name()
-                    << " because it may change the meaning of the algorithm.\n";
+    // Check whether the operator is associative and determine the operator and
+    // its identity for each value in the definition if it is a Tuple
+    const auto &prover_result = prove_associativity(func_name, args, values);
+
+    // Look for illegal reorderings
+    if (!prover_result.associative()) {
+        for (size_t i = 0; i < idx.size(); i++) {
+            if (dims[idx[i]].is_pure()) continue;
+            for (size_t j = i+1; j < idx.size(); j++) {
+                if (dims[idx[j]].is_pure()) continue;
+
+                if (idx[i] > idx[j]) {
+                    user_error
+                        << "In schedule for " << stage.name()
+                        << ", can't reorder RVars " << vars[i].name()
+                        << " and " << vars[j].name()
+                        << " because it may change the meaning of the algorithm.\n";
+                }
             }
         }
     }
@@ -1507,7 +1518,7 @@ void reorder_vars(vector<Dim> &dims_old, const VarOrRVar *vars, size_t size, con
 }
 
 Stage &Stage::reorder(const std::vector<VarOrRVar>& vars) {
-    reorder_vars(definition.schedule().dims(), &vars[0], vars.size(), *this);
+    reorder_vars(definition.schedule().dims(), &vars[0], vars.size(), *this, function, definition);
     return *this;
 }
 

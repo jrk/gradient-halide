@@ -51,24 +51,6 @@ struct PrintFuncOptions {
 };
 void print_func(const Func &func, const PrintFuncOptions &options = PrintFuncOptions());
 
-struct SimpleAutoscheduleOptions {
-    bool gpu = false;
-};
-
-// Bounds are {min, max}
-void simple_autoschedule(std::vector<Func> &outputs,
-                         const std::map<std::string, int> &parameters,
-                         const std::vector<std::vector<std::pair<int, int>>> &output_bounds,
-                         const SimpleAutoscheduleOptions &options = SimpleAutoscheduleOptions(),
-                         const std::set<std::string> &dont_inline = {},
-                         const std::set<std::string> &skip_functions = {});
-void simple_autoschedule(Func &output,
-                         const std::map<std::string, int> &parameters,
-                         const std::vector<std::pair<int, int>> &output_bounds,
-                         const SimpleAutoscheduleOptions &options = SimpleAutoscheduleOptions(),
-                         const std::set<std::string> &dont_inline = {},
-                         const std::set<std::string> &skip_functions = {});
-
 namespace Internal {
 
 EXPORT void derivative_test();
