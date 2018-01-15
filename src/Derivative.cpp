@@ -933,7 +933,10 @@ Expr forward_accumulation(const Expr &expr,
                 Expr a = forward_accumulation(op->args[0], tangents, scope);
                 Expr b = forward_accumulation(op->args[1], tangents, scope);
                 return pow(op->args[0], op->args[1] - 1.f) *
-                    (op->args[1] * a + op->args[0] * log(op->args[0]) * b);
+                    (op->args[1] * a + 
+                     // Special hack: if g' == 0 then even if f == 0 the following term is 0
+                     // basically we want -Inf * 0 = 0
+                     select(b == 0.f, 0.f, op->args[0] * log(op->args[0]) * b));
             } else if (op->name == "halide_print") {
                 return 0.f;
             } else {
