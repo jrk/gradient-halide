@@ -364,29 +364,22 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
     if (op->is_extern()) {
       if (op->name == "exp_f32") {
           // d/dx exp(x) = exp(x)
-          for (size_t i = 0; i < op->args.size(); i++) {
-              accumulate(op->args[i], adjoint * exp(op->args[i]));
-          }
+          accumulate(op->args[0], adjoint * exp(op->args[0]));
+      } else if (op->name == "log_f32") {
+          // d/dx log(x) = 1 / x
+          accumulate(op->args[0], adjoint / op->args[0]);
       } else if (op->name == "sin_f32") {
           // d/dx sin(x) = cos(x)
-          for (size_t i = 0; i < op->args.size(); i++) {
-              accumulate(op->args[i], adjoint * cos(op->args[i]));
-          }
+          accumulate(op->args[0], adjoint * cos(op->args[0]));
       } else if (op->name == "cos_f32") {
           // d/dx cos(x) = -sin(x)
-          for (size_t i = 0; i < op->args.size(); i++) {
-              accumulate(op->args[i], - adjoint * sin(op->args[i]));
-          }
+          accumulate(op->args[0], - adjoint * sin(op->args[0]));
       } else if (op->name == "ceil_f32") {
           // TODO: d/dx = dirac(n) for n in Z ...
-          for (size_t i = 0; i < op->args.size(); i++) {
-              accumulate(op->args[i], 0.0f);
-          }
+          accumulate(op->args[0], 0.0f);
       } else if (op->name == "floor_f32") {
           // TODO: d/dx = dirac(n) for n in Z ...
-          for (size_t i = 0; i < op->args.size(); i++) {
-              accumulate(op->args[i], 0.0f);
-          }
+          accumulate(op->args[0], 0.0f);
       } else if (op->name == "sqrt_f32") {
           accumulate(op->args[0], adjoint * 0.5f / sqrt(op->args[0]));
       } else if (op->name == "pow_f32") {
