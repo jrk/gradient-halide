@@ -907,6 +907,10 @@ Expr forward_accumulation(const Expr &expr,
                 // d/dx exp(f(x)) = exp(f(x)) f'
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return expr * d;
+            } else if (op->name == "log_f32") {
+                // d/dx log(f(x)) = f' / f(x)
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                return d / expr;
             } else if (op->name == "sin_f32") {
                 // d/dx sin(f(x)) = cos(f(x)) f'
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
