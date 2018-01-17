@@ -294,6 +294,15 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         .parallel(tile_index)
                         .vectorize(xi, vectorize_width);
                 }
+            } else if (!options.gpu && pure_args.size() > 0) {
+                // On CPU, merge all pure variables and parallelize them
+                Var fused_var = pure_args[0];
+                for (int i = 1; i < (int)pure_args.size(); i++) {
+                    func.update(update_id)
+                        .fuse(fused_var, pure_args[i], fused_var);
+                }
+                func.update(update_id)
+                    .parallel(fused_var);
             } else if (options.gpu) {
                 // If the reduction domain is large enough, parallelize the reduction domain
                 if (tilable && rvar_tilable) {
