@@ -20,7 +20,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
     for (int i = 0; i < (int)output_bounds.size(); i++) {
         user_assert(outputs[i].dimensions() == (int)output_bounds[i].size()) <<
             "[simple_autoschedule] outputs dimensionality don't match with output_bounds. " <<
-            outputs[i].name() << "\n";
+            outputs[i].name() << " " << outputs[i].dimensions() << " " << output_bounds[i].size() << "\n";
     }
     using namespace Internal;
     std::vector<FuncBounds> output_bounds_expr;

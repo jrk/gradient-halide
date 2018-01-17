@@ -14,8 +14,8 @@ struct SimpleAutoscheduleOptions {
     bool gpu = false;
     int cpu_tile_width = 16;
     int cpu_tile_height = 16;
-    int gpu_tile_width = 8;
-    int gpu_tile_height = 8;
+    int gpu_tile_width = 32;
+    int gpu_tile_height = 16;
 };
 
 // Bounds are {min, max}
