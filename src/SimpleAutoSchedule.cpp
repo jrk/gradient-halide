@@ -20,7 +20,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
     for (int i = 0; i < (int)output_bounds.size(); i++) {
         user_assert(outputs[i].dimensions() == (int)output_bounds[i].size()) <<
             "[simple_autoschedule] outputs dimensionality don't match with output_bounds. " <<
-            outputs[i].name() << "\n";
+            outputs[i].name() << " " << outputs[i].dimensions() << " " << output_bounds[i].size() << "\n";
     }
     using namespace Internal;
     std::vector<FuncBounds> output_bounds_expr;
@@ -144,7 +144,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 }
                 // Launch GPU threads
                 Var block, thread;
-                func.gpu_tile(fused_vars.back(), block, thread, 1);
+                func.gpu_tile(fused_vars.back(), block, thread, 32);
             }
         }
 
@@ -294,6 +294,15 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         .parallel(tile_index)
                         .vectorize(xi, vectorize_width);
                 }
+            } else if (!options.gpu && pure_args.size() > 0) {
+                // On CPU, merge all pure variables and parallelize them
+                Var fused_var = pure_args[0];
+                for (int i = 1; i < (int)pure_args.size(); i++) {
+                    func.update(update_id)
+                        .fuse(fused_var, pure_args[i], fused_var);
+                }
+                func.update(update_id)
+                    .parallel(fused_var);
             } else if (options.gpu) {
                 // If the reduction domain is large enough, parallelize the reduction domain
                 if (tilable && rvar_tilable) {
@@ -319,7 +328,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         }
                         // Launch GPU threads
                         Var block, thread;
-                        func.update(update_id).gpu_tile(fused_vars.back(), block, thread, 1);
+                        func.update(update_id).gpu_tile(fused_vars.back(), block, thread, 32);
                     }
                 }
             }
