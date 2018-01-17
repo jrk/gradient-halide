@@ -386,7 +386,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
           accumulate(op->args[0], adjoint * op->args[1] * pow(op->args[0], op->args[1] - 1.f));
           accumulate(op->args[1], adjoint * pow(op->args[0], op->args[1]) * log(op->args[0]));
       } else if (op->name == "halide_print") {
-          accumulate(op->args[0], 0.f);
+          accumulate(op->args[0], 0.0f);
       } else {
           internal_error << "The derivative of " << op->name << " is not implemented.";
       }
@@ -837,14 +837,13 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         } else if (op->is_intrinsic(Call::return_second)) {
             accumulate(op->args[0], 0.f);
             accumulate(op->args[1], adjoint);
-        } else if (op->is_intrinsic(Call::stringify)) {
-            for (const auto &arg : op->args) {
-                accumulate(arg, 0.f);
-            }
         } else if (op->is_intrinsic(Call::undef)) {
             // do nothing
         } else {
-            internal_error << "The derivative of intrinsic " << op->name << " is not implemented.";
+            user_warning << "Dropping gradients at call to " << op->name << "\n";
+            for (const auto &arg : op->args) {
+                accumulate(arg, 0.f);
+            }
         }
     }
 }
@@ -928,12 +927,12 @@ Expr forward_accumulation(const Expr &expr,
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return (0.5f * d / expr);
             } else if (op->name == "pow_f32") {
-                // d/dx pow(f(x), g(x)) = pow(f(x), g(x)-1) * 
+                // d/dx pow(f(x), g(x)) = pow(f(x), g(x)-1) *
                 //                        (g(x) f'(x) + f(x) log(f(x))g'(x))
                 Expr a = forward_accumulation(op->args[0], tangents, scope);
                 Expr b = forward_accumulation(op->args[1], tangents, scope);
                 return pow(op->args[0], op->args[1] - 1.f) *
-                    (op->args[1] * a + 
+                    (op->args[1] * a +
                      // Special hack: if g' == 0 then even if f == 0 the following term is 0
                      // basically we want -Inf * 0 = 0
                      select(b == 0.f, 0.f, op->args[0] * log(op->args[0]) * b));
@@ -966,14 +965,21 @@ Expr forward_accumulation(const Expr &expr,
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return likely(d);
             } else if (op->is_intrinsic(Call::return_second)) {
-                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                Expr d = forward_accumulation(op->args[1], tangents, scope);
                 return d;
             } else if (op->is_intrinsic(Call::stringify)) {
                 return 0.f;
             } else if (op->is_intrinsic(Call::undef)) {
                 return 0.f;
+            } else if (op->is_intrinsic(Call::reinterpret)) {
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                if (is_zero(d)) {
+                    return d;
+                } else {
+                    internal_error << "Can't take a derivative through a reinterpret_cast\n";
+                }
             } else {
-                internal_error << "The derivative of intrinsic " << op->name << " is not implemented.";
+                internal_error << "The derivative of intrinsic " << op->name << " is not implemented in call: " << Expr(op) << "\n";
             }
         }
     } else {
@@ -996,7 +1002,7 @@ Derivative propagate_adjoints(const Func &output,
                               const std::vector<std::pair<Expr, Expr>> &output_bounds) {
     user_assert(output.dimensions() == adjoint.dimensions())
       << "output dimensions and adjoint dimensions must match\n";
-    user_assert((int)output_bounds.size() == adjoint.dimensions()) 
+    user_assert((int)output_bounds.size() == adjoint.dimensions())
       << "output_bounds and adjoint dimensions must match\n";
 
     Internal::ReverseAccumulationVisitor visitor;
@@ -1119,7 +1125,7 @@ void print_func(const Func &func, const PrintFuncOptions &options) {
                         for (const auto &it : options.variables) {
                             e = substitute(it.first, it.second, e);
                         }
-                        Internal::debug(0) << ", " << 
+                        Internal::debug(0) << ", " <<
                             Internal::simplify(e);
                     }
                 }

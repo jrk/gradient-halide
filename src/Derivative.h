@@ -34,14 +34,14 @@ struct Derivative {
 };
 
 // Bounds are {min, max}
-Derivative propagate_adjoints(const Func &output,
-                              const Func &adjoint,
-                              const std::vector<std::pair<Expr, Expr>> &output_bounds);
-Derivative propagate_adjoints(const Func &output,
-                              const Buffer<float> &adjoint);
-Derivative propagate_adjoints(const Func &output);
-Func propagate_tangents(const Func &output,
-                        const std::map<std::string, Func> &tangents);
+EXPORT Derivative propagate_adjoints(const Func &output,
+                                     const Func &adjoint,
+                                     const std::vector<std::pair<Expr, Expr>> &output_bounds);
+EXPORT Derivative propagate_adjoints(const Func &output,
+                                     const Buffer<float> &adjoint);
+EXPORT Derivative propagate_adjoints(const Func &output);
+EXPORT Func propagate_tangents(const Func &output,
+                               const std::map<std::string, Func> &tangents);
 
 struct PrintFuncOptions {
     bool ignore_non_adjoints = false;
