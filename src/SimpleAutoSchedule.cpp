@@ -137,19 +137,21 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 // Fuse variables
                 std::vector<Var> fused_vars;
                 fused_vars.push_back(func.args()[0]);
+                int var_size = int_bounds[0];
                 for (int i = 1; i < (int)func.args().size(); i++) {
                     Var new_var;
                     func.fuse(fused_vars.back(), func.args()[i], new_var);
                     fused_vars.push_back(new_var);
+                    var_size *= int_bounds[i];
                 }
                 // Launch GPU threads
                 Var block, thread;
-                func.gpu_tile(fused_vars.back(), block, thread, 32);
+                func.gpu_tile(fused_vars.back(), block, thread, 16);
             }
         }
 
         for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
-            const std::vector<ReductionVariable> &rvars =
+            std::vector<ReductionVariable> rvars =
                 func.update(update_id).get_schedule().rvars();
             int dim_width = -1;
             int dim_height = -1;
@@ -192,41 +194,46 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 if (dim_width != -1 && dim_height != -1) {
                     if (options.gpu) {
                         assert(dim_width != dim_height);
-                        // Each GPU thread covers tile_height reductions over y
-                        // Make sure the threads number is multiple of 32 (size of a warp)
-                        RVar rxo, rxi, ryo, ryi;
-                        func.update(update_id)
-                            .split(RVar(rvars[dim_width].var), rxo, rxi, tile_width)
-                            .split(RVar(rvars[dim_height].var), ryo, ryi, tile_height);
-                        Var xo, yo, xi;
-                        Func interm = func.update(update_id)
-                                          .rfactor({{rxi, xi},
-					                                {rxo, xo},
-                                                    {ryo, yo}});
-                        std::vector<VarOrRVar> new_order;
-                        new_order.push_back(ryi);
-                        new_order.push_back(xi);
-                        new_order.push_back(xo);
-                        new_order.push_back(yo);
-                        for (const auto &arg : interm.update_args()) {
-                            const Variable *var = arg.as<Variable>();
-                            if (var != nullptr && !var->reduction_domain.defined() &&
-                                    var->name != xi.name() && var->name != xo.name() &&
-                                    var->name != yo.name()) {
-                                new_order.push_back(Var(var->name));
+                        RVar rx(rvars[dim_width].var);
+                        RVar ry(rvars[dim_height].var);
+                        for (int level = 0; level < 1; level++) {
+                            RVar rxo, rxi, ryo, ryi;
+                            int size = level == 0 ? 32 : 8;
+                            func.update(update_id)
+                                .split(rx, rxo, rxi, size)
+                                .split(ry, ryo, ryi, size);
+                            rx = rxo; ry = ryo;
+                            Var xi, xo, yo;
+                            Func interm = func.update(update_id)
+                                              .rfactor({{rxi, xi},
+                                                        {rxo, xo},
+                                                        {ryo, yo}});                       
+                            std::vector<VarOrRVar> new_order;
+                            new_order.push_back(ryi);
+                            new_order.push_back(xi);
+                            new_order.push_back(xo);
+                            new_order.push_back(yo);
+                            for (const auto &arg : interm.update_args()) {
+                                const Variable *var = arg.as<Variable>();
+                                if (var != nullptr && !var->reduction_domain.defined() &&
+                                        var->name != xi.name() &&
+                                        var->name != xo.name() &&
+                                        var->name != yo.name()) {
+                                    new_order.push_back(Var(var->name));
+                                }
                             }
+                            Var txo, txi, tyo, tyi;
+                            interm.compute_root()
+                                  .reorder(xi, xo, yo)
+                                  .gpu_blocks(xo, yo)
+                                  .gpu_threads(xi);
+                                  //.gpu_tile(xo, yo, txo, txi, tyo, tyi, 8, 8);
+                            interm.update()
+                                  .reorder(new_order)
+                                  .gpu_blocks(xo, yo)
+                                  .gpu_threads(xi);
+                                  //.gpu_tile(xo, yo, txo, txi, tyo, tyi, 8, 8);
                         }
-                        Var tile_index;
-                        interm.compute_root()
-                              .reorder(xi, xo, yo)
-                              .fuse(xo, yo, tile_index)
-                              .gpu_blocks(tile_index)
-                              .gpu_threads(xi);
-                        interm.update()
-                              .reorder(new_order)
-                              .fuse(xo, yo, tile_index)
-                              .gpu_blocks(tile_index)
-                              .gpu_threads(xi);
                     } else {
                         // Parallel on tiles and vectorize inside tile
                         RVar rxo, ryo, rxi, ryi;
@@ -306,6 +313,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
             } else if (options.gpu) {
                 // If the reduction domain is large enough, parallelize the reduction domain
                 if (tilable && rvar_tilable) {
+                    std::vector<VarOrRVar> new_rvar_order;;
                     RVar xo, yo, xi, yi;
                     RVar tile_index;
                     func.update(update_id)
@@ -321,10 +329,12 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         // Fuse variables
                         std::vector<Var> fused_vars;
                         fused_vars.push_back(pure_args[0]);
+                        int var_size = pure_arg_bounds[0];
                         for (int i = 1; i < (int)pure_args.size(); i++) {
                             Var new_var;
                             func.update(update_id).fuse(fused_vars.back(), pure_args[i], new_var);
                             fused_vars.push_back(new_var);
+                            var_size *= pure_arg_bounds[i];
                         }
                         // Launch GPU threads
                         Var block, thread;
