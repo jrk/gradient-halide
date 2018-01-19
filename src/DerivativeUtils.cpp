@@ -114,13 +114,13 @@ private:
 };
 
 std::vector<std::string> gather_variables(const Expr &expr,
-		const std::vector<std::string> &filter) {
-	VariableGatherer gatherer;
-	return gatherer.gather(expr, filter);
+                const std::vector<std::string> &filter) {
+        VariableGatherer gatherer;
+        return gatherer.gather(expr, filter);
 }
 
 std::vector<std::string> gather_variables(const Expr &expr,
-		const std::vector<Var> &filter) {
+                const std::vector<Var> &filter) {
     std::vector<std::string> str_filter;
     str_filter.reserve(filter.size());
     for (const auto &var : filter) {
@@ -161,11 +161,11 @@ std::map<std::string, std::pair<Expr, Expr>> gather_rvariables(Expr expr) {
 }
 
 std::map<std::string, std::pair<Expr, Expr>> gather_rvariables(Tuple tuple) {
-	RVarGatherer gatherer;
+        RVarGatherer gatherer;
     for (const auto &expr : tuple.as_vector()) {
         gatherer.gather(expr);
     }
-	return gatherer.get_rvar_map();
+        return gatherer.get_rvar_map();
 }
 
 Expr add_let_expression(const Expr &expr,
@@ -256,8 +256,8 @@ void ExpressionSorter::include(const Expr &e) {
 }
 
 std::vector<Expr> sort_expressions(const Expr &expr) {
-	ExpressionSorter sorter;
-	return sorter.sort(expr);
+        ExpressionSorter sorter;
+        return sorter.sort(expr);
 }
 
 std::map<std::string, Box> inference_bounds(const std::vector<Func> &funcs,

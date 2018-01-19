@@ -98,9 +98,12 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 adjoint_func(args) = adjoint(args);
             } else {
                 if (func.values().size() == 1) {
-                    adjoint_func(args) = 0.f;
+                    adjoint_func(args) = make_zero(func.output_types()[0]);
                 } else {
-                    std::vector<Expr> init(func.values().size(), Expr(0.f));
+                    std::vector<Expr> init(func.values().size());
+                    for (size_t i = 0; i < func.values().size(); i++) {
+                        init[i] = make_zero(func.output_types()[i]);
+                    }
                     adjoint_func(args) = Tuple(init);
                 }
             }
@@ -121,7 +124,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
         for (int i = 0; i < it.second; i++) {
             args.push_back(Var());
         }
-        adjoint_func(args) = 0.f;
+        adjoint_func(args) = Expr(0.0); // TODO: pick the right type
         FuncKey func_key{it.first, -1};
         adjoint_funcs[func_key] = adjoint_func;
     }
@@ -142,13 +145,17 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             if (update_id == func.num_update_definitions() - 1 &&
                     func.dimensions() > 0) {
                 Func &adjoint_func = adjoint_funcs[func_key];
+
                 const Box &bounds = func_bounds[func.name()];
                 if (adjoint_func.values().size() == 1) {
                     adjoint_func = BoundaryConditions::constant_exterior(
-                            adjoint_func, 0.f, box_to_vector(bounds),
+                            adjoint_func, make_zero(adjoint_func.output_types()[0]), box_to_vector(bounds),
                             adjoint_func.name() + "_ce");
                 } else {
-                    std::vector<Expr> values(adjoint_func.values().size(), Expr(0.f));
+                    std::vector<Expr> values(adjoint_func.values().size());
+                    for (size_t i = 0; i < values.size(); i++) {
+                        values[i] = make_zero(adjoint_func.output_types()[i]);
+                    }
                     adjoint_func = BoundaryConditions::constant_exterior(
                             adjoint_func, Tuple(values), box_to_vector(bounds),
                             adjoint_func.name() + "_ce");
@@ -325,9 +332,9 @@ void ReverseAccumulationVisitor::visit(const Min *op) {
     Expr adjoint = expr_adjoints[op];
 
     // d/da min(a, b) = a <= b ? 1 : 0
-    accumulate(op->a, select(op->a <= op->b, adjoint, 0.f));
+    accumulate(op->a, select(op->a <= op->b, adjoint, make_zero(op->type)));
     // d/db min(a, b) = b <= a ? 1 : 0
-    accumulate(op->b, select(op->b <= op->a, adjoint, 0.f));
+    accumulate(op->b, select(op->b <= op->a, adjoint, make_zero(op->type)));
 }
 
 void ReverseAccumulationVisitor::visit(const Max *op) {
@@ -335,9 +342,9 @@ void ReverseAccumulationVisitor::visit(const Max *op) {
     Expr adjoint = expr_adjoints[op];
 
     // d/da max(a, b) = a >= b ? 1 : 0
-    accumulate(op->a, select(op->a >= op->b, adjoint, 0.f));
+    accumulate(op->a, select(op->a >= op->b, adjoint, make_zero(op->type)));
     // d/db max(a, b) = b >= a ? 1 : 0
-    accumulate(op->b, select(op->b >= op->a, adjoint, 0.f));
+    accumulate(op->b, select(op->b >= op->a, adjoint, make_zero(op->type)));
 }
 
 void ReverseAccumulationVisitor::visit(const Let *op) {
@@ -352,9 +359,9 @@ void ReverseAccumulationVisitor::visit(const Select *op) {
     Expr adjoint = expr_adjoints[op];
 
     // d/db select(a, b, c) = select(a, 1, 0)
-    accumulate(op->true_value, select(op->condition, adjoint, 0.f));
+    accumulate(op->true_value, select(op->condition, adjoint, make_zero(op->type)));
     // d/dc select(a, b, c) = select(a, 0, 1)
-    accumulate(op->false_value, select(op->condition, 0.f, adjoint));
+    accumulate(op->false_value, select(op->condition, make_zero(op->type), adjoint));
 }
 
 void ReverseAccumulationVisitor::visit(const Call *op) {
@@ -382,11 +389,13 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
           accumulate(op->args[0], 0.0f);
       } else if (op->name == "sqrt_f32") {
           accumulate(op->args[0], adjoint * 0.5f / sqrt(op->args[0]));
+      } else if (op->name == "sqrt_f64") {
+          accumulate(op->args[0], adjoint * Expr(0.5) / sqrt(op->args[0]));
       } else if (op->name == "pow_f32") {
           accumulate(op->args[0], adjoint * op->args[1] * pow(op->args[0], op->args[1] - 1.f));
           accumulate(op->args[1], adjoint * pow(op->args[0], op->args[1]) * log(op->args[0]));
       } else if (op->name == "halide_print") {
-          accumulate(op->args[0], 0.0f);
+          accumulate(op->args[0], make_zero(op->args[0].type()));
       } else {
           internal_error << "The derivative of " << op->name << " is not implemented.";
       }
@@ -823,26 +832,26 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
     } else {
         internal_assert(op->is_intrinsic());
         if (op->is_intrinsic(Call::abs)) {
-            accumulate(op->args[0], adjoint*select(op->args[0] > 0, 1.0f, -1.0f));
+            accumulate(op->args[0], adjoint*select(op->args[0] > 0, make_one(op->args[0].type()), -make_one(op->args[0].type())));
         } else if (op->is_intrinsic(Call::lerp)) {
             // z = x * (1 - w) + y * w
             // dz/dx = 1 - w
             // dz/dy = w
             // dz/dw = y - x
-            accumulate(op->args[0], adjoint * (1.f - op->args[2]));
+            accumulate(op->args[0], adjoint * (1 - op->args[2]));
             accumulate(op->args[1], adjoint * op->args[2]);
             accumulate(op->args[2], adjoint * (op->args[1] - op->args[0]));
         } else if (op->is_intrinsic(Call::likely)) {
             accumulate(op->args[0], adjoint);
         } else if (op->is_intrinsic(Call::return_second)) {
-            accumulate(op->args[0], 0.f);
+            accumulate(op->args[0], make_zero(op->args[0].type()));
             accumulate(op->args[1], adjoint);
         } else if (op->is_intrinsic(Call::undef)) {
             // do nothing
         } else {
             user_warning << "Dropping gradients at call to " << op->name << "\n";
             for (const auto &arg : op->args) {
-                accumulate(arg, 0.f);
+                accumulate(arg, make_zero(arg.type()));
             }
         }
     }
@@ -898,7 +907,7 @@ Expr forward_accumulation(const Expr &expr,
         if (scope.contains(op->name)) {
             return scope.get(op->name);
         } else {
-            return 0.f;
+            return make_zero(op->type);
         }
     } else if (const Call *op = expr.as<Call>()) {
         if (op->is_extern()) {
@@ -919,9 +928,9 @@ Expr forward_accumulation(const Expr &expr,
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return -sin(op->args[0]) * d;
             } else if (op->name == "ceil_f32") {
-                return 0.f;
+                return make_zero(op->type);
             } else if (op->name == "floor_f32") {
-                return 0.f;
+                return make_zero(op->type);
             } else if (op->name == "sqrt_f32") {
                 // d/dx f(x)^(0.5) = 0.5 * f(x)^(-0.5) f'
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
@@ -931,11 +940,11 @@ Expr forward_accumulation(const Expr &expr,
                 //                        (g(x) f'(x) + f(x) log(f(x))g'(x))
                 Expr a = forward_accumulation(op->args[0], tangents, scope);
                 Expr b = forward_accumulation(op->args[1], tangents, scope);
-                return pow(op->args[0], op->args[1] - 1.f) *
+                return pow(op->args[0], op->args[1] - 1) *
                     (op->args[1] * a +
                      // Special hack: if g' == 0 then even if f == 0 the following term is 0
                      // basically we want -Inf * 0 = 0
-                     select(b == 0.f, 0.f, op->args[0] * log(op->args[0]) * b));
+                     select(b == 0, make_zero(b.type()), op->args[0] * log(op->args[0]) * b));
             } else if (op->name == "halide_print") {
                 return 0.f;
             } else {
@@ -947,7 +956,7 @@ Expr forward_accumulation(const Expr &expr,
                 Func tangent = it->second;
                 return tangent(op->args);
             } else {
-                return 0.f;
+                return make_zero(op->type);
             }
         } else {
             internal_assert(op->is_intrinsic());
@@ -960,7 +969,7 @@ Expr forward_accumulation(const Expr &expr,
                 Expr a = forward_accumulation(op->args[0], tangents, scope);
                 Expr b = forward_accumulation(op->args[1], tangents, scope);
                 Expr w = forward_accumulation(op->args[2], tangents, scope);
-                return -(op->args[2] - 1.f) * a + (op->args[1] - op->args[0]) * w + op->args[2] * b;
+                return -(op->args[2] - 1) * a + (op->args[1] - op->args[0]) * w + op->args[2] * b;
             } else if (op->is_intrinsic(Call::likely)) {
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return likely(d);
@@ -970,7 +979,7 @@ Expr forward_accumulation(const Expr &expr,
             } else if (op->is_intrinsic(Call::stringify)) {
                 return 0.f;
             } else if (op->is_intrinsic(Call::undef)) {
-                return 0.f;
+                return make_zero(op->type);
             } else if (op->is_intrinsic(Call::reinterpret)) {
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 if (is_zero(d)) {
@@ -983,9 +992,9 @@ Expr forward_accumulation(const Expr &expr,
             }
         }
     } else {
-        return 0.f;
+        return make_zero(expr.type());
     }
-    return 0.f;
+    return make_zero(expr.type());
 }
 
 Expr forward_accumulation(const Expr &expr,
@@ -1025,7 +1034,7 @@ Derivative propagate_adjoints(const Func &output,
 
 Derivative propagate_adjoints(const Func &output) {
     Func adjoint("adjoint");
-    adjoint(output.args()) = 1.f;
+    adjoint(output.args()) = Internal::make_one(output.values()[0].type());
     std::vector<std::pair<Expr, Expr>> output_bounds;
     output_bounds.reserve(output.dimensions());
     for (int i = 0; i < output.dimensions(); i++) {

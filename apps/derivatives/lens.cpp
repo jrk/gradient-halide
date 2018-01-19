@@ -90,8 +90,8 @@ void thin_lens() {
 // Returns the real part of the roots only
 std::pair<Expr, Expr> solve_quadratic(Expr a, Expr b, Expr c) {
     Expr d = b*b - 4*a*c;
-    float eps = 1e-10f;
-    d = select(d <= 1e-10f, 0, sqrt(max(d, eps)));
+    float eps = 1e-20f;
+    d = select(d <= eps, 0, sqrt(max(d, eps)));
     std::pair<Expr, Expr> roots = {(0 - b + d) / (2*a), (0 - b - d) / (2*a)};
     // Handle linear systems
     //roots.first = select(abs(a) < eps, -c / b, roots.first);
@@ -260,27 +260,226 @@ extern "C" void print_to_stream(void *user_context, const char *message) {
     }
 }
 
-void spherical_surface_2d(int n) {
+void spherical_lens_system_2d() {
     // Multiple spherical surfaces which alternate between air ->
     // glass and glass -> air.
 
-    Buffer<float> radius_buf(n); // radius of each surface
-    Buffer<float> z_buf(n); // distance between element i and element i+1 (element n is the image sensor).
-    Buffer<float> N_buf(n); // Relative index of refraction of each surface.
+    int n; // number of surfaces
+    double fov; // The maximum ray slope at the aperture. A measure of field of view.
+    double F; // Proportional to the extent of the ray packet at the aperture. The F-number.
+    Buffer<double> radius_buf; // radius of each surface
+    Buffer<double> z_buf;      // distance between element i and element i+1 (element n is the image sensor).
+    Buffer<double> N_buf;      // Relative index of refraction of each surface, at 3 different wavelengths.
+    Buffer<double> z_min;      // Minimum permissible value for z_buf. We don't want infinitely thin lenses.
+    Param<double> sensor_z;    // The depth of the image sensor
 
-    Param<int> seed;
+    // Initialize the system
+    if (0) { // Double-Gauss
+        // Some useful constants for indices of refraction of common lens
+        // materials. From http://refractiveindex.info
+        /*
+          const double bk7_380 = 1.5337f;
+          const double bk7_550 = 1.5185f;
+          const double bk7_750 = 1.5118f;
+          const double f2_380 = 1.6595f;
+          const double f2_550 = 1.6237f;
+          const double f2_750 = 1.6103f;
+        */
 
-    // We'll compile two pipeline variants - one for doing the
-    // optimization, and one just for generating postscript figures.
+        // The indices of refraction have to match for an achromatic
+        // doublet, so the above can't be right. Values below taken from
+        // the Zeiss patent reproduced here
+        // http://www.reduser.net/forum/showthread.php?154412-Who-is-the-father-of-all-fast-50mm-lenses-Planar-vs-Opic-Lens-evolution
 
-    Pipeline p_optimize, p_render;
+        const double flint_380 = 1.59227f;
+        const double flint_750 = 1.57631f;
+        const double flint_550 = (flint_380 + flint_750)/2;
+        const double crown_380 = 1.58512f;
+        const double crown_750 = 1.57244f;
+        const double crown_550 = (crown_380 + crown_750)/2;
+
+        n = 10;
+        radius_buf = Buffer<double>(n);
+        z_buf = Buffer<double>(n);
+        z_min = Buffer<double>(n);
+        N_buf = Buffer<double>(n, 3);
+
+        double scale = 8.6;
+
+        // Set up the initial layer thicknesses
+        z_buf(0) = 0.f;
+        z_buf(1) = 0.0308 * scale;
+        z_buf(2) = 0.0026 * scale;
+        z_buf(3) = 0.0514 * scale;
+        z_buf(4) = 0.0411 * scale;
+        z_buf(5) = 2 * 0.0514 * scale;
+        z_buf(6) = 0.0411 * scale;
+        z_buf(7) = 0.0514 * scale;
+        z_buf(8) = 0.0026 * scale;
+        z_buf(9) = 0.0308 * scale;
+
+        z_min(0) = 0.0f; // air before first element
+        z_min(1) = 0.1f; // glass
+        z_min(2) = 0.0f; // air
+        z_min(3) = 0.1f; // glass
+        z_min(4) = 0.1f; // glass
+        z_min(5) = 0.1f; // air at the aperture
+        z_min(6) = 0.1f; // glass
+        z_min(7) = 0.1f; // glass
+        z_min(8) = 0.0f; // air
+        z_min(9) = 0.1f; // glass
+
+        // Set the initial radii, according to the patent
+        radius_buf(0) = 0.3147f * scale;
+        radius_buf(1) = 1.5424f * scale;
+        radius_buf(2) = 0.3599f * scale;
+        radius_buf(3) = -0.4370f * scale;
+        radius_buf(4) = 0.1954f * scale;
+        radius_buf(5) = -0.1954f * scale;
+        radius_buf(6) = 0.4370f * scale;
+        radius_buf(7) = -0.3599f * scale;
+        radius_buf(8) = -1.5424f * scale;
+        radius_buf(9) = -0.3147f * scale;
+
+        // Set the relative indices of refraction for each surface. A
+        // single Gauss system goes FCAC, where C = crown glass, A =
+        // air, F = flint glass
+        N_buf(0, 0) = crown_380;        // A -> C
+        N_buf(0, 1) = crown_550;
+        N_buf(0, 2) = crown_750;
+        N_buf(1, 0) = 1/crown_380;      // C -> A
+        N_buf(1, 1) = 1/crown_550;
+        N_buf(1, 2) = 1/crown_750;
+        N_buf(2, 0) = crown_380;        // A -> C
+        N_buf(2, 1) = crown_550;
+        N_buf(2, 2) = crown_750;
+        N_buf(3, 0) = flint_380/crown_380; // C -> F
+        N_buf(3, 1) = flint_550/crown_550;
+        N_buf(3, 2) = flint_750/crown_750;
+        N_buf(4, 0) = 1/flint_380;         // F -> A
+        N_buf(4, 1) = 1/flint_550;
+        N_buf(4, 2) = 1/flint_750;
+        N_buf(5, 0) = flint_380;         // A -> F
+        N_buf(5, 1) = flint_550;
+        N_buf(5, 2) = flint_750;
+        N_buf(6, 0) = crown_380/flint_380; // F -> C
+        N_buf(6, 1) = crown_550/flint_550;
+        N_buf(6, 2) = crown_750/flint_750;
+        N_buf(7, 0) = 1/crown_380;      // C -> A
+        N_buf(7, 1) = 1/crown_550;
+        N_buf(7, 2) = 1/crown_750;
+        N_buf(8, 0) = crown_380;        // A -> C
+        N_buf(8, 1) = crown_550;
+        N_buf(8, 2) = crown_750;
+        N_buf(9, 0) = 1/crown_380;      // C -> A
+        N_buf(9, 1) = 1/crown_550;
+        N_buf(9, 2) = 1/crown_750;
+        fov = 1/8.0;
+        F = 8.0;
+    }
+
+    {
+        // Zeiss 1955 design from US2799207A
+        // Constants from the patent:
+        double
+            r1 = 0.347219, r2 = 0.904131, r3 = 0.309462, r4 = 0.215955,
+            r5 = -0.228743, r6 = 1.69089, r7 = -0.320794, r8 = -2.83857,
+            r9 = -0.538549, d1 = 0.07573, l1 = 0.00132, d2 = 0.06236,
+            l2 = 0.24492, d3 = 0.01324, d4 = 0.09492, l3 = 0.00132,
+            d5 = 0.06620, n1 = 1.62041, v1 = 60.3, n2 = 1.75520,
+            v2 = 27.5, n3 = 1.71736, v3 = 29.5, n4 = 1.69067,
+            v4 = 54.9, n5 = 1.75520, v5 = 27.5;
+
+        n = 9;
+        radius_buf = Buffer<double>(n);
+        z_buf = Buffer<double>(n);
+        z_min = Buffer<double>(n);
+        N_buf = Buffer<double>(n, 3);
+
+        // Scale up the focal length to 10.
+        double scale = 7.715395;
+
+        radius_buf(0) = r1 * scale;
+        radius_buf(1) = r2 * scale;
+        radius_buf(2) = r3 * scale;
+        radius_buf(3) = r4 * scale;
+        radius_buf(4) = r5 * scale;
+        radius_buf(5) = r6 * scale;
+        radius_buf(6) = r7 * scale;
+        radius_buf(7) = r8 * scale;
+        radius_buf(8) = r9 * scale;
+
+        z_buf(0) = 0;
+        z_buf(1) = d1 * scale;
+        z_buf(2) = l1 * scale;
+        z_buf(3) = d2 * scale;
+        z_buf(4) = l2 * scale;
+        z_buf(5) = d3 * scale;
+        z_buf(6) = d4 * scale;
+        z_buf(7) = l3 * scale;
+        z_buf(8) = d5 * scale;
+
+        z_min.copy_from(z_buf);
+        for (int i = 0; i < 9; i++) {
+            z_min(i) /= 2;
+        }
+
+        // Integrate to get absolute coordinates of each element's intersection with the optical axis
+        for (int i = 1; i < 9; i++) {
+            z_buf(i) += z_buf(i-1);
+        }
+
+        // If we assume that for the material, nD = (nF + nC)/c, the
+        // Abbe number and nD are sufficient to calculate an index of
+        // refraction at all three wavelengths.
+        double dn1 = (n1 - 1) / (2 * v1);
+        double dn2 = (n2 - 1) / (2 * v2);
+        double dn3 = (n3 - 1) / (2 * v3);
+        double dn4 = (n4 - 1) / (2 * v4);
+        double dn5 = (n5 - 1) / (2 * v5);
+
+        // Absolute indices of refraction
+        N_buf.fill(1.0); // Initialize to air
+        N_buf(0, 0) = n1 - dn1; // A -> C
+        N_buf(0, 1) = n1;
+        N_buf(0, 2) = n1 + dn1;
+        N_buf(2, 0) = n2 - dn2;
+        N_buf(2, 1) = n2;
+        N_buf(2, 2) = n2 + dn2;
+        N_buf(4, 0) = n3 - dn3;
+        N_buf(4, 1) = n3;
+        N_buf(4, 2) = n3 + dn3;
+        N_buf(5, 0) = n4 - dn4;
+        N_buf(5, 1) = n4;
+        N_buf(5, 2) = n4 + dn4;
+        N_buf(7, 0) = n5 - dn5;
+        N_buf(7, 1) = n5;
+        N_buf(7, 2) = n5 + dn5;
+
+        // Convert to relative
+        for (int i = n-1; i > 0; i--) {
+            for (int j = 0; j < 3; j++) {
+                N_buf(i, j) /= N_buf(i-1, j);
+            }
+        }
+
+        fov = 1/6.0;
+        F = 6.0;
+    }
+
+
+    // We'll compile three pipeline variants - one for doing the
+    // optimization, one just for evaluating loss, and one for
+    // generating postscript figures.
+
+    Pipeline p_optimize, p_evaluate, p_render;
 
     for (int gen_postscript = 0; gen_postscript < 2; gen_postscript++) {
 
-        const int rays_per_packet = 5;
-        const int packets = 5;
+        const int rays_per_packet = gen_postscript ? 4 : 8;
+        const int packets = gen_postscript ? 4 : 8;
 
-        Var x, u;
+        Var x, u, l;
 
         Func radius;
         radius(x) = radius_buf(x);
@@ -289,43 +488,54 @@ void spherical_surface_2d(int n) {
         z(x) = z_buf(x);
 
         Func N;
-        N(x) = N_buf(x);
+        N(x, l) = N_buf(x, l);
 
+        // Maximum ray slope of fov
         Func initial_u;
-        initial_u(u) = (0.2f*u)/(packets - 1) - 0.1f; //random_float(seed) * 2 - 1;
+        initial_u(u) = ((cast<double>(2*u))/(packets - 1) - 1) * Expr(fov);
 
+        double focal_length = 10; // distance from aperture to sensor
+        double aperture_diameter = focal_length / F;
+        double aperture_radius = aperture_diameter / 2;
         Func initial_x;
-        initial_x(x, u) = (2.0f*x)/(rays_per_packet - 1) - 1; //random_float(seed) * 2 - 1;
+        initial_x(x) = (cast<double>(2*x)/(rays_per_packet - 1) - 1) * Expr(aperture_radius);
 
         Func rays;
-        rays(x, u) = {initial_x(x, u), initial_u(u)}; // rays(x, u) for fixed u is a 'packet' of parallel rays
+        rays(x, u, l) = {initial_x(x), initial_u(u), Expr(0.0)}; // rays(x, u, l) for fixed u is a 'packet' of parallel rays at wavelength l
 
         vector<Func> funcs;
+        rays.vectorize(x);
         funcs.push_back(rays);
 
-        Expr current_z = 0.0f;
+        Func loss;
+        loss() = Expr(0.0);
+
+        RDom rr(0, rays_per_packet, 0, packets, 0, 3);
+
         for (int i = 0; i < n; i++) {
             // Intersect with the next lens surface
-            Expr X = rays(x, u)[0], U = rays(x, u)[1];
+            Expr X = rays(x, u, l)[0], U = rays(x, u, l)[1], Z = rays(x, u, l)[2];
             Expr R = radius(i);
 
             Expr X_initial = X;
-            Expr Z_initial = current_z;
+            Expr Z_initial = Z;
+
+            // Walk the ray the reference plane for this surface
+            X += (z(i) - Z) * U;
+            Z = z(i);
 
             // Walk the ray forward until it intersects the surface
             auto roots = solve_quadratic(U*U + 1, 2*(X*U - R), X*X);
             Expr alpha = select(R < 0, roots.first, roots.second);
             X += alpha * U;
-
-            Expr X_at_lens_surface = X;
-            Expr Z_at_lens_surface = Z_initial + alpha;
+            Z += alpha;
 
             // Compute the slope of the normal to the lens surface at the intersection
             Expr u3 = -X / (R - alpha);
 
             // Compute the slope of the outgoing ray
             Expr u1 = U;
-            Expr A = N(i)*N(i) * (1 + u1*u1);
+            Expr A = N(i, l)*N(i, l) * (1 + u1*u1);
             Expr B = pow(u3 - u1, 2);
             roots = solve_quadratic(A - B, 0 - 2*A*u3, A*u3*u3 - B);
             Expr u2 = select((u1 < u3) ^ (roots.first < u3), roots.second, roots.first);
@@ -333,79 +543,94 @@ void spherical_surface_2d(int n) {
             // Refract!
             U = u2;
 
-            // Walk the ray forwards to the plane of the next surface
-            X += (z(i) - alpha) * U;
-
-
             if (gen_postscript) {
 
-                Expr X_final = X;
-                Expr Z_final = Z_initial + z(i);
-
                 // If this is the first surface, start the rays a little early to make the figure clearer
-                // Otherwise, go halfway back to the previous surface
-                Expr dz = i == 0 ? 1 : z(i-1)/2;
-                Z_initial -= dz;
-                X_initial -= rays(x, u)[1] * dz;
-
-                // Don't go all the way to the next surface, to avoid having to backtrack on concave surfaces
-                if (i < n-1) {
-                    Expr dz = z(i) / 2;
-                    Z_final -= dz;
-                    X_final -= U * dz;
+                if (i == 0) {
+                    Z_initial -= 1;
+                    X_initial -= rays(x, u, l)[1];
                 }
 
                 // Emit the rays as postscript as a side-effect (Whee hack!)
-                X = print(X, "pop", Z_initial, X_initial, "moveto",
-                          Z_at_lens_surface, X_at_lens_surface, "lineto",
-                          Z_final, X_final, "lineto",
-                          "% PS", "seed =", seed, "x =", x, "u =", u);
+                X = print(X, "pop newpath",
+                          select(l == 0, 0.8f, 0.0f),
+                          select(l == 1, 0.8f, 0.0f),
+                          select(l == 2, 0.8f, 0.0f), "setrgbcolor",
+                          Z_initial, X_initial, "moveto",
+                          Z, X, "lineto stroke",
+                          "% x =", x, "u =", u, "l =", l);
             }
 
-
             Func next;
-            next(x, u) = {X, U};
+            next(x, u, l) = {X, U, Z};
+
+            // No reflections, please
+            loss() += pow(min(next(rr.x, rr.y, rr.z)[2] - rays(rr.x, rr.y, rr.z)[2], Expr(0.05)) - Expr(0.05), 2) / 100;
+
             rays = next;
-            current_z += z(i);
             funcs.push_back(rays);
+            rays.vectorize(x);
+
+            if (i == n-1) {
+                X = rays(x, u, l)[0];
+                U = rays(x, u, l)[1];
+                Z = rays(x, u, l)[2];
+
+                // Walk the ray forward to the image sensor
+                X += (sensor_z - Z) * U;
+                Z = sensor_z;
+
+                if (gen_postscript) {
+                    X = print(X, "pop newpath",
+                              select(l == 0, 0.8f, 0.0f),
+                              select(l == 1, 0.8f, 0.0f),
+                              select(l == 2, 0.8f, 0.0f), "setrgbcolor",
+                              rays(x, u, l)[2], rays(x, u, l)[0], "moveto",
+                              Z, X, "lineto stroke",
+                              "% x =", x, "u =", u, "l =", l);
+                }
+
+                Func next;
+                next(x, u, l) = {X, U, Z};
+                // No reflections, please
+                loss() += pow(min(next(rr.x, rr.y, rr.z)[2] - rays(rr.x, rr.y, rr.z)[2], Expr(0.05)) - Expr(0.05), 2) / 100;
+                rays = next;
+                funcs.push_back(rays);
+                rays.vectorize(x);
+            }
         }
 
         Func sensor = rays;
 
         // Require the rays to come to a focus.
-        RDom rx(0, rays_per_packet);
+        RDom rx(0, rays_per_packet, 0, 3);
         Func average_packet_x;
-        average_packet_x(u) += sensor(rx, u)[0];
-        average_packet_x(u) /= rays_per_packet;
+        average_packet_x(u) += sensor(rx.x, u, rx.y)[0];
+        average_packet_x(u) /= rays_per_packet * 3;
 
         Func packet_variance;
-        packet_variance(u) += pow(sensor(rx, u)[0] - average_packet_x(u), 2);
-        packet_variance(u) /= rays_per_packet - 1; // variance from samples, so -1
+        packet_variance(u) += pow(sensor(rx.x, u, rx.y)[0] - average_packet_x(u), 2);
+        packet_variance(u) /= rays_per_packet * 3 - 1; // variance from samples, so -1
 
-        Func loss;
+        Func spot_size;
         RDom ru(0, packets);
-        loss() += packet_variance(ru);
-        loss() /= packets;
+        spot_size() += packet_variance(ru);
+        spot_size() /= packets;
 
-        // Constrain the thickness of the optical system
-        loss() += 0.01f * pow(current_z - 10, 2);
+        loss() += spot_size();
 
+        /*
         // Constrain the gaps to be positive
-        for (int i = 0; i < n; i++) {
-            loss() += 0.01f * pow(min(z(i), 0), 2);
+        for (int i = 0; i < n - 1; i++) {
+            Expr prev = (i > 0) ? z(i-1) : Expr(0.0);
+            loss() += pow(min((z(i) - prev) - Expr(z_min(i)), 0), 2);
         }
+        */
 
         funcs.push_back(average_packet_x);
         funcs.push_back(packet_variance);
-        funcs.push_back(loss);
-
-        // Initialize the system
-        for (int i = 0; i < n; i++) {
-            z_buf(i) = 5.0/n;
-            N_buf(i) = (i % 2) ? (1/1.4f) : 1.4f;
-            radius_buf(i) = 6.f; //(i >= n/2) ? -6.f : 6.f;
-        }
-        z_buf(n-1) = 10 - n;
+        funcs.push_back(spot_size);
+        //funcs.push_back(loss);
 
         /*
           vector<vector<pair<int, int>>> bounds;
@@ -420,7 +645,7 @@ void spherical_surface_2d(int n) {
         }
 
         if (gen_postscript) {
-            p_render = Pipeline(loss);
+            p_render = Pipeline({spot_size, loss});
             p_render.set_custom_print(print_to_stream);
         } else {
             auto d = Halide::propagate_adjoints(loss);
@@ -432,63 +657,74 @@ void spherical_surface_2d(int n) {
             Func dr = d(radius);
             Func dz = d(z);
 
-            p_optimize = Pipeline({dr, dz, loss});
+            p_optimize = Pipeline({dr, dz, spot_size, loss});
+            p_evaluate = Pipeline({spot_size, loss});
         }
     }
 
     fprintf(stderr, "Entering optimization loop\n");
-    Buffer<float> dloss_dr(n), dloss_dz(n);
-    auto loss_buf = Buffer<float>::make_scalar();
-    float learning_rate = 0.1f;
-    for (int j = 0; j < 500; j++) {
+    Buffer<double> dloss_dr(n), dloss_dz(n);
+    auto loss_buf = Buffer<double>::make_scalar();
+    auto spot_size_buf = Buffer<double>::make_scalar();
+    Buffer<double> old_r(n), old_z(n);
+
+    double learning_rate = 1;
+    for (int j = 0; j < 600; j++) {
+        double sz = std::max(5.0, 10 - j/100.0);
+        sensor_z.set(sz);
+
         std::ofstream postscript("iter_" + std::to_string(j) + ".ps", std::ios_base::trunc);
         stream = &postscript;
         postscript << "<</PageSize [1200 800] >> setpagedevice\n"
                    << "100 400 translate\n"
                    << "100 100 scale\n"
-                   << "0.01 setlinewidth\n";
+                   << "0.002 setlinewidth\n";
         // Draw the lens surfaces
-        float current_z = 0;
         for (int s = 0; s < n; s++) {
-            float r = radius_buf(s);
-            float theta = 180 * (asin(3 / std::max(3.01f, r)) / M_PI);
-            bool front_surface = ((s & 1) == 0);
-            if (front_surface) {
-                postscript << "newpath ";
-                theta = -theta;
-            }
-            postscript << (current_z + r) << " 0 " << r << " " << (180 - theta) << " " << (180 + theta);
-            if (front_surface) {
-                postscript << " arcn ";
+            double r = radius_buf(s);
+            double theta = 180 * (asin(1.4 / std::max(1.41, std::abs(r))) / M_PI);
+            postscript << "newpath ";
+            if (r > 0) {
+                postscript << (z_buf(s) + r) << " 0 " << r << " " << (180 - theta) << " " << (180 + theta);
             } else {
-                postscript << " arc closepath 0.8 setgray fill 0.0 setgray stroke\n";
+                postscript << (z_buf(s) + r) << " 0 " << std::abs(r) << " " << -theta << " " << theta;
             }
-            current_z += z_buf(s);
+            postscript << " arc stroke\n";
         }
-        postscript << "newpath\n";
         // Draw the sensor
-        postscript << current_z << " 4 moveto " << current_z << " -4 lineto\n";
+        postscript << "newpath " << sz << " 4 moveto " << sz << " -4 lineto stroke\n";
 
-        p_render.realize(loss_buf);
+        double old_loss = loss_buf();
 
+        p_render.realize({spot_size_buf, loss_buf});
         postscript << "stroke showpage\n";
         stream = nullptr;
         postscript.close();
 
-        float old_loss = loss_buf();
-        for (int i = 0; i < 10000; i++) {
-            seed.set(0);
-            p_optimize.realize({dloss_dr, dloss_dz, loss_buf});
-            for (int s = 0; s < n; s++) {
-                radius_buf(s) -= learning_rate * dloss_dr(s);
-                z_buf(s) -= 0.1f * learning_rate * dloss_dz(s);
-            }
-            if (loss_buf() < 0.995f * old_loss) break;
-        }
-        // Ramp up the learning rate slowly. It's not essential, but
-        // it gives us more samples in time for the figures.
-        if (learning_rate < 10) learning_rate *= 1.01;
+        for (int i = 0; i < 100; i++) {
+            p_optimize.realize({dloss_dr, dloss_dz, spot_size_buf, loss_buf});
 
+            // Do line search in this direction
+            int steps = 0;
+            for (double l = learning_rate; l > learning_rate / 256; l /= 2) {
+                double prev_loss = loss_buf();
+                while (!std::isnan(loss_buf()) && loss_buf() <= prev_loss) {
+                    old_r.copy_from(radius_buf);
+                    old_z.copy_from(z_buf);
+                    for (int s = 0; s < n; s++) {
+                        radius_buf(s) -= l * dloss_dr(s);
+                        z_buf(s) -= l * dloss_dz(s);
+                    }
+                    prev_loss = loss_buf();
+                    p_evaluate.realize({spot_size_buf, loss_buf});
+                    steps++;
+                }
+                // Undo the last bad step
+                z_buf.copy_from(old_z);
+                radius_buf.copy_from(old_r);
+                loss_buf() = prev_loss;
+            }
+        }
         printf("Radii: ");
         for (int s = 0; s < n; s++) {
             printf("%f ", radius_buf(s));
@@ -497,18 +733,20 @@ void spherical_surface_2d(int n) {
         for (int s = 0; s < n; s++) {
             printf("%f ", z_buf(s));
         }
-        printf("\nSpot size: %f\n", sqrt(loss_buf()));
+        printf("\nSpot size: %f\n", sqrt(spot_size_buf()));
+        printf("Loss: %g\n", loss_buf());
+
         if (std::isnan(loss_buf())) break;
     }
 }
 
 int main(int argc, char **argv) {
 
-    thin_lens();
+    //thin_lens();
 
-    spherical_surface_2d();
+    //spherical_surface_2d();
 
-    spherical_surface_2d(4);
+    spherical_lens_system_2d();
 
     return 0;
 }
