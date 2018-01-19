@@ -143,6 +143,11 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                     func.dimensions() > 0) {
                 Func &adjoint_func = adjoint_funcs[func_key];
                 const Box &bounds = func_bounds[func.name()];
+
+                // Save a pointer to the unbounded def. Useful for scheduling
+                FuncKey unbounded_func_key{func.name() + "_unbounded", update_id};
+                adjoint_funcs[unbounded_func_key] = adjoint_func;
+
                 if (adjoint_func.values().size() == 1) {
                     adjoint_func = BoundaryConditions::constant_exterior(
                             adjoint_func, 0.f, box_to_vector(bounds),
