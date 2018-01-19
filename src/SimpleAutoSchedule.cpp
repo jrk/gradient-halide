@@ -137,19 +137,21 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 // Fuse variables
                 std::vector<Var> fused_vars;
                 fused_vars.push_back(func.args()[0]);
+                int var_size = int_bounds[0];
                 for (int i = 1; i < (int)func.args().size(); i++) {
                     Var new_var;
                     func.fuse(fused_vars.back(), func.args()[i], new_var);
                     fused_vars.push_back(new_var);
+                    var_size *= int_bounds[i];
                 }
                 // Launch GPU threads
                 Var block, thread;
-                func.gpu_tile(fused_vars.back(), block, thread, 32);
+                func.gpu_tile(fused_vars.back(), block, thread, 16);
             }
         }
 
         for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
-            const std::vector<ReductionVariable> &rvars =
+            std::vector<ReductionVariable> rvars =
                 func.update(update_id).get_schedule().rvars();
             int dim_width = -1;
             int dim_height = -1;
@@ -201,10 +203,17 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         Var xo, yo, xi;
                         Func interm = func.update(update_id)
                                           .rfactor({{rxi, xi},
-					                                {rxo, xo},
+                                                    {rxo, xo},
                                                     {ryo, yo}});
                         std::vector<VarOrRVar> new_order;
                         new_order.push_back(ryi);
+                        /* // Not sure if this is useful
+                        for (int rvar_id = 0; rvar_id < (int)rvars.size(); rvar_id++) {
+                            if (rvar_id != dim_width && rvar_id != dim_height) {
+                                new_order.push_back(RVar(rvars[rvar_id].var));
+                            }
+                        }
+                        */
                         new_order.push_back(xi);
                         new_order.push_back(xo);
                         new_order.push_back(yo);
@@ -219,13 +228,11 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         Var tile_index;
                         interm.compute_root()
                               .reorder(xi, xo, yo)
-                              .fuse(xo, yo, tile_index)
-                              .gpu_blocks(tile_index)
+                              .gpu_blocks(xo, yo)
                               .gpu_threads(xi);
                         interm.update()
                               .reorder(new_order)
-                              .fuse(xo, yo, tile_index)
-                              .gpu_blocks(tile_index)
+                              .gpu_blocks(xo, yo)
                               .gpu_threads(xi);
                     } else {
                         // Parallel on tiles and vectorize inside tile
@@ -306,6 +313,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
             } else if (options.gpu) {
                 // If the reduction domain is large enough, parallelize the reduction domain
                 if (tilable && rvar_tilable) {
+                    std::vector<VarOrRVar> new_rvar_order;;
                     RVar xo, yo, xi, yi;
                     RVar tile_index;
                     func.update(update_id)
@@ -321,10 +329,12 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         // Fuse variables
                         std::vector<Var> fused_vars;
                         fused_vars.push_back(pure_args[0]);
+                        int var_size = pure_arg_bounds[0];
                         for (int i = 1; i < (int)pure_args.size(); i++) {
                             Var new_var;
                             func.update(update_id).fuse(fused_vars.back(), pure_args[i], new_var);
                             fused_vars.push_back(new_var);
+                            var_size *= pure_arg_bounds[i];
                         }
                         // Launch GPU threads
                         Var block, thread;
