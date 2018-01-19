@@ -194,46 +194,46 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 if (dim_width != -1 && dim_height != -1) {
                     if (options.gpu) {
                         assert(dim_width != dim_height);
-                        // Each GPU thread covers tile_height reductions over y
-                        // Make sure the threads number is multiple of 32 (size of a warp)
-                        RVar rxo, rxi, ryo, ryi;
-                        func.update(update_id)
-                            .split(RVar(rvars[dim_width].var), rxo, rxi, tile_width)
-                            .split(RVar(rvars[dim_height].var), ryo, ryi, tile_height);
-                        Var xo, yo, xi;
-                        Func interm = func.update(update_id)
-                                          .rfactor({{rxi, xi},
-                                                    {rxo, xo},
-                                                    {ryo, yo}});
-                        std::vector<VarOrRVar> new_order;
-                        new_order.push_back(ryi);
-                        /* // Not sure if this is useful
-                        for (int rvar_id = 0; rvar_id < (int)rvars.size(); rvar_id++) {
-                            if (rvar_id != dim_width && rvar_id != dim_height) {
-                                new_order.push_back(RVar(rvars[rvar_id].var));
+                        RVar rx(rvars[dim_width].var);
+                        RVar ry(rvars[dim_height].var);
+                        for (int level = 0; level < 1; level++) {
+                            RVar rxo, rxi, ryo, ryi;
+                            int size = level == 0 ? 32 : 8;
+                            func.update(update_id)
+                                .split(rx, rxo, rxi, size)
+                                .split(ry, ryo, ryi, size);
+                            rx = rxo; ry = ryo;
+                            Var xi, xo, yo;
+                            Func interm = func.update(update_id)
+                                              .rfactor({{rxi, xi},
+                                                        {rxo, xo},
+                                                        {ryo, yo}});                       
+                            std::vector<VarOrRVar> new_order;
+                            new_order.push_back(ryi);
+                            new_order.push_back(xi);
+                            new_order.push_back(xo);
+                            new_order.push_back(yo);
+                            for (const auto &arg : interm.update_args()) {
+                                const Variable *var = arg.as<Variable>();
+                                if (var != nullptr && !var->reduction_domain.defined() &&
+                                        var->name != xi.name() &&
+                                        var->name != xo.name() &&
+                                        var->name != yo.name()) {
+                                    new_order.push_back(Var(var->name));
+                                }
                             }
+                            Var txo, txi, tyo, tyi;
+                            interm.compute_root()
+                                  .reorder(xi, xo, yo)
+                                  .gpu_blocks(xo, yo)
+                                  .gpu_threads(xi);
+                                  //.gpu_tile(xo, yo, txo, txi, tyo, tyi, 8, 8);
+                            interm.update()
+                                  .reorder(new_order)
+                                  .gpu_blocks(xo, yo)
+                                  .gpu_threads(xi);
+                                  //.gpu_tile(xo, yo, txo, txi, tyo, tyi, 8, 8);
                         }
-                        */
-                        new_order.push_back(xi);
-                        new_order.push_back(xo);
-                        new_order.push_back(yo);
-                        for (const auto &arg : interm.update_args()) {
-                            const Variable *var = arg.as<Variable>();
-                            if (var != nullptr && !var->reduction_domain.defined() &&
-                                    var->name != xi.name() && var->name != xo.name() &&
-                                    var->name != yo.name()) {
-                                new_order.push_back(Var(var->name));
-                            }
-                        }
-                        Var tile_index;
-                        interm.compute_root()
-                              .reorder(xi, xo, yo)
-                              .gpu_blocks(xo, yo)
-                              .gpu_threads(xi);
-                        interm.update()
-                              .reorder(new_order)
-                              .gpu_blocks(xo, yo)
-                              .gpu_threads(xi);
                     } else {
                         // Parallel on tiles and vectorize inside tile
                         RVar rxo, ryo, rxi, ryi;
