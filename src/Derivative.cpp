@@ -416,9 +416,10 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         Func& func_to_update = adjoint_funcs[func_key];
         assert(func_to_update.dimensions() == (int)lhs.size());
 
-        bool debug_flag = false;//func_key.first == "f_input";
+        bool debug_flag = false;//func_key.first == "input_im";
 
         if (debug_flag) {
+            debug(0) << "current_func:" << current_func.name() << "\n";
             debug(0) << "Scattering to " << op->name << "\n";
             debug(0) << "lhs is:";
             for (const auto &arg : lhs) {
@@ -426,10 +427,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
             debug(0) << "\n";
             debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
-            debug(0) << "current_func:" << "\n";
-            PrintFuncOptions options;
-            options.depth = 1;
-            print_func(current_func, options);
+            //PrintFuncOptions options;
+            //options.depth = 1;
+            //print_func(current_func, options);
         }
 
         // Gather argument & bounds information
@@ -497,6 +497,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // (TODO: make this a routine? also the invalidated vars?)
         std::vector<bool> canonicalized(lhs.size(), false);
         std::set<std::string> canonicalized_vars;
+        std::map<std::string, Var> lhs_substitute_map;
         for (int i = 0; i < (int)lhs.size(); i++) {
             // Gather all pure variables at op->args[i], substitute them with new_args
             // For now only support single pure variable
@@ -522,7 +523,15 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
             lhs[i] = func_to_update.args()[i];
             canonicalized[i] = true;
-            canonicalized_vars.insert(func_to_update.args()[i].name());
+            canonicalized_vars.insert(current_args[i].name());
+            lhs_substitute_map[variables[0]] = func_to_update.args()[i];
+        }
+
+        // Deal with the case where the two functions have different set of variables
+        for (int i = 0; i < (int)lhs.size(); i++) {
+            for (const auto &it : lhs_substitute_map) {
+                lhs[i] = substitute(it.first, it.second, lhs[i]);
+            }
         }
 
         // Sometimes the canonicalization above doesn't work.
