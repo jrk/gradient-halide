@@ -425,7 +425,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         Func& func_to_update = adjoint_funcs[func_key];
         assert(func_to_update.dimensions() == (int)lhs.size());
 
-        bool debug_flag = false;//func_key.first == "input_im";
+        bool debug_flag = false;//func_key.first == "f_grid";
 
         if (debug_flag) {
             debug(0) << "current_func:" << current_func.name() << "\n";
@@ -532,7 +532,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
             lhs[i] = func_to_update.args()[i];
             canonicalized[i] = true;
-            canonicalized_vars.insert(current_args[i].name());
+            canonicalized_vars.insert(variables[0]);
             lhs_substitute_map[variables[0]] = func_to_update.args()[i];
         }
 
