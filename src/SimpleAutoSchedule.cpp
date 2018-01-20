@@ -125,7 +125,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
         int tile_width = options.gpu ? options.gpu_tile_width : options.cpu_tile_width;
         int tile_height = options.gpu ? options.gpu_tile_height : options.cpu_tile_height;
         int tile_channel = options.gpu_tile_channel;
-        int min_gpu_threads = 32;
+        int min_gpu_threads = 1;
         int min_cpu_threads = 8;
         int min_threads = options.gpu ? min_gpu_threads : min_cpu_threads;
         int vectorize_width = 8;
@@ -339,7 +339,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
             int pdim_width = -1;
             int pdim_height = -1;
             std::vector<int> bounds_rank = sort_indices(pure_arg_bounds);
-            if ((int)int_bounds.size() >= 2) {
+            if ((int)bounds_rank.size() >= 2) {
                 int last_index = bounds_rank.size() - 1;
                 pdim_width = std::min(bounds_rank[last_index], bounds_rank[last_index-1]);
                 pdim_height = std::max(bounds_rank[last_index], bounds_rank[last_index-1]);
