@@ -187,7 +187,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 }
                 // Launch GPU threads
                 Var block, thread;
-                func.gpu_tile(fused_vars.back(), block, thread, 16);
+                func.gpu_tile(fused_vars.back(), block, thread, std::min(var_size, 32));
             }
         }
 
@@ -444,7 +444,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         }
                         // Launch GPU threads
                         Var block, thread;
-                        func.update(update_id).gpu_tile(fused_vars.back(), block, thread, 32);
+                        func.update(update_id).gpu_tile(fused_vars.back(), block, thread, std::min(var_size, 32));
                     }
                 }
             }
