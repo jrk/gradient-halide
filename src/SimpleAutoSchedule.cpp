@@ -9,6 +9,15 @@ namespace Halide {
 
 using namespace Internal;
 
+template <typename T>
+std::vector<int> sort_indices(const std::vector<T> &v) {
+    std::vector<int> idx(v.size());
+    std::iota(idx.begin(), idx.end(), 0);
+    std::sort(idx.begin(), idx.end(),
+         [&v](int i1, int i2) {return v[i1] < v[i2];});
+    return idx;
+}
+
 void simple_autoschedule(std::vector<Func> &outputs,
                          const std::map<std::string, int> &parameters,
                          const std::vector<std::vector<std::pair<int, int>>> &output_bounds,
@@ -102,27 +111,53 @@ void simple_autoschedule(std::vector<Func> &outputs,
             user_assert(extent_int != nullptr) << "extent:" << extent << " is not constant.\n";
             int_bounds.push_back(*extent_int);
         }
+        std::vector<int> bounds_rank = sort_indices(int_bounds);
+        int dim_width = -1, dim_height = -1;
+        if ((int)int_bounds.size() >= 2) {
+            int last_index = bounds_rank.size() - 1;
+            dim_width = std::min(bounds_rank[last_index], bounds_rank[last_index-1]);
+            dim_height = std::max(bounds_rank[last_index], bounds_rank[last_index-1]);
+        }
 
         func.compute_root();
         // initial definition is easy: everything is pure variables
         // just parallelize and vectorize if there are enough places to launch threads
         int tile_width = options.gpu ? options.gpu_tile_width : options.cpu_tile_width;
         int tile_height = options.gpu ? options.gpu_tile_height : options.cpu_tile_height;
-        int min_gpu_threads = 128;
+        int tile_channel = options.gpu_tile_channel;
+        int min_gpu_threads = 32;
         int min_cpu_threads = 8;
         int min_threads = options.gpu ? min_gpu_threads : min_cpu_threads;
         int vectorize_width = 8;
         bool tilable = false;
         if ((int)int_bounds.size() >= 2 &&
-                int_bounds[0] >= tile_width &&
-                int_bounds[1] >= tile_height &&
-                (int_bounds[0] / tile_width) * (int_bounds[1] / tile_height) >= min_threads) {
-            Var xo, yo, xi, yi;
-            Var tile_index;
+                int_bounds[dim_width] >= tile_width &&
+                int_bounds[dim_height] >= tile_height &&
+                (int_bounds[dim_width] / tile_width) *
+                (int_bounds[dim_height] / tile_height) >= min_threads) {
+            Var xo, yo, zo, xi, yi, zi;
             if (options.gpu) {
-                func.gpu_tile(func.args()[0], func.args()[1], xo, yo, xi, yi, tile_width, tile_height);
+                bool first = true;
+                Var fused_var;
+                for (int i = 0; i < (int)func.args().size(); i++) {
+                    if (i == dim_width || i == dim_height) {
+                        continue;
+                    }
+                    if (first) {
+                        fused_var = func.args()[i];
+                        first = false;
+                    } else {
+                        func.fuse(fused_var, func.args()[i], fused_var);
+                    }
+                }
+                func.reorder(func.args()[dim_width], func.args()[dim_height], fused_var)
+                    .gpu_tile(
+                        func.args()[dim_width], func.args()[dim_height], fused_var,
+                        xo, yo, zo, xi, yi, zi, tile_width, tile_height, tile_channel);
             } else {
-                func.tile(func.args()[0], func.args()[1], xo, yo, xi, yi, tile_width, tile_height)
+                Var tile_index;
+                func.tile(func.args()[dim_width], func.args()[dim_height],
+                        xo, yo, xi, yi, tile_width, tile_height)
                     .fuse(xo, yo, tile_index)
                     .parallel(tile_index)
                     .vectorize(xi, vectorize_width);
@@ -153,8 +188,8 @@ void simple_autoschedule(std::vector<Func> &outputs,
         for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
             std::vector<ReductionVariable> rvars =
                 func.update(update_id).get_schedule().rvars();
-            int dim_width = -1;
-            int dim_height = -1;
+            int rdim_width = -1;
+            int rdim_height = -1;
             bool rvar_tilable = false;
             if (rvars.size() > 0) {
                 std::vector<int> rvar_extents;
@@ -176,29 +211,42 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     user_assert(extent_int != nullptr) << "extent:" << extent << " is not constant.\n";
                     rvar_extents.push_back(*extent_int);
                 }
-                // Tile rvar
-                for (int rvar_id = 0; rvar_id < (int)rvars.size(); rvar_id++) {
-                    if (dim_width == -1 && rvar_extents[rvar_id] >= tile_width) {
-                        dim_width = rvar_id;
-                    } else if (dim_width != -1 && dim_height == -1 && rvar_extents[rvar_id] >= tile_height) {
-                        dim_height = rvar_id;
-                        break;
+                std::vector<int> bounds_rank = sort_indices(rvar_extents);
+                if ((int)int_bounds.size() >= 2) {
+                    int last_index = bounds_rank.size() - 1;
+                    int dwidth = std::min(bounds_rank[last_index], bounds_rank[last_index-1]);
+                    int dheight = std::max(bounds_rank[last_index], bounds_rank[last_index-1]);
+                    if (rvar_extents[dwidth] >= tile_width &&
+                            rvar_extents[dheight] >= tile_height) {
+                        rdim_width = dwidth;
+                        rdim_height = dheight;
                     }
                 }
             }
-            rvar_tilable = dim_width != -1 && dim_height != -1;
+            // Unroll known, small rvars
+            for (int rvar_id = 0; rvar_id < (int)rvars.size(); rvar_id++) {
+                if (rvar_id != rdim_width && rvar_id != rdim_height) {
+                    Expr extent = rvars[rvar_id].extent;
+                    const int64_t *extent_int = as_const_int(extent);
+                    if (extent_int != nullptr && *extent_int <= 8) {
+                        func.update(update_id)
+                            .unroll(RVar(rvars[rvar_id].var));
+                    }
+                }
+            }
+            rvar_tilable = rdim_width != -1 && rdim_height != -1;
 
             // If the domain of the image is small and the reduction is large, use rfactor
             // TODO: gracefully fallback if factorization is impossible
             if (!tilable && rvar_tilable) {
-                if (dim_width != -1 && dim_height != -1) {
+                if (rdim_width != -1 && rdim_height != -1) {
                     if (options.gpu) {
-                        assert(dim_width != dim_height);
-                        RVar rx(rvars[dim_width].var);
-                        RVar ry(rvars[dim_height].var);
+                        assert(rdim_width != rdim_height);
+                        RVar rx(rvars[rdim_width].var);
+                        RVar ry(rvars[rdim_height].var);
                         for (int level = 0; level < 1; level++) {
                             RVar rxo, rxi, ryo, ryi;
-                            int size = level == 0 ? 32 : 8;
+                            int size = 32;
                             func.update(update_id)
                                 .split(rx, rxo, rxi, size)
                                 .split(ry, ryo, ryi, size);
@@ -210,9 +258,6 @@ void simple_autoschedule(std::vector<Func> &outputs,
                                                         {ryo, yo}});                       
                             std::vector<VarOrRVar> new_order;
                             new_order.push_back(ryi);
-                            new_order.push_back(xi);
-                            new_order.push_back(xo);
-                            new_order.push_back(yo);
                             for (const auto &arg : interm.update_args()) {
                                 const Variable *var = arg.as<Variable>();
                                 if (var != nullptr && !var->reduction_domain.defined() &&
@@ -222,24 +267,25 @@ void simple_autoschedule(std::vector<Func> &outputs,
                                     new_order.push_back(Var(var->name));
                                 }
                             }
+                            new_order.push_back(xi);
+                            new_order.push_back(xo);
+                            new_order.push_back(yo);
                             Var txo, txi, tyo, tyi;
                             interm.compute_root()
                                   .reorder(xi, xo, yo)
                                   .gpu_blocks(xo, yo)
                                   .gpu_threads(xi);
-                                  //.gpu_tile(xo, yo, txo, txi, tyo, tyi, 8, 8);
                             interm.update()
                                   .reorder(new_order)
                                   .gpu_blocks(xo, yo)
                                   .gpu_threads(xi);
-                                  //.gpu_tile(xo, yo, txo, txi, tyo, tyi, 8, 8);
                         }
                     } else {
                         // Parallel on tiles and vectorize inside tile
                         RVar rxo, ryo, rxi, ryi;
                         func.update(update_id)
-                            .split(RVar(rvars[dim_width].var), rxo, rxi, tile_width)
-                            .split(RVar(rvars[dim_height].var), ryo, ryi, tile_height);
+                            .split(RVar(rvars[rdim_width].var), rxo, rxi, tile_width)
+                            .split(RVar(rvars[rdim_height].var), ryo, ryi, tile_height);
                         Var xo, yo, xi;
                         Func interm = func.update(update_id)
                                           .rfactor({{rxo, xo},
@@ -284,19 +330,45 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     pure_arg_bounds.push_back(int_bounds[arg_id]);
                 }
             }
+            int pdim_width = -1;
+            int pdim_height = -1;
+            std::vector<int> bounds_rank = sort_indices(pure_arg_bounds);
+            if ((int)int_bounds.size() >= 2) {
+                int last_index = bounds_rank.size() - 1;
+                pdim_width = std::min(bounds_rank[last_index], bounds_rank[last_index-1]);
+                pdim_height = std::max(bounds_rank[last_index], bounds_rank[last_index-1]);
+            }
 
             if ((int)pure_arg_bounds.size() >= 2 &&
-                     pure_arg_bounds[0] >= tile_width &&
-                     pure_arg_bounds[1] >= tile_height &&
-                    (pure_arg_bounds[0] / tile_width) * (pure_arg_bounds[1] / tile_height) >= min_threads) {
-                Var xo, yo, xi, yi;
-                Var tile_index;
+                     pure_arg_bounds[pdim_width] >= tile_width &&
+                     pure_arg_bounds[pdim_height] >= tile_height &&
+                    (pure_arg_bounds[pdim_width] / tile_width) *
+                    (pure_arg_bounds[pdim_height] / tile_height) >= min_threads) {
+                Var xo, yo, zo, xi, yi, zi;
                 if (options.gpu) {
+                    bool first = true;
+                    Var fused_var;
+                    for (int i = 0; i < (int)pure_args.size(); i++) {
+                        if (i == pdim_width || i == pdim_height) {
+                            continue;
+                        }
+                        if (first) {
+                            fused_var = pure_args[i];
+                            first = false;
+                        } else {
+                            func.update(update_id)
+                                .fuse(fused_var, pure_args[i], fused_var);
+                        }
+                    }
                     func.update(update_id)
-                        .gpu_tile(pure_args[0], pure_args[1], xo, yo, xi, yi, tile_width, tile_height);
+                        .reorder(pure_args[pdim_width], pure_args[pdim_height], fused_var)
+                        .gpu_tile(pure_args[pdim_width], pure_args[pdim_height], fused_var,
+                                  xo, yo, zo, xi, yi, zi, tile_width, tile_height, tile_channel);
                 } else {
+                    Var tile_index;
                     func.update(update_id)
-                        .tile(pure_args[0], pure_args[1], xo, yo, xi, yi, tile_width, tile_height)
+                        .tile(pure_args[pdim_width], pure_args[pdim_height],
+                              xo, yo, xi, yi, tile_width, tile_height)
                         .fuse(xo, yo, tile_index)
                         .parallel(tile_index)
                         .vectorize(xi, vectorize_width);
@@ -313,13 +385,32 @@ void simple_autoschedule(std::vector<Func> &outputs,
             } else if (options.gpu) {
                 // If the reduction domain is large enough, parallelize the reduction domain
                 if (tilable && rvar_tilable) {
-                    std::vector<VarOrRVar> new_rvar_order;;
                     RVar xo, yo, xi, yi;
-                    RVar tile_index;
-                    func.update(update_id)
-                        .allow_race_conditions()
-                        .gpu_tile(RVar(rvars[dim_width].var), RVar(rvars[dim_height].var),
-                                xo, yo, xi, yi, tile_width, tile_height);
+                    if (pure_args.size() > 0) {
+                        Var zo, zi;
+                        Var fused_var;
+                        fused_var = pure_args[0];
+                        for (int i = 1; i < (int)pure_args.size(); i++) {
+                            func.update(update_id)
+                                .fuse(fused_var, pure_args[i], fused_var);
+                        }
+                        func.update(update_id)
+                            .allow_race_conditions()
+                            .split(RVar(rvars[rdim_width].var), xo, xi, tile_width)
+                            .split(RVar(rvars[rdim_height].var), yo, yi, tile_height)
+                            .split(fused_var, zo, zi, tile_channel)
+                            .reorder(xi, yi, zi, xo, yo, zo)
+                            .gpu_blocks(xo, yo, zo)
+                            .gpu_threads(xi, yi, zi);
+                    } else {
+                        func.update(update_id)
+                            .allow_race_conditions()
+                            .split(RVar(rvars[rdim_width].var), xo, xi, tile_width)
+                            .split(RVar(rvars[rdim_height].var), yo, yi, tile_height)
+                            .reorder(xi, yi, xo, yo)
+                            .gpu_blocks(xo, yo)
+                            .gpu_threads(xi, yi);
+                    }
                 } else {
                     // Even if there's not enough parallelism it's still a good idea to launch
                     // gpu tiles to avoid memory copy
@@ -342,7 +433,6 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     }
                 }
             }
-
 
             // Special pattern: if we see f(r.x, r.y, ...) = f(r.x, r.y, ...) + ...
             // we will parallelize over r
@@ -414,17 +504,26 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     user_assert(extent_int != nullptr) << "extent:" << extent << " is not constant.\n";
                     rvar_arg_bounds.push_back(*extent_int);
                 }
+                int rdim_width = -1;
+                int rdim_height = -1;
+                std::vector<int> bounds_rank = sort_indices(rvar_arg_bounds);
+                if ((int)int_bounds.size() >= 2) {
+                    int last_index = bounds_rank.size() - 1;
+                    rdim_width = std::min(bounds_rank[last_index], bounds_rank[last_index-1]);
+                    rdim_height = std::max(bounds_rank[last_index], bounds_rank[last_index-1]);
+                }
 
                 if ((int)rvar_arg_bounds.size() >= 2 &&
-                         rvar_arg_bounds[0] >= tile_width &&
-                         rvar_arg_bounds[1] >= tile_height &&
-                        (rvar_arg_bounds[0] / tile_width) *
-                        (rvar_arg_bounds[1] / tile_height) >= min_threads) {
+                         rvar_arg_bounds[rdim_width] >= tile_width &&
+                         rvar_arg_bounds[rdim_height] >= tile_height &&
+                        (rvar_arg_bounds[rdim_width] / tile_width) *
+                        (rvar_arg_bounds[rdim_height] / tile_height) >= min_threads) {
                     RVar xo, yo, xi, yi;
                     RVar tile_index;
                     func.update(update_id)
                         .allow_race_conditions()
-                        .tile(rvar_args[0], rvar_args[1], xo, yo, xi, yi, tile_width, tile_height)
+                        .tile(rvar_args[rdim_width], rvar_args[rdim_height],
+                              xo, yo, xi, yi, tile_width, tile_height)
                         .fuse(xo, yo, tile_index)
                         .parallel(tile_index)
                         .vectorize(xi, vectorize_width);
