@@ -105,6 +105,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 }
             }
             FuncKey func_key{func.name(), update_id};
+            assert(adjoint_funcs.find(func_key) == adjoint_funcs.end());
             adjoint_funcs[func_key] = adjoint_func;
         }
     }
@@ -123,6 +124,9 @@ void ReverseAccumulationVisitor::propagate_adjoints(
         }
         adjoint_func(args) = 0.f;
         FuncKey func_key{it.first, -1};
+        if (adjoint_funcs.find(func_key) != adjoint_funcs.end()) {
+            user_error << "Naming conflict between buffer and function:" << it.first << "\n";
+        }
         adjoint_funcs[func_key] = adjoint_func;
     }
 
