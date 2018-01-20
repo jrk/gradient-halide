@@ -668,15 +668,15 @@ void spherical_lens_system_2d() {
     auto spot_size_buf = Buffer<double>::make_scalar();
     Buffer<double> old_r(n), old_z(n);
 
-    double learning_rate = 1;
-    for (int j = 0; j < 600; j++) {
-        double sz = std::max(5.0, 10 - j/100.0);
+    double learning_rate = 0.1;
+    for (int j = 0; j < 1000; j++) {
+        double sz = std::max(6.0, 10 - j/100.0);
         sensor_z.set(sz);
 
         std::ofstream postscript("iter_" + std::to_string(j) + ".ps", std::ios_base::trunc);
         stream = &postscript;
-        postscript << "<</PageSize [1200 800] >> setpagedevice\n"
-                   << "100 400 translate\n"
+        postscript << "<</PageSize [1200 675] >> setpagedevice\n"
+                   << "100 337 translate\n"
                    << "100 100 scale\n"
                    << "0.002 setlinewidth\n";
         // Draw the lens surfaces
@@ -701,12 +701,12 @@ void spherical_lens_system_2d() {
         stream = nullptr;
         postscript.close();
 
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < 20; i++) {
             p_optimize.realize({dloss_dr, dloss_dz, spot_size_buf, loss_buf});
 
             // Do line search in this direction
             int steps = 0;
-            for (double l = learning_rate; l > learning_rate / 256; l /= 2) {
+            for (double l = learning_rate; l > learning_rate / 4096; l /= 2) {
                 double prev_loss = loss_buf();
                 while (!std::isnan(loss_buf()) && loss_buf() <= prev_loss) {
                     old_r.copy_from(radius_buf);
@@ -723,6 +723,9 @@ void spherical_lens_system_2d() {
                 z_buf.copy_from(old_z);
                 radius_buf.copy_from(old_r);
                 loss_buf() = prev_loss;
+            }
+            if (steps == 0) {
+                learning_rate /= 2;
             }
         }
         printf("Radii: ");
