@@ -150,10 +150,16 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         func.fuse(fused_var, func.args()[i], fused_var);
                     }
                 }
-                func.reorder(func.args()[dim_width], func.args()[dim_height], fused_var)
-                    .gpu_tile(
-                        func.args()[dim_width], func.args()[dim_height], fused_var,
-                        xo, yo, zo, xi, yi, zi, tile_width, tile_height, tile_channel);
+                if (first) {
+                    // no fused_vars
+                    func.reorder(func.args()[dim_width], func.args()[dim_height])
+                        .gpu_tile(func.args()[dim_width], func.args()[dim_height],
+                            xo, yo, xi, yi, tile_width, tile_height);
+                } else {
+                    func.reorder(func.args()[dim_width], func.args()[dim_height], fused_var)
+                        .gpu_tile(func.args()[dim_width], func.args()[dim_height], fused_var,
+                            xo, yo, zo, xi, yi, zi, tile_width, tile_height, tile_channel);
+                }
             } else {
                 Var tile_index;
                 func.tile(func.args()[dim_width], func.args()[dim_height],
@@ -360,10 +366,19 @@ void simple_autoschedule(std::vector<Func> &outputs,
                                 .fuse(fused_var, pure_args[i], fused_var);
                         }
                     }
-                    func.update(update_id)
-                        .reorder(pure_args[pdim_width], pure_args[pdim_height], fused_var)
-                        .gpu_tile(pure_args[pdim_width], pure_args[pdim_height], fused_var,
-                                  xo, yo, zo, xi, yi, zi, tile_width, tile_height, tile_channel);
+                    if (first) {
+                        // no fused_var
+                        func.update(update_id)
+                            .reorder(pure_args[pdim_width], pure_args[pdim_height])
+                            .gpu_tile(pure_args[pdim_width], pure_args[pdim_height],
+                                      xo, yo, xi, yi, tile_width, tile_height);
+
+                    } else {
+                        func.update(update_id)
+                            .reorder(pure_args[pdim_width], pure_args[pdim_height], fused_var)
+                            .gpu_tile(pure_args[pdim_width], pure_args[pdim_height], fused_var,
+                                      xo, yo, zo, xi, yi, zi, tile_width, tile_height, tile_channel);
+                    }
                 } else {
                     Var tile_index;
                     func.update(update_id)
