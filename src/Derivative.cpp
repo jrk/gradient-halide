@@ -199,9 +199,9 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                         adjoint_funcs[func_key](next_args);
                 }
                 if (func.values().size() == 1) {
-                    next_adjoint_func(update_args) = 0.f;
+                    next_adjoint_func(update_args) = Expr(0.0); // TODO: pick the right type
                 } else {
-                    std::vector<Expr> init(func.values().size(), Expr(0.f));
+                    std::vector<Expr> init(func.values().size(), Expr(0.0)); // TODO: pick the right type
                     next_adjoint_func(update_args) = Tuple(init);
                 }
             }
@@ -375,10 +375,13 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
       } else if (op->name == "log_f32") {
           // d/dx log(x) = 1 / x
           accumulate(op->args[0], adjoint / op->args[0]);
-      } else if (op->name == "sin_f32") {
+      } else if (op->name == "sin_f32" || op->name == "sin_f64") {
           // d/dx sin(x) = cos(x)
           accumulate(op->args[0], adjoint * cos(op->args[0]));
-      } else if (op->name == "cos_f32") {
+      } else if (op->name == "asin_f32" || op->name == "asin_f64") {
+          // d/dx asin(x) = 1 / sqrt(1 - x^2)
+          accumulate(op->args[0], adjoint / sqrt(1 - pow(op->args[0], 2)));
+      } else if (op->name == "cos_f32" || op->name == "cos_f64") {
           // d/dx cos(x) = -sin(x)
           accumulate(op->args[0], - adjoint * sin(op->args[0]));
       } else if (op->name == "ceil_f32") {
@@ -919,11 +922,15 @@ Expr forward_accumulation(const Expr &expr,
                 // d/dx log(f(x)) = f' / f(x)
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return d / expr;
-            } else if (op->name == "sin_f32") {
+            } else if (op->name == "sin_f32" || op->name == "sin_f64") {
                 // d/dx sin(f(x)) = cos(f(x)) f'
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return cos(op->args[0]) * d;
-            } else if (op->name == "cos_f32") {
+            } else if (op->name == "asin_f32" || op->name == "asin_f64") {
+                // d/dx asin(f(x)) = f' / sqrt(1 - f(x)^2)
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                return d / sqrt(1 - pow(op->args[0], 2));
+            } else if (op->name == "cos_f32" || op->name == "cos_f64") {
                 // d/dx cos(f(x)) = -sin(f(x)) f'
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return -sin(op->args[0]) * d;
