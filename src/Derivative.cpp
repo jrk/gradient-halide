@@ -275,8 +275,13 @@ void ReverseAccumulationVisitor::visit(const Cast *op) {
     assert(expr_adjoints.find(op) != expr_adjoints.end());
     Expr adjoint = expr_adjoints[op];
 
-    // d/dx cast(x) = 1
-    accumulate(op->value, adjoint);
+    // XXX: Is this correct?
+    // d/dx cast(x) = 1.f if op->type is float otherwise 0
+    if (op->type.is_float()) {
+        accumulate(op->value, 1.f);
+    } else {
+        accumulate(op->value, 0.f);
+    }
 }
 
 void ReverseAccumulationVisitor::visit(const Variable *op) {
