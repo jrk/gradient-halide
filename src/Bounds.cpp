@@ -1294,8 +1294,8 @@ private:
         Interval value_bounds = bounds_of_expr_in_scope(op->value, scope, func_bounds);
 
         bool fixed = value_bounds.min.same_as(value_bounds.max);
-        value_bounds.min = simplify(value_bounds.min);
-        value_bounds.max = fixed ? value_bounds.min : simplify(value_bounds.max);
+        value_bounds.min = simplify(common_subexpression_elimination(value_bounds.min));
+        value_bounds.max = fixed ? value_bounds.min : simplify(common_subexpression_elimination(value_bounds.max));
 
         if (is_small_enough_to_substitute(value_bounds.min) &&
             (fixed || is_small_enough_to_substitute(value_bounds.max))) {
