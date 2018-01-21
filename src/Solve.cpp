@@ -591,9 +591,9 @@ private:
             } else if (mul_a) {
                 if (a.type().is_float()) {
                     // f(x) * b == c -> f(x) == c / b
-                    if (is_eq || is_ne || is_positive_const(mul_a->b)) {
+                    if (is_eq || is_ne || is_positive_const(mul_a->b) || can_prove(mul_a->b > 0.f)) {
                         expr = mutate(Cmp::make(mul_a->a, (b / mul_a->b)));
-                    } else if (is_negative_const(mul_a->b)) {
+                    } else if (is_negative_const(mul_a->b) || can_prove(mul_a->b < 0.f)) {
                         expr = mutate(Opp::make(mul_a->a, (b / mul_a->b)));
                     }
                 } else if (is_const(mul_a->b, -1)) {
@@ -630,9 +630,9 @@ private:
                 }
             } else if (div_a) {
                 if (a.type().is_float()) {
-                    if (is_positive_const(div_a->b)) {
+                    if (is_positive_const(div_a->b) || can_prove(div_a->b > 0.f)) {
                         expr = mutate(Cmp::make(div_a->a, b * div_a->b));
-                    } else if (is_negative_const(div_a->b)) {
+                    } else if (is_negative_const(div_a->b) || can_prove(div_a->b < 0.f)) {
                         expr = mutate(Opp::make(div_a->a, b * div_a->b));
                     }
                 } else if (a.type().is_int() && a.type().bits() >= 32) {

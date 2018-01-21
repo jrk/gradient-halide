@@ -108,6 +108,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 }
             }
             FuncKey func_key{func.name(), update_id};
+            assert(adjoint_funcs.find(func_key) == adjoint_funcs.end());
             adjoint_funcs[func_key] = adjoint_func;
         }
     }
@@ -126,6 +127,9 @@ void ReverseAccumulationVisitor::propagate_adjoints(
         }
         adjoint_func(args) = Expr(0.0); // TODO: pick the right type
         FuncKey func_key{it.first, -1};
+        if (adjoint_funcs.find(func_key) != adjoint_funcs.end()) {
+            user_error << "Naming conflict between buffer and function:" << it.first << "\n";
+        }
         adjoint_funcs[func_key] = adjoint_func;
     }
 
@@ -147,6 +151,11 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 Func &adjoint_func = adjoint_funcs[func_key];
 
                 const Box &bounds = func_bounds[func.name()];
+
+                // Save a pointer to the unbounded def. Useful for scheduling
+                FuncKey unbounded_func_key{func.name() + "_unbounded", update_id};
+                adjoint_funcs[unbounded_func_key] = adjoint_func;
+
                 if (adjoint_func.values().size() == 1) {
                     adjoint_func = BoundaryConditions::constant_exterior(
                             adjoint_func, make_zero(adjoint_func.output_types()[0]), box_to_vector(bounds),
@@ -428,9 +437,10 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         Func& func_to_update = adjoint_funcs[func_key];
         assert(func_to_update.dimensions() == (int)lhs.size());
 
-        bool debug_flag = false;//func_key.first == "f_input";
+        bool debug_flag = false;//func_key.first == "f_grid";
 
         if (debug_flag) {
+            debug(0) << "current_func:" << current_func.name() << "\n";
             debug(0) << "Scattering to " << op->name << "\n";
             debug(0) << "lhs is:";
             for (const auto &arg : lhs) {
@@ -438,10 +448,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
             debug(0) << "\n";
             debug(0) << "adjoint is:" << simplify(adjoint) << "\n";
-            debug(0) << "current_func:" << "\n";
-            PrintFuncOptions options;
-            options.depth = 1;
-            print_func(current_func, options);
+            //PrintFuncOptions options;
+            //options.depth = 1;
+            //print_func(current_func, options);
         }
 
         // Gather argument & bounds information
@@ -509,6 +518,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // (TODO: make this a routine? also the invalidated vars?)
         std::vector<bool> canonicalized(lhs.size(), false);
         std::set<std::string> canonicalized_vars;
+        std::map<std::string, Var> lhs_substitute_map;
         for (int i = 0; i < (int)lhs.size(); i++) {
             // Gather all pure variables at op->args[i], substitute them with new_args
             // For now only support single pure variable
@@ -534,7 +544,15 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
             lhs[i] = func_to_update.args()[i];
             canonicalized[i] = true;
-            canonicalized_vars.insert(func_to_update.args()[i].name());
+            canonicalized_vars.insert(variables[0]);
+            lhs_substitute_map[variables[0]] = func_to_update.args()[i];
+        }
+
+        // Deal with the case where the two functions have different set of variables
+        for (int i = 0; i < (int)lhs.size(); i++) {
+            for (const auto &it : lhs_substitute_map) {
+                lhs[i] = substitute(it.first, it.second, lhs[i]);
+            }
         }
 
         // Sometimes the canonicalization above doesn't work.
