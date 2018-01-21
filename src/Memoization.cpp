@@ -85,13 +85,14 @@ public:
         info.type = parameter.type();
 
         if (parameter.is_buffer()) {
-            internal_error << "Buffer parameter " << parameter.name() <<
+            // HACK: downgraded to warning
+            user_warning << "Buffer parameter " << parameter.name() <<
                 " encountered in computed_cached computation.\n" <<
                 "Computations which depend on buffer parameters " <<
                 "cannot be scheduled compute_cached.\n" <<
                 "Use memoize_tag to provide cache key information for buffer.\n";
         } else if (info.type.is_handle()) {
-            internal_error << "Handle parameter " << parameter.name() <<
+            user_warning << "Handle parameter " << parameter.name() <<
                 " encountered in computed_cached computation.\n" <<
                 "Computations which depend on handle parameters " <<
                 "cannot be scheduled compute_cached.\n" <<
@@ -188,8 +189,8 @@ public:
           memoize_instance(memoize_instance)
     {
         dependencies.visit_function(function);
-        size_t size_so_far = 0;
-        size_so_far += Handle().bytes() + 4;
+        size_t size_so_far = 4;
+        size_so_far += (function_name.size() + 3) & (~3);
 
         size_t needed_alignment = parameters_alignment();
         if (needed_alignment > 1) {
@@ -213,24 +214,35 @@ public:
         std::vector<Stmt> writes;
         Expr index = Expr(0);
 
-        // Store a pointer to a string identifying the filter and
-        // function. Assume this will be unique due to CSE. This can
-        // break with loading and unloading of code, though the name
-        // mechanism can also break in those conditions.
-        writes.push_back(Store::make(key_name,
-                                     StringImm::make(std::to_string(top_level_name.size()) + ":" + top_level_name +
-                                                     std::to_string(function_name.size()) + ":" + function_name),
-                                     (index / Handle().bytes()), Parameter(), const_true()));
-        size_t alignment = Handle().bytes();
-        index += Handle().bytes();
+        // Make a jumble of bytes including the function name and the
+        // values of the scalar parameters. Omits the pipeline name
+        // and the unique counter so that we can reuse memoized Funcs
+        // across forward and backwards pipelines.
 
-        // Halide compilation is not threadsafe anyway...
-        writes.push_back(Store::make(key_name,
-                                     memoize_instance,
-                                     (index / Int(32).bytes()),
-                                     Parameter(), const_true()));
-        alignment += 4;
-        index += 4;
+        (void)top_level_name;
+        (void)memoize_instance;
+
+        std::vector<uint32_t> key;
+        key.push_back((uint32_t)function_name.size());
+        for (size_t i = 0; i < function_name.size(); i++) {
+            if (i % 4 == 0) {
+                key.push_back(function_name[i]);
+            } else {
+                key.back() *= 256;
+                key.back() += function_name[i];
+            }
+        }
+
+        size_t alignment = 0;
+        for (int k : key) {
+            writes.push_back(Store::make(key_name, k,
+                                         index / Int(32).bytes(),
+                                         Parameter(),
+                                         const_true()));
+            index += 4;
+            alignment += 4;
+        }
+
 
         size_t needed_alignment = parameters_alignment();
         if (needed_alignment > 1) {
