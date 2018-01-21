@@ -234,7 +234,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 if (rvar_id != rdim_width && rvar_id != rdim_height) {
                     Expr extent = rvars[rvar_id].extent;
                     const int64_t *extent_int = as_const_int(extent);
-                    if (extent_int != nullptr && *extent_int <= 8) {
+                    if (extent_int != nullptr && *extent_int <= options.unroll_rvar_size) {
                         func.update(update_id)
                             .unroll(RVar(rvars[rvar_id].var));
                     }
