@@ -381,7 +381,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
       if (op->name == "exp_f32") {
           // d/dx exp(x) = exp(x)
           accumulate(op->args[0], adjoint * exp(op->args[0]));
-      } else if (op->name == "log_f32") {
+      } else if (op->name == "log_f32" || op->name == "log_f64") {
           // d/dx log(x) = 1 / x
           accumulate(op->args[0], adjoint / op->args[0]);
       } else if (op->name == "sin_f32" || op->name == "sin_f64") {
@@ -936,7 +936,7 @@ Expr forward_accumulation(const Expr &expr,
                 // d/dx exp(f(x)) = exp(f(x)) f'
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return expr * d;
-            } else if (op->name == "log_f32") {
+            } else if (op->name == "log_f32" || op->name == "log_f64") {
                 // d/dx log(f(x)) = f' / f(x)
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return d / expr;
