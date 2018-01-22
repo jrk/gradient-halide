@@ -85,7 +85,7 @@ struct CacheEntry {
               uint32_t key_hash,
               const halide_buffer_t *computed_bounds_buf,
               int32_t tuples, halide_buffer_t **tuple_buffers);
-    void destroy();
+    void destroy(void *user_context);
     halide_buffer_t &buffer(int32_t i);
 
 };
@@ -169,12 +169,12 @@ WEAK bool CacheEntry::init(const uint8_t *cache_key, size_t cache_key_size,
     return true;
 }
 
-WEAK void CacheEntry::destroy() {
+WEAK void CacheEntry::destroy(void *user_context) {
     for (uint32_t i = 0; i < tuple_count; i++) {
-        halide_device_free(NULL, &buf[i]);
-        halide_free(NULL, get_pointer_to_header(buf[i].host));
+        halide_device_free(user_context, &buf[i]);
+        halide_free(user_context, get_pointer_to_header(buf[i].host));
     }
-    halide_free(NULL, metadata_storage);
+    halide_free(user_context, metadata_storage);
 }
 
 WEAK uint32_t djb_hash(const uint8_t *key, size_t key_size)  {
@@ -194,7 +194,8 @@ WEAK CacheEntry *cache_entries[kHashTableSize];
 WEAK CacheEntry *most_recently_used = NULL;
 WEAK CacheEntry *least_recently_used = NULL;
 
-const uint64_t kDefaultCacheSize = 1 << 20;
+// HACK for siggraph paper: default cache size is huge so we don't have to think about it
+const uint64_t kDefaultCacheSize = 1 << 30;
 WEAK int64_t max_cache_size = kDefaultCacheSize;
 WEAK int64_t current_cache_size = 0;
 
@@ -249,7 +250,7 @@ WEAK void validate_cache() {
 }
 #endif
 
-WEAK void prune_cache() {
+WEAK void prune_cache(void *user_context) {
 #if CACHE_DEBUGGING
     validate_cache();
 #endif
@@ -296,8 +297,8 @@ WEAK void prune_cache() {
             }
 
             // Deallocate the entry.
-            prune_candidate->destroy();
-            halide_free(NULL, prune_candidate);
+            prune_candidate->destroy(user_context);
+            halide_free(user_context, prune_candidate);
         }
 
         prune_candidate = more_recent;
@@ -311,7 +312,7 @@ WEAK void prune_cache() {
 
 extern "C" {
 
-WEAK void halide_memoization_cache_set_size(int64_t size) {
+WEAK void halide_memoization_cache_set_size(void *user_context, int64_t size) {
     if (size == 0) {
         size = kDefaultCacheSize;
     }
@@ -319,7 +320,7 @@ WEAK void halide_memoization_cache_set_size(int64_t size) {
     ScopedMutexLock lock(&memoization_lock);
 
     max_cache_size = size;
-    prune_cache();
+    prune_cache(user_context);
 }
 
 WEAK int halide_memoization_cache_lookup(void *user_context, const uint8_t *cache_key, int32_t size,
@@ -476,7 +477,7 @@ WEAK int halide_memoization_cache_store(void *user_context, const uint8_t *cache
         }
     }
     current_cache_size += added_size;
-    prune_cache();
+    prune_cache(user_context);
 
     CacheEntry *new_entry = (CacheEntry *)halide_malloc(NULL, sizeof(CacheEntry));
     bool inited = false;
@@ -543,15 +544,15 @@ WEAK void halide_memoization_cache_release(void *user_context, void *host) {
     debug(user_context) << "Exited halide_memoization_cache_release.\n";
 }
 
-WEAK void halide_memoization_cache_cleanup() {
+WEAK void halide_memoization_cache_cleanup(void *user_context) {
     debug(NULL) << "halide_memoization_cache_cleanup\n";
     for (size_t i = 0; i < kHashTableSize; i++) {
         CacheEntry *entry = cache_entries[i];
         cache_entries[i] = NULL;
         while (entry != NULL) {
             CacheEntry *next = entry->next;
-            entry->destroy();
-            halide_free(NULL, entry);
+            entry->destroy(user_context);
+            halide_free(user_context, entry);
             entry = next;
         }
     }
@@ -565,7 +566,7 @@ namespace {
 
 __attribute__((destructor))
 WEAK void halide_cache_cleanup() {
-    halide_memoization_cache_cleanup();
+    halide_memoization_cache_cleanup(NULL);
 }
 
 }

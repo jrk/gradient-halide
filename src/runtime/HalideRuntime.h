@@ -649,7 +649,7 @@ extern int halide_get_gpu_device(void *user_context);
  *  reults larger than the cache size can both cause it to
  *  temporariliy be larger than the size specified here.
  */
-extern void halide_memoization_cache_set_size(int64_t size);
+extern void halide_memoization_cache_set_size(void *user_context, int64_t size);
 
 /** Given a cache key for a memoized result, currently constructed
  *  from the Func name and top-level Func name plus the arguments of
@@ -711,7 +711,7 @@ extern void halide_memoization_cache_release(void *user_context, void *host);
 /** Free all memory and resources associated with the memoization cache.
  * Must be called at a time when no other threads are accessing the cache.
  */
-extern void halide_memoization_cache_cleanup();
+extern void halide_memoization_cache_cleanup(void *user_context);
 
 /** Create a unique file with a name of the form prefixXXXXXsuffix in an arbitrary
  * (but writable) directory; this is typically $TMP or /tmp, but the specific

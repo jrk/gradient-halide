@@ -449,7 +449,8 @@ void JITModule::memoization_cache_set_size(int64_t size) const {
     std::map<std::string, Symbol>::const_iterator f =
         exports().find("halide_memoization_cache_set_size");
     if (f != exports().end()) {
-        return (reinterpret_bits<void (*)(int64_t)>(f->second.address))(size);
+        // TODO: this calls set_size with a null user_context, which could be a problem
+        return (reinterpret_bits<void (*)(void *, int64_t)>(f->second.address))(nullptr, size);
     }
 }
 
