@@ -195,7 +195,7 @@ WEAK CacheEntry *most_recently_used = NULL;
 WEAK CacheEntry *least_recently_used = NULL;
 
 // HACK for siggraph paper: default cache size is huge so we don't have to think about it
-const uint64_t kDefaultCacheSize = 1 << 30;
+const uint64_t kDefaultCacheSize = 1LL << 32LL;
 WEAK int64_t max_cache_size = kDefaultCacheSize;
 WEAK int64_t current_cache_size = 0;
 

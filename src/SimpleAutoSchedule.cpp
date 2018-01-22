@@ -121,6 +121,10 @@ void simple_autoschedule(std::vector<Func> &outputs,
             dim_height = std::max(bounds_rank[last_index], bounds_rank[last_index-1]);
         }
 
+        if (output_set.find(func.name()) == output_set.end()) {
+            func.memoize();
+        }
+
         func.compute_root();
         // initial definition is easy: everything is pure variables
         // just parallelize and vectorize if there are enough places to launch threads
@@ -194,10 +198,6 @@ void simple_autoschedule(std::vector<Func> &outputs,
         }
 
         for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
-            bool debug_flag = func.name() == "reg_term_fwd";
-            if (debug_flag) {
-                std::cerr << "debug" << std::endl;
-            }
             std::vector<ReductionVariable> rvars =
                 func.update(update_id).get_schedule().rvars();
             int rdim_width = -1;
@@ -247,10 +247,6 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 }
             }
             rvar_tilable = rdim_width != -1 && rdim_height != -1;
-            if (debug_flag) {
-                std::cerr << "tilable:" << tilable << std::endl;
-                std::cerr << "rvar_tilable:" << rvar_tilable << std::endl;
-            }
 
             // If the domain of the image is small and the reduction is large, use rfactor
             // TODO: gracefully fallback if factorization is impossible
@@ -451,9 +447,6 @@ void simple_autoschedule(std::vector<Func> &outputs,
                             func.update(update_id).fuse(fused_vars.back(), pure_args[i], new_var);
                             fused_vars.push_back(new_var);
                             var_size *= pure_arg_bounds[i];
-                        }
-                        if (debug_flag) {
-                            std::cerr << "var_size:" << var_size << std::endl;
                         }
                         // Launch GPU threads
                         Var block, thread;
