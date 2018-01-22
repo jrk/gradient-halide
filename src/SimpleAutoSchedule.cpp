@@ -182,18 +182,16 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 func.gpu_single_thread();
             } else {
                 // Fuse variables
-                std::vector<Var> fused_vars;
-                fused_vars.push_back(func.args()[0]);
+                Var fused_var = func.args()[0];
                 int var_size = int_bounds[0];
                 for (int i = 1; i < (int)func.args().size(); i++) {
-                    Var new_var;
-                    func.fuse(fused_vars.back(), func.args()[i], new_var);
-                    fused_vars.push_back(new_var);
+                    func.fuse(fused_var, func.args()[i], fused_var);
                     var_size *= int_bounds[i];
                 }
                 // Launch GPU threads
+                // TODO: don't fuse when var_size is > 128
                 Var block, thread;
-                func.gpu_tile(fused_vars.back(), block, thread, std::min(var_size, 32));
+                func.gpu_tile(fused_var, block, thread, std::min(var_size, 128));
             }
         }
 
@@ -449,8 +447,10 @@ void simple_autoschedule(std::vector<Func> &outputs,
                             var_size *= pure_arg_bounds[i];
                         }
                         // Launch GPU threads
+                        // TODO: don't fuse when var_size is > 128
                         Var block, thread;
-                        func.update(update_id).gpu_tile(fused_vars.back(), block, thread, std::min(var_size, 32));
+                        func.update(update_id)
+                            .gpu_tile(fused_vars.back(), block, thread, std::min(var_size, 128));
                     }
                 }
             }
