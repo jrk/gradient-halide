@@ -5,6 +5,8 @@
 #include "Simplify.h"
 #include "Substitute.h"
 
+#include <numeric>
+
 namespace Halide {
 
 using namespace Internal;
@@ -269,7 +271,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                             Func interm = func.update(update_id)
                                               .rfactor({{rxi, xi},
                                                         {rxo, xo},
-                                                        {ryo, yo}});                       
+                                                        {ryo, yo}});
                             std::vector<VarOrRVar> new_order;
                             new_order.push_back(ryi);
                             for (const auto &arg : interm.update_args()) {
@@ -493,7 +495,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     if (called_func.name() != func.name()) {
                         return false;
                     }
-                    
+
                     for (int arg_id = 0; arg_id < (int)call->args.size(); arg_id++) {
                         const Variable *var = call->args[arg_id].as<Variable>();
                         if (!(var != nullptr &&
