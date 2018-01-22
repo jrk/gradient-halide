@@ -100,9 +100,8 @@ public:
         } else {
             info.size_expr = info.type.bytes();
             info.value_expr = Internal::Variable::make(info.type, parameter.name(), parameter);
+            dependency_info[DependencyKey(info.type.bytes(), parameter.name())] = info;
         }
-
-        dependency_info[DependencyKey(info.type.bytes(), parameter.name())] = info;
     }
 
     void record(const Expr &expr) {

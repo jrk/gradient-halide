@@ -535,7 +535,7 @@ class InjectBufferCopies : public IRMutator2 {
 
         // Device what type of allocation to make.
 
-        if (touched_on_host && finder.devices_touched.size() == 2) {
+        if (!op->new_expr.defined() && touched_on_host && finder.devices_touched.size() == 2) {
             // Touched on a single device and the host. Use a combined allocation.
             DeviceAPI touching_device = DeviceAPI::None;
             for (DeviceAPI d : finder.devices_touched) {
@@ -560,8 +560,8 @@ class InjectBufferCopies : public IRMutator2 {
             // Add a device destructor
             body = InjectDeviceDestructor(buffer_name).mutate(body);
 
-            // Make a device_free stmt
-            if (injector.last_use.defined()) {
+            // Make a device_free stmt, unless it's memoized - then the cache frees it.
+            if (injector.last_use.defined() && !op->new_expr.defined()) {
                 Stmt device_free = call_extern_and_assert("halide_device_free", {buffer});
                 body = FreeAfterLastUse(injector.last_use, device_free).mutate(body);
             }
