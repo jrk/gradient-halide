@@ -381,6 +381,12 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     }
     stream << "\n";
 
+    if (get_env_variable("FLUSH_MEMOIZE_CACHE") == "1") {
+        do_indent();
+        // flush cache
+        stream << "halide_memoization_cache_cleanup(__user_context);\n";
+    }
+
     // if(isCuda) {
       // do_indent();
       // stream << "// Synchronize device\n";
