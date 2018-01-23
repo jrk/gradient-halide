@@ -189,9 +189,9 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     var_size *= int_bounds[i];
                 }
                 // Launch GPU threads
-                // TODO: don't fuse when var_size is > 128
+                // TODO: don't fuse when var_size is > 16
                 Var block, thread;
-                func.gpu_tile(fused_var, block, thread, std::min(var_size, 128));
+                func.gpu_tile(fused_var, block, thread, std::min(var_size, 16));
             }
         }
 
@@ -447,10 +447,10 @@ void simple_autoschedule(std::vector<Func> &outputs,
                             var_size *= pure_arg_bounds[i];
                         }
                         // Launch GPU threads
-                        // TODO: don't fuse when var_size is > 128
+                        // TODO: don't fuse when var_size is > 16
                         Var block, thread;
                         func.update(update_id)
-                            .gpu_tile(fused_vars.back(), block, thread, std::min(var_size, 128));
+                            .gpu_tile(fused_vars.back(), block, thread, std::min(var_size, 16));
                     }
                 }
             }
