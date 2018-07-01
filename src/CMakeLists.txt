@@ -27,7 +27,6 @@ set(RUNTIME_CPP
   errors
   fake_thread_pool
   float16_t
-  gcd_thread_pool
   gpu_device_selection
   hexagon_cpu_features
   hexagon_host
@@ -35,6 +34,7 @@ set(RUNTIME_CPP
   linux_clock
   linux_host_cpu_count
   linux_opengl_context
+  linux_yield
   matlab
   metadata
   metal
@@ -54,6 +54,7 @@ set(RUNTIME_CPP
   osx_get_symbol
   osx_host_cpu_count
   osx_opengl_context
+  osx_yield
   posix_allocator
   posix_clock
   posix_error_handler
@@ -62,6 +63,7 @@ set(RUNTIME_CPP
   posix_print
   posix_tempfile
   posix_threads
+  posix_threads_tsan
   powerpc_cpu_features
   prefetch
   profiler
@@ -69,10 +71,11 @@ set(RUNTIME_CPP
   qurt_allocator
   qurt_hvx
   qurt_init_fini
-  qurt_thread_pool
+  qurt_threads
+  qurt_threads_tsan
+  qurt_yield
   runtime_api
   ssp
-  thread_pool
   to_string
   tracing
   windows_clock
@@ -80,8 +83,11 @@ set(RUNTIME_CPP
   windows_get_symbol
   windows_io
   windows_opencl
+  windows_profiler
   windows_tempfile
   windows_threads
+  windows_threads_tsan
+  windows_yield
   write_debug_image
   x86_cpu_features
 )
@@ -99,6 +105,7 @@ set (RUNTIME_LL
   win32_math
   x86
   x86_avx
+  x86_avx2
   x86_sse41
 )
 
@@ -239,7 +246,7 @@ foreach (i ${RUNTIME_HEADER_FILES})
   list(APPEND INITIAL_MODULES "${INITMOD_PREFIX}${SYM_NAME}.cpp")
 endforeach()
 
-# The externally-visible header files that go into making Halide.h. 
+# The externally-visible header files that go into making Halide.h.
 # Don't include anything here that includes llvm headers.
 set(HEADER_FILES
   AddImageChecks.h
@@ -262,6 +269,7 @@ set(HEADER_FILES
   CodeGen_C.h
   CodeGen_GPU_Dev.h
   CodeGen_GPU_Host.h
+  CodeGen_Internal.h
   CodeGen_LLVM.h
   CodeGen_MIPS.h
   CodeGen_OpenCL_Dev.h
@@ -331,6 +339,7 @@ set(HEADER_FILES
   LLVM_Runtime_Linker.h
   LoopCarry.h
   Lower.h
+  LowerWarpShuffles.h
   MainPage.h
   MatlabWrapper.h
   Memoization.h
@@ -341,12 +350,14 @@ set(HEADER_FILES
   Outputs.h
   OutputImageParam.h
   ParallelRVar.h
-  Parameter.h
   Param.h
+  ParamMap.h
+  Parameter.h
   PartitionLoops.h
   Pipeline.h
   Prefetch.h
   Profiling.h
+  PythonExtensionGen.h
   Qualify.h
   Random.h
   RealizationOrder.h
@@ -369,6 +380,7 @@ set(HEADER_FILES
   StmtToHtml.h
   StorageFlattening.h
   StorageFolding.h
+  StrictifyFloat.h
   Substitute.h
   Target.h
   ThreadPool.h
@@ -391,11 +403,12 @@ set(HEADER_FILES
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/include")
 file(TO_NATIVE_PATH "${CMAKE_BINARY_DIR}/include/" NATIVE_INCLUDE_PATH)
 add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/include/Halide.h"
-  COMMAND build_halide_h ${HEADER_FILES} HalideFooter.h > "${NATIVE_INCLUDE_PATH}Halide.h"
+  COMMAND build_halide_h "${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE.txt" ${HEADER_FILES} > "${NATIVE_INCLUDE_PATH}Halide.h"
   WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}"
-  DEPENDS build_halide_h ${HEADER_FILES})
+  DEPENDS build_halide_h "${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE.txt" ${HEADER_FILES})
 add_custom_target(
     HalideIncludes
+    ALL
     DEPENDS "${CMAKE_BINARY_DIR}/include/Halide.h")
 
 foreach (i ${RUNTIME_HEADER_FILES})
@@ -484,6 +497,7 @@ add_library(Halide ${HALIDE_LIBRARY_TYPE}
   LICM.cpp
   LoopCarry.cpp
   Lower.cpp
+  LowerWarpShuffles.cpp
   MatlabWrapper.cpp
   Memoization.cpp
   Module.cpp
@@ -492,12 +506,14 @@ add_library(Halide ${HALIDE_LIBRARY_TYPE}
   ObjectInstanceRegistry.cpp
   OutputImageParam.cpp
   ParallelRVar.cpp
+  ParamMap.cpp
   Parameter.cpp
   PartitionLoops.cpp
   Pipeline.cpp
   PrintLoopNest.cpp
   Prefetch.cpp
   Profiling.cpp
+  PythonExtensionGen.cpp
   Qualify.cpp
   RDom.cpp
   Random.cpp
@@ -519,6 +535,7 @@ add_library(Halide ${HALIDE_LIBRARY_TYPE}
   StmtToHtml.cpp
   StorageFlattening.cpp
   StorageFolding.cpp
+  StrictifyFloat.cpp
   Substitute.cpp
   Target.cpp
   Tracing.cpp
@@ -540,9 +557,6 @@ add_library(Halide ${HALIDE_LIBRARY_TYPE}
 )
 # Define Halide_SHARED or Halide_STATIC depending on library type
 target_compile_definitions(Halide PRIVATE "-DHalide_${HALIDE_LIBRARY_TYPE}")
-# Default to not exporting symbols from libHalide
-set_target_properties(Halide PROPERTIES CXX_VISIBILITY_PRESET hidden)
-set_target_properties(Halide PROPERTIES VISIBILITY_INLINES_HIDDEN 1)
 # Ensure that these tools are build first
 add_dependencies(Halide
   binary2cpp
@@ -600,6 +614,11 @@ if (TARGET_PTX)
   list(APPEND LLVM_COMPONENTS NVPTX)
 endif()
 
+if (TARGET_AMDGPU)
+  target_compile_definitions(Halide PRIVATE "-DWITH_AMDGPU=1")
+  list(APPEND LLVM_COMPONENTS AMDGPU)
+endif()
+
 if (TARGET_OPENCL)
   target_compile_definitions(Halide PRIVATE "-DWITH_OPENCL=1")
 endif()
@@ -641,7 +660,13 @@ if (MSVC)
     target_compile_options(Halide PRIVATE "/Zc:sizedDealloc-")
   endif()
 else()
-  target_compile_options(Halide PUBLIC "-fno-rtti")
+  if (NOT HALIDE_ENABLE_RTTI)
+    if (NOT MSVC)
+      target_compile_options(Halide PUBLIC "-fno-rtti")
+    else()
+      target_compile_options(Halide PUBLIC "/GR-")
+    endif()
+  endif()
 endif()
 
 # Get the LLVM libraries we need
@@ -662,4 +687,12 @@ if (NOT MSVC)
   string(REPLACE "\n" "" EXTRA_LIBS "${EXTRA_LIBS}")
   string(REPLACE " " "" EXTRA_LIBS "${EXTRA_LIBS}")
   target_link_libraries(Halide PUBLIC ${EXTRA_LIBS})
+endif()
+
+install(TARGETS Halide
+        RUNTIME DESTINATION bin
+        LIBRARY DESTINATION bin
+        ARCHIVE DESTINATION lib)
+if (APPLE AND "${HALIDE_LIBRARY_TYPE}" STREQUAL "SHARED")
+  install(CODE "execute_process(COMMAND install_name_tool $<INSTALL_PREFIX>/bin/$<TARGET_FILE_NAME:Halide> $<INSTALL_PREFIX>/bin/$<TARGET_FILE_NAME:Halide>)")
 endif()

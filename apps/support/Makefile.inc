@@ -8,7 +8,7 @@ UNAME ?= $(shell uname)
 
 ifeq ($(OS), Windows_NT)
 # Flags for mingw environment
-LDFLAGS += -lole32 -lkernel32 -lpsapi -luuid -Wl,--stack,8388608
+LDFLAGS += -lz -lole32 -lkernel32 -lpsapi -luuid -Wl,--stack,8388608
 else
 LDFLAGS += -ldl -lpthread -lz -lcurses
 endif
@@ -23,13 +23,35 @@ ifeq ($(UNAME), Darwin)
 CXXFLAGS += -fvisibility=hidden
 endif
 
+# To run apps on android that support this, build a separate toolchain from the Android NDK
+# using the make-standalone-toolchain.sh script:
+#$ build/tools/make-standalone-toolchain.sh --arch=arm64 --platform=android-21 --install-dir=$ANDROID_ARM64_TOOLCHAIN
+#$ build/tools/make-standalone-toolchain.sh --arch=arm --platform=android-21 --install-dir=$ANDROID_ARM_TOOLCHAIN
+CXX-host ?= $(CXX)
+CXX-arm-64-android ?= $(ANDROID_ARM64_TOOLCHAIN)/bin/aarch64-linux-android-c++
+CXX-arm-32-android ?= $(ANDROID_ARM_TOOLCHAIN)/bin/arm-linux-androideabi-c++
+
+CXXFLAGS-host ?= $(CXXFLAGS)
+CXXFLAGS-arm-64-android ?= $(CXXFLAGS)
+CXXFLAGS-arm-32-android ?= $(CXXFLAGS)
+
+LDFLAGS-host ?= $(LDFLAGS)
+LDFLAGS-arm-64-android ?= -llog -fPIE -pie
+LDFLAGS-arm-32-android ?= -llog -fPIE -pie
+
 LIB_HALIDE = $(HALIDE_BIN_PATH)/lib/libHalide.a
 
 GENERATOR_DEPS ?= $(HALIDE_BIN_PATH)/lib/libHalide.a $(HALIDE_BIN_PATH)/include/Halide.h $(HALIDE_SRC_PATH)/tools/GenGen.cpp
 
 LLVM_CONFIG ?= llvm-config
 LLVM_VERSION_TIMES_10 = $(shell $(LLVM_CONFIG) --version | cut -b 1,3)
-HALIDE_SYSTEM_LDFLAGS = $(shell $(LLVM_CONFIG) --system-libs)
+HALIDE_SYSTEM_LDFLAGS = $(shell $(LLVM_CONFIG) --link-static --system-libs)
+
+ifeq ($(UNAME), Linux)
+# llvm-config doesn't always report -ltinfo in the system-libs. Detect it by seeing if llvm-config links to it.
+HALIDE_SYSTEM_LDFLAGS += $(shell ldd `which $(LLVM_CONFIG)` | grep libtinfo > /dev/null && echo -ltinfo)
+endif
+
 LLVM_LDFLAGS = $(shell $(LLVM_CONFIG) --ldflags) $(HALIDE_SYSTEM_LDFLAGS)
 
 LLVM_CONFIG ?= llvm-config
@@ -101,3 +123,10 @@ RUNARGS ?=
 #
 $(BIN)/%.run: $(BIN)/%.rungen
 	@$(CURDIR)/$< $(RUNARGS)
+
+# Utility to convert raw video -> h264. HL_AVCONV=ffmpeg will work too.
+HL_AVCONV ?= avconv
+
+# Utility to show h264 video
+HL_VIDEOPLAYER ?= mplayer
+

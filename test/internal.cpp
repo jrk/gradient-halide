@@ -4,7 +4,6 @@
 #include "CodeGen_C.h"
 #include "CPlusPlusMangle.h"
 #include "Func.h"
-#include "Simplify.h"
 #include "Bounds.h"
 #include "IRMatch.h"
 #include "Deinterleave.h"
@@ -18,6 +17,7 @@
 #include "Associativity.h"
 #include "Generator.h"
 #include "Derivative.h"
+#include "AutoScheduleUtils.h"
 
 using namespace Halide;
 using namespace Halide::Internal;
@@ -31,7 +31,6 @@ int main(int argc, const char **argv) {
     deinterleave_vector_test();
     modulus_remainder_test();
     cse_test();
-    simplify_test();
     solve_test();
     target_test();
     cplusplus_mangle_test();
@@ -41,6 +40,7 @@ int main(int argc, const char **argv) {
     associativity_test();
     generator_test();
     derivative_test();
+    propagate_estimate_test();
 
     return 0;
 }

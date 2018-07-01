@@ -33,26 +33,26 @@ Building Halide
 
 #### TL;DR
 
-Have llvm-4.0 or greater installed and run 'make' in the root
+Have llvm-5.0 or greater installed and run 'make' in the root
 directory of the repository (where this README is).
 
 #### Acquiring LLVM
 
-Building halide requires at least llvm 4.0, along with the matching
+Building halide requires at least llvm 5.0, along with the matching
 version of clang. llvm-config and clang must be somewhere in the
-path. If your OS does not have packages for llvm-4.0, you can find
+path. If your OS does not have packages for llvm-5.0, you can find
 binaries for it at http://llvm.org/releases/download.html. Download an
 appropriate package and then either install it, or at least put the
 bin subdirectory in your path. (This works well on OS X and Ubuntu.)
 
 If you want to build it yourself, first check it out from subversion:
 
-    % svn co https://llvm.org/svn/llvm-project/llvm/branches/release_40 llvm4.0
-    % svn co https://llvm.org/svn/llvm-project/cfe/branches/release_40 llvm4.0/tools/clang
+    % svn co https://llvm.org/svn/llvm-project/llvm/branches/release_50 llvm5.0
+    % svn co https://llvm.org/svn/llvm-project/cfe/branches/release_50 llvm5.0/tools/clang
 
 Then build it like so:
 
-    % cd llvm4.0
+    % cd llvm5.0
     % mkdir build
     % cd build
     % cmake -DLLVM_ENABLE_TERMINFO=OFF -DLLVM_TARGETS_TO_BUILD="X86;ARM;NVPTX;AArch64;Mips;PowerPC" -DLLVM_ENABLE_ASSERTIONS=ON -DCMAKE_BUILD_TYPE=Release ..
@@ -151,12 +151,9 @@ compiling. Higher numbers will print more detail.
 HL_NUM_THREADS=... specifies the size of the thread pool. This has no
 effect on OS X or iOS, where we just use grand central dispatch.
 
-HL_TRACE=1 injects print statements into compiled Halide code that
-will describe what the program is doing at runtime. Higher values
-print more detail.
-
 HL_TRACE_FILE=... specifies a binary target file to dump tracing data
-into. The output can be parsed programmatically by starting from the
+into (ignored unless at least one `trace_` feature is enabled in HL_TARGET or
+HL_JIT_TARGET). The output can be parsed programmatically by starting from the
 code in utils/HalideTraceViz.cpp
 
 
@@ -329,17 +326,17 @@ scheduling directive. To enable the `hexagon` scheduling directive, include the
 combination of targets is to use the HVX target features with an x86 linux
 host (to use the simulator) or with an ARM android target (to use Hexagon DSP hardware).
 For examples of using the `hexagon` scheduling directive on both the simulator and a
-Hexagon DSP, see the HelloHexagon example app.
+Hexagon DSP, see the blur example app.
 
 To build and run an example app using the Hexagon target,
-  1. Obtain and build LLVM and Clang v4.0 or later from llvm.org
+  1. Obtain and build LLVM and Clang v5.0 or later from llvm.org
   2. Download and install the Hexagon SDK and version 8.0 Hexagon Tools
   3. Build and run an example for Hexagon HVX
 
-#### 1. Obtain and build LLVM and clang v4.0 or later from llvm.org
-The Hexagon backend is currently under development. So it's best to use trunk llvm. 
-These are the same instructions as above for building Clang/LLVM, but for trunk 
-Clang/LLVM instead of 4.0.
+#### 1. Obtain and build LLVM and clang v5.0 or later from llvm.org
+The Hexagon backend is currently under development. So it's best to use trunk llvm.
+These are the same instructions as above for building Clang/LLVM, but for trunk
+Clang/LLVM instead of 5.0.
 
     cd <path to llvm>
     svn co http://llvm.org/svn/llvm-project/llvm/trunk .
@@ -368,14 +365,14 @@ Go to https://developer.qualcomm.com/software/hexagon-dsp-sdk/tools
 In addition to running Hexagon code on device, Halide also supports running Hexagon
 code on the simulator from the Hexagon tools.
 
-To build and run the HelloHexagon example in Halide/apps/HelloHexagon on the simulator:
+To build and run the blur example in Halide/apps/blur on the simulator:
 
-    cd apps/HelloHexagon
+    cd apps/blur
     export HL_HEXAGON_SIM_REMOTE=../../src/runtime/hexagon_remote/bin/v60/hexagon_sim_remote
     export HL_HEXAGON_TOOLS=$SDK_LOC/Hexagon_Tools/8.0/Tools/
-    LD_LIBRARY_PATH=../../src/runtime/hexagon_remote/bin/host/:$HL_HEXAGON_TOOLS/lib/iss/:. make run-host
+    LD_LIBRARY_PATH=../../src/runtime/hexagon_remote/bin/host/:$HL_HEXAGON_TOOLS/lib/iss/:. HL_TARGET=host-hvx_128 make test
 
-#### To build and run the HelloHexagon example in Halide/apps/HelloHexagon on Android:
+#### To build and run the blur example in Halide/apps/blur on Android:
 
 To build the example for Android, first ensure that you have a standalone toolchain
 created from the NDK using the make-standalone-toolchain.sh script:
@@ -384,7 +381,7 @@ created from the NDK using the make-standalone-toolchain.sh script:
     export ANDROID_ARM64_TOOLCHAIN=<path to put new arm64 toolchain>
     $ANDROID_NDK_HOME/build/tools/make-standalone-toolchain.sh --arch=arm64 --platform=android-21 --install-dir=$ANDROID_ARM64_TOOLCHAIN
 
-Now build and run the HelloHexagon example:
+Now build and run the blur example using the script to run it on device:
 
     export HL_HEXAGON_TOOLS=$SDK_LOC/HEXAGON_Tools/8.0/Tools/
-    make run-arm-64-android
+    HL_TARGET=arm-64-android-hvx_128 ./adb_run_on_device.sh

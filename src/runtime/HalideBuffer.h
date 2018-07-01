@@ -60,7 +60,10 @@ struct AllInts<double, Args...> : std::false_type {};
  * class itself. */
 struct AllocationHeader {
     void (*deallocate_fn)(void *);
-    std::atomic<int> ref_count {0};
+    std::atomic<int> ref_count;
+
+    // Note that ref_count always starts at 1
+    AllocationHeader(void (*deallocate_fn)(void *)) : deallocate_fn(deallocate_fn), ref_count(1) {}
 };
 
 /** This indicates how to deallocate the device for a Halide::Runtime::Buffer. */
@@ -170,14 +173,16 @@ private:
         }
     }
 
+    // Note that this is called "cropped" but can also encompass a slice/embed
+    // operation as well.
     struct DevRefCountCropped : DeviceRefCount {
         Buffer<T, D> cropped_from;
         DevRefCountCropped(const Buffer<T, D> &cropped_from) : cropped_from(cropped_from) {
-            ownership = BufferDeviceOwnership::Cropped; 
+            ownership = BufferDeviceOwnership::Cropped;
         }
     };
 
-    /** Setup the device ref count for a buffer to indicate it is a crop of cropped_from */
+    /** Setup the device ref count for a buffer to indicate it is a crop (or slice, embed, etc) of cropped_from */
     void crop_from(const Buffer<T, D> &cropped_from) {
         assert(dev_ref_count == nullptr);
         dev_ref_count = new DevRefCountCropped(cropped_from);
@@ -190,6 +195,7 @@ private:
             int new_count = --(alloc->ref_count);
             if (new_count == 0) {
                 void (*fn)(void *) = alloc->deallocate_fn;
+                alloc->~AllocationHeader();
                 fn(alloc);
             }
             buf.host = nullptr;
@@ -371,11 +377,8 @@ private:
 
     /** Crop a single dimension without handling device allocation. */
     void crop_host(int d, int min, int extent) {
-        // TODO(abadams|zvookin): these asserts fail on correctness_autotune_bug 
-        // due to unsafe crop in Func::infer_input_bounds. See comment at Func.cpp:2834.
-        // Should either fix that or kill the asserts and document the routine accordingly.
-        //        assert(dim(d).min() <= min);
-        //        assert(dim(d).max() >= min + extent - 1);
+       assert(dim(d).min() <= min);
+       assert(dim(d).max() >= min + extent - 1);
         int shift = min - dim(d).min();
         if (buf.host != nullptr) {
             buf.host += shift * dim(d).stride() * type().bytes();
@@ -407,6 +410,57 @@ private:
             }
             result_host_cropped.crop_from(*cropped_from);
         }
+    }
+
+    /** slice a single dimension without handling device allocation. */
+    void slice_host(int d, int pos) {
+        assert(d >= 0 && d < dimensions());
+        assert(pos >= dim(d).min() && pos <= dim(d).max());
+        buf.dimensions--;
+        int shift = pos - buf.dim[d].min;
+        if (buf.host != nullptr) {
+            buf.host += shift * buf.dim[d].stride * type().bytes();
+        }
+        for (int i = d; i < buf.dimensions; i++) {
+            buf.dim[i] = buf.dim[i+1];
+        }
+        buf.dim[buf.dimensions] = {0, 0, 0};
+    }
+
+    void complete_device_slice(Buffer<T, D> &result_host_sliced, int d, int pos) const {
+        assert(buf.device_interface != nullptr);
+        if (buf.device_interface->device_slice(nullptr, &this->buf, d, pos, &result_host_sliced.buf) == 0) {
+            const Buffer<T, D> *sliced_from = this;
+            // TODO: Figure out what to do if dev_ref_count is nullptr. Should incref logic run here?
+            // is it possible to get to this point without incref having run at least once since
+            // the device field was set? (I.e. in the internal logic of slice. incref might have been
+            // called.)
+            if (dev_ref_count != nullptr && dev_ref_count->ownership == BufferDeviceOwnership::Cropped) {
+                sliced_from = &((DevRefCountCropped *)dev_ref_count)->cropped_from;
+            }
+            // crop_from() is correct here, despite the fact that we are slicing.
+            result_host_sliced.crop_from(*sliced_from);
+        }
+    }
+
+    void init_from_legacy_buffer_t(const buffer_t &old_buf, halide_type_t t) {
+        if (!T_is_void) {
+            assert(static_halide_type() == t);
+        }
+        assert(old_buf.elem_size == t.bytes());
+        buf.host = old_buf.host;
+        buf.type = t;
+        int d;
+        for (d = 0; d < 4 && old_buf.extent[d]; d++);
+        buf.dimensions = d;
+        make_shape_storage();
+        for (int i = 0; i < d; i++) {
+            buf.dim[i].min = old_buf.min[i];
+            buf.dim[i].extent = old_buf.extent[i];
+            buf.dim[i].stride = old_buf.stride[i];
+        }
+        buf.set_host_dirty(old_buf.host_dirty);
+        assert(old_buf.dev == 0 && "Cannot construct a Halide::Runtime::Buffer from a legacy buffer_t with a device allocation. Use halide_upgrade_buffer_t to upgrade it to a halide_buffer_t first.");
     }
 
 public:
@@ -462,6 +516,7 @@ public:
 
     /** Access the shape of the buffer */
     HALIDE_ALWAYS_INLINE Dimension dim(int i) const {
+        assert(i >= 0 && i < this->dimensions());
         return Dimension(buf.dim[i]);
     }
 
@@ -521,34 +576,28 @@ public:
         return (size_t)((const uint8_t *)end() - (const uint8_t *)begin());
     }
 
-    Buffer() {
+    Buffer() : shape() {
         buf.type = static_halide_type();
         make_shape_storage();
     }
 
     /** Make a Buffer from a halide_buffer_t */
-    Buffer(const halide_buffer_t &buf,
+    explicit Buffer(const halide_buffer_t &buf,
            BufferDeviceOwnership ownership = BufferDeviceOwnership::Unmanaged) {
         assert(T_is_void || buf.type == static_halide_type());
         initialize_from_buffer(buf, ownership);
     }
 
-    /** Make a Buffer from a legacy buffer_t. */
-    Buffer(const buffer_t &old_buf) {
-        assert(!T_is_void && old_buf.elem_size == static_halide_type().bytes());
-        buf.host = old_buf.host;
-        buf.type = static_halide_type();
-        int d;
-        for (d = 0; d < 4 && old_buf.extent[d]; d++);
-        buf.dimensions = d;
-        make_shape_storage();
-        for (int i = 0; i < d; i++) {
-            buf.dim[i].min = old_buf.min[i];
-            buf.dim[i].extent = old_buf.extent[i];
-            buf.dim[i].stride = old_buf.stride[i];
-        }
-        buf.set_host_dirty(old_buf.host_dirty);
-        assert(old_buf.dev == 0 && "Cannot construct a Halide::Runtime::Buffer from a legacy buffer_t with a device allocation. Use halide_upgrade_buffer_t to upgrade it to a halide_buffer_t first.");
+    /** Make a Buffer from a legacy buffer_t, with an explicit halide_type. */
+    explicit Buffer(const buffer_t &old_buf, halide_type_t t) {
+        init_from_legacy_buffer_t(old_buf, t);
+    }
+
+    /** Make a Buffer from a legacy buffer_t, which is assumed to match our static
+     * type. (Cannot use with Buffer<void>.) */
+    explicit Buffer(const buffer_t &old_buf) {
+        static_assert(!T_is_void, "Cannot construct a Buffer<void> from a buffer_t without an explicit type.");
+        init_from_legacy_buffer_t(old_buf, static_halide_type());
     }
 
     /** Populate the fields of a legacy buffer_t using this
@@ -743,9 +792,8 @@ public:
         size_t size = size_in_bytes();
         const size_t alignment = 128;
         size = (size + alignment - 1) & ~(alignment - 1);
-        alloc = (AllocationHeader *)allocate_fn(size + sizeof(AllocationHeader) + alignment - 1);
-        alloc->deallocate_fn = deallocate_fn;
-        alloc->ref_count = 1;
+        void *alloc_storage = allocate_fn(size + sizeof(AllocationHeader) + alignment - 1);
+        alloc = new (alloc_storage) AllocationHeader(deallocate_fn);
         uint8_t *unaligned_ptr = ((uint8_t *)alloc) + sizeof(AllocationHeader);
         buf.host = (uint8_t *)((uintptr_t)(unaligned_ptr + alignment - 1) & ~(alignment - 1));
     }
@@ -871,7 +919,7 @@ public:
         }
         buf.type = t;
         buf.dimensions = 1 + (int)(sizeof...(rest));
-        buf.host = (uint8_t *)data;
+        buf.host = (uint8_t *) const_cast<void *>(data);
         make_shape_storage();
         initialize_shape(0, first, int(rest)...);
     }
@@ -884,7 +932,7 @@ public:
     explicit Buffer(T *data, int first, Args&&... rest) {
         buf.type = static_halide_type();
         buf.dimensions = 1 + (int)(sizeof...(rest));
-        buf.host = (uint8_t *)data;
+        buf.host = (uint8_t *) const_cast<typename std::remove_const<T>::type *>(data);
         make_shape_storage();
         initialize_shape(0, first, int(rest)...);
     }
@@ -896,7 +944,7 @@ public:
     explicit Buffer(T *data, const std::vector<int> &sizes) {
         buf.type = static_halide_type();
         buf.dimensions = (int)sizes.size();
-        buf.host = (uint8_t *)data;
+        buf.host = (uint8_t *) const_cast<typename std::remove_const<T>::type *>(data);
         make_shape_storage();
         initialize_shape(sizes);
     }
@@ -911,7 +959,7 @@ public:
         }
         buf.type = t;
         buf.dimensions = (int)sizes.size();
-        buf.host = (uint8_t *)data;
+        buf.host = (uint8_t *) const_cast<void *>(data);
         make_shape_storage();
         initialize_shape(sizes);
     }
@@ -925,12 +973,19 @@ public:
         }
         buf.type = t;
         buf.dimensions = d;
-        buf.host = (uint8_t *)data;
+        buf.host = (uint8_t *) const_cast<void *>(data);
         make_shape_storage();
         for (int i = 0; i < d; i++) {
             buf.dim[i] = shape[i];
         }
     }
+
+    /** Initialize a Buffer from a pointer to the min coordinate and
+     * a vector describing the shape.  Does not take ownership of the
+     * data, and does not set the host_dirty flag. */
+    explicit inline Buffer(halide_type_t t, add_const_if_T_is_const<void> *data,
+                           const std::vector<halide_dimension_t> &shape)
+        : Buffer(t, data, (int) shape.size(), shape.data()) {}
 
     /** Initialize an Buffer from a pointer to the min coordinate and
      * an array describing the shape.  Does not take ownership of the
@@ -938,12 +993,18 @@ public:
     explicit Buffer(T *data, int d, const halide_dimension_t *shape) {
         buf.type = halide_type_of<typename std::remove_cv<T>::type>();
         buf.dimensions = d;
-        buf.host = (uint8_t *)data;
+        buf.host = (uint8_t *) const_cast<typename std::remove_const<T>::type *>(data);
         make_shape_storage();
         for (int i = 0; i < d; i++) {
             buf.dim[i] = shape[i];
         }
     }
+
+    /** Initialize a Buffer from a pointer to the min coordinate and
+     * a vector describing the shape.  Does not take ownership of the
+     * data, and does not set the host_dirty flag. */
+    explicit inline Buffer(T *data, const std::vector<halide_dimension_t> &shape)
+        : Buffer(data, (int) shape.size(), shape.data()) {}
 
     /** Destructor. Will release any underlying owned allocation if
      * this is the last reference to it. Will assert fail if there are
@@ -1104,8 +1165,9 @@ public:
     }
 
     /** Make an image that refers to a sub-range of this image along
-     * the given dimension. Does not assert the crop region is within
-     * the existing bounds. */
+     * the given dimension. Asserts that the crop region is within
+     * the existing bounds: you cannot "crop outwards", even if you know there
+     * is valid Buffer storage (e.g. because you already cropped inwards). */
     Buffer<T, D> cropped(int d, int min, int extent) const {
         // Make a fresh copy of the underlying buffer (but not a fresh
         // copy of the allocation, if there is one).
@@ -1137,8 +1199,9 @@ public:
     }
 
     /** Make an image that refers to a sub-rectangle of this image along
-     * the first N dimensions. Does not assert the crop region is within
-     * the existing bounds. The cropped image drops any device handle. */
+     * the first N dimensions. Asserts that the crop region is within
+     * the existing bounds. The cropped image may drop any device handle
+     * if the device_interface cannot accomplish the crop in-place. */
     Buffer<T, D> cropped(const std::vector<std::pair<int, int>> &rect) const {
         // Make a fresh copy of the underlying buffer (but not a fresh
         // copy of the allocation, if there is one).
@@ -1181,6 +1244,7 @@ public:
 
     /** Translate an image in-place along one dimension */
     void translate(int d, int delta) {
+        assert(d >= 0 && d < this->dimensions());
         device_deallocate();
         buf.dim[d].min += delta;
     }
@@ -1205,28 +1269,38 @@ public:
     }
 
     /** Set the min coordinate of an image in the first N dimensions */
-    template<typename ...Args>
-    void set_min(Args... args) {
-        assert(sizeof...(args) <= (size_t)dimensions());
+    // @{
+    void set_min(const std::vector<int> &mins) {
+        assert(mins.size() <= (size_t)dimensions());
         device_deallocate();
-        const int x[] = {args...};
-        for (size_t i = 0; i < sizeof...(args); i++) {
-            buf.dim[i].min = x[i];
+        for (size_t i = 0; i < mins.size(); i++) {
+            buf.dim[i].min = mins[i];
         }
     }
 
-    /** Test if a given coordinate is within the the bounds of an image */
     template<typename ...Args>
-    bool contains(Args... args) {
-        assert(sizeof...(args) <= (size_t)dimensions());
-        const int x[] = {args...};
-        for (size_t i = 0; i < sizeof...(args); i++) {
-            if (x[i] < dim(i).min() || x[i] > dim(i).max()) {
+    void set_min(Args... args) {
+        set_min(std::vector<int>{args...});
+    }
+    // @}
+
+    /** Test if a given coordinate is within the the bounds of an image */
+    // @{
+    bool contains(const std::vector<int> &coords) const {
+        assert(coords.size() <= (size_t)dimensions());
+        for (size_t i = 0; i < coords.size(); i++) {
+            if (coords[i] < dim((int) i).min() || coords[i] > dim((int) i).max()) {
                 return false;
             }
         }
         return true;
     }
+
+    template<typename ...Args>
+    bool contains(Args... args) const {
+        return contains(std::vector<int>{args...});
+    }
+    // @}
 
     /** Make an image which refers to the same data using a different
      * ordering of the dimensions. */
@@ -1238,31 +1312,49 @@ public:
 
     /** Transpose an image in-place */
     void transpose(int d1, int d2) {
+        assert(d1 >= 0 && d1 < this->dimensions());
+        assert(d2 >= 0 && d2 < this->dimensions());
         std::swap(buf.dim[d1], buf.dim[d2]);
     }
 
-    /** Make a lower-dimensional image that refers to one slice of this
-     * image. */
+    /** Make a lower-dimensional image that refers to one slice of this image. */
     Buffer<T, D> sliced(int d, int pos) const {
         Buffer<T, D> im = *this;
-        im.slice(d, pos);
+
+        // This guarantees the prexisting device ref is dropped if the
+        // device_slice call fails and maintains the buffer in a consistent
+        // state.
+        im.device_deallocate();
+
+        im.slice_host(d, pos);
+        if (buf.device_interface != nullptr) {
+            complete_device_slice(im, d, pos);
+        }
         return im;
+    }
+
+    /** Make a lower-dimensional image that refers to one slice of this
+     * image at the dimension's minimum. */
+    inline Buffer<T, D> sliced(int d) const {
+        return sliced(d, dim(d).min());
     }
 
     /** Slice an image in-place */
     void slice(int d, int pos) {
-        // assert(pos >= dim(d).min() && pos <= dim(d).max());
-        device_deallocate();
-        buf.dimensions--;
-        int shift = pos - dim(d).min();
-        assert(buf.device == 0 || shift == 0);
-        if (buf.host != nullptr) {
-            buf.host += shift * dim(d).stride() * type().bytes();
+        // An optimization for non-device buffers. For the device case,
+        // a temp buffer is required, so reuse the not-in-place version.
+        // TODO(zalman|abadams): Are nop slices common enough to special
+        // case the device part of the if to do nothing?
+        if (buf.device_interface != nullptr) {
+            *this = sliced(d, pos);
+        } else {
+            slice_host(d, pos);
         }
-        for (int i = d; i < dimensions(); i++) {
-            buf.dim[i] = buf.dim[i+1];
-        }
-        buf.dim[buf.dimensions] = {0, 0, 0};
+    }
+
+    /** Slice an image in-place at the dimension's minimum. */
+    inline void slice(int d) {
+        slice(d, dim(d).min());
     }
 
     /** Make a new image that views this image as a single slice in a
@@ -1275,8 +1367,7 @@ public:
      &im(x, y, c) == &im2(x, 17, y, c);
      \endcode
      */
-    Buffer<T, D> embedded(int d, int pos) const {
-        assert(d >= 0 && d <= dimensions());
+    Buffer<T, D> embedded(int d, int pos = 0) const {
         Buffer<T, D> im(*this);
         im.embed(d, pos);
         return im;
@@ -1284,7 +1375,7 @@ public:
 
     /** Embed an image in-place, increasing the
      * dimensionality. */
-    void embed(int d, int pos) {
+    void embed(int d, int pos = 0) {
         assert(d >= 0 && d <= dimensions());
         add_dimension();
         translate(dimensions() - 1, pos);
@@ -1529,6 +1620,13 @@ public:
         return buf;
     }
 
+    /** Make a zero-dimensional Buffer that points to non-owned, existing data */
+    static Buffer<T, D> make_scalar(T* data) {
+        Buffer<T, 1> buf(data, 1);
+        buf.slice(0, 0);
+        return buf;
+    }
+
     /** Make a buffer with the same shape and memory nesting order as
      * another buffer. It may have a different type. */
     template<typename T2, int D2>
@@ -1564,7 +1662,12 @@ public:
             swaps.pop_back();
         }
 
-        Buffer<T, D> dst(nullptr, src.dimensions(), shape);
+        // Use an explicit runtime type, and make dst a Buffer<void>, to allow
+        // using this method with Buffer<void> for either src or dst.
+        const halide_type_t dst_type = T_is_void
+            ? src.type()
+            : halide_type_of<typename std::remove_cv<not_void_T>::type>();
+        Buffer<> dst(dst_type, nullptr, src.dimensions(), shape);
         dst.allocate(allocate_fn, deallocate_fn);
 
         return dst;
@@ -1693,7 +1796,7 @@ public:
         bool all_equal = true;
         for_each_element([&](const int *pos) {all_equal &= (*this)(pos) == val;});
         return all_equal;
-    }    
+    }
 
     void fill(not_void_T val) {
         set_host_dirty();

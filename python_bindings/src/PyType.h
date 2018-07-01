@@ -1,10 +1,16 @@
 #ifndef HALIDE_PYTHON_BINDINGS_PYTYPE_H
 #define HALIDE_PYTHON_BINDINGS_PYTYPE_H
 
-#include "Halide.h"
+#include "PyHalide.h"
 
-void define_type();
+namespace Halide {
+namespace PythonBindings {
 
-std::string halide_type_to_string(const Halide::Type &type);
+void define_type(py::module &m);
+
+std::string halide_type_to_string(const Type &type);
+
+}  // namespace PythonBindings
+}  // namespace Halide
 
 #endif  // HALIDE_PYTHON_BINDINGS_PYTYPE_H

@@ -207,7 +207,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
   std::vector<std::string> namespaces;
   std::string simple_name = extract_namespaces(f.name, namespaces);
 
-  if (is_header() && f.linkage == LoweredFunc::Internal) {
+  if (is_header() && f.linkage == LinkageType::Internal) {
     stream << "// internal func "<< simple_name << "\n";
     return;
   }

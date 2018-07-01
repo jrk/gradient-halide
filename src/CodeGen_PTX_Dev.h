@@ -5,9 +5,9 @@
  * Defines the code-generator for producing CUDA host code
  */
 
-#include "CodeGen_LLVM.h"
-#include "CodeGen_GPU_Host.h"
 #include "CodeGen_GPU_Dev.h"
+#include "CodeGen_GPU_Host.h"
+#include "CodeGen_LLVM.h"
 
 namespace llvm {
 class BasicBlock;
@@ -59,6 +59,7 @@ protected:
     void visit(const Allocate *);
     void visit(const Free *);
     void visit(const AssertStmt *);
+    void visit(const Load *);
     void visit(const Store *);
     // @}
 
@@ -76,6 +77,7 @@ protected:
     Scope<> internal_allocations;
 };
 
-}}
+}  // namespace Internal
+}  // namespace Halide
 
 #endif
