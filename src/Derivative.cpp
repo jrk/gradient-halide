@@ -385,20 +385,74 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
       } else if (op->name == "sin_f32") {
           // d/dx sin(x) = cos(x)
           accumulate(op->args[0], adjoint * cos(op->args[0]));
+      } else if (op->name == "asin_f32") {
+          // d/dx asin(x) = 1 / sqrt(1 - x^2)
+          accumulate(op->args[0], adjoint / sqrt(1.f - op->args[0] * op->args[0]));
       } else if (op->name == "cos_f32") {
           // d/dx cos(x) = -sin(x)
           accumulate(op->args[0], - adjoint * sin(op->args[0]));
+      } else if (op->name == "acos_f32") {
+          // d/dx acos(x) = - 1 / sqrt(1 - x^2)
+          accumulate(op->args[0], - adjoint / sqrt(1.f - op->args[0] * op->args[0]));
+      } else if (op->name == "tan_f32") {
+          // d/dx tan(x) = 1 / cos(x)^2
+          Expr c = cos(op->args[0]);
+          accumulate(op->args[0], adjoint / (c * c));
+      } else if (op->name == "atan_f32") {
+          // d/dx atan(x) = 1 / (1 + x^2)
+          accumulate(op->args[0], adjoint / (1.f + op->args[0] * op->args[0]));
+      } else if (op->name == "atan2_f32") {
+          Expr x2y2 = op->args[0] * op->args[0] + op->args[1] * op->args[1];
+          // d/dy atan2(y, x) = x / (x^2 + y^2)
+          accumulate(op->args[0], adjoint * op->args[1] / x2y2);
+          // d/dx atan2(y, x) = -y / (x^2 + y^2)
+          accumulate(op->args[1], -adjoint * op->args[0] / x2y2);
+      } else if (op->name == "sinh_f32") {
+          // d/dx sinh(x) = cosh(x)
+          accumulate(op->args[0], adjoint * cosh(op->args[0]));
+      } else if (op->name == "asinh_f32") {
+          // d/dx asin(x) = 1 / sqrt(1 + x^2)
+          accumulate(op->args[0], adjoint / sqrt(1.f + op->args[0] * op->args[0]));
+      } else if (op->name == "cosh_f32") {
+          // d/dx cosh(x) = sinh(x)
+          accumulate(op->args[0], adjoint * sinh(op->args[0]));
+      } else if (op->name == "acosh_f32") {
+          // d/dx acosh(x) = 1 / (sqrt(x - 1) sqrt(x + 1)))
+          accumulate(op->args[0],
+              adjoint / (sqrt(op->args[0] - 1.f) * sqrt(op->args[0] + 1.f)));
+      } else if (op->name == "tanh_f32") {
+          // d/dx tanh(x) = 1 / cosh(x)^2
+          Expr c = cosh(op->args[0]);
+          accumulate(op->args[0], adjoint / (c * c));
+      } else if (op->name == "atanh_f32") {
+          // d/dx atanh(x) = 1 / (1 - x^2)
+          accumulate(op->args[0], adjoint / (1.f - op->args[0] * op->args[0]));
       } else if (op->name == "ceil_f32") {
           // TODO: d/dx = dirac(n) for n in Z ...
           accumulate(op->args[0], 0.0f);
       } else if (op->name == "floor_f32") {
           // TODO: d/dx = dirac(n) for n in Z ...
           accumulate(op->args[0], 0.0f);
+      } else if (op->name == "round_f32") {
+          accumulate(op->args[0], 0.0f);
+      } else if (op->name == "trunc_f32") {
+          accumulate(op->args[0], 0.0f);
       } else if (op->name == "sqrt_f32") {
           accumulate(op->args[0], adjoint * 0.5f / sqrt(op->args[0]));
       } else if (op->name == "pow_f32") {
-          accumulate(op->args[0], adjoint * op->args[1] * pow(op->args[0], op->args[1] - 1.f));
-          accumulate(op->args[1], adjoint * pow(op->args[0], op->args[1]) * log(op->args[0]));
+          accumulate(op->args[0],
+              adjoint * op->args[1] * pow(op->args[0], op->args[1] - 1.f));
+          accumulate(op->args[1],
+              adjoint * pow(op->args[0], op->args[1]) * log(op->args[0]));
+      } else if (op->name == "fast_inverse_f32") {
+          // d/dx 1/x = -1/x^2
+          Expr inv_x = fast_inverse(op->args[0]);
+          accumulate(op->args[0], -adjoint * inv_x * inv_x);
+      } else if (op->name == "fast_inverse_sqrt_f32") {
+          // d/dx x^(-0.5) = -0.5*x^(-1.5)
+          Expr inv_sqrt_x = fast_inverse_sqrt(op->args[0]);
+          accumulate(op->args[0],
+              -0.5f * adjoint * inv_sqrt_x * inv_sqrt_x * inv_sqrt_x);
       } else if (op->name == "halide_print") {
           accumulate(op->args[0], 0.0f);
       } else {
@@ -1271,21 +1325,139 @@ void test_simple_bounds_inference_update() {
         << "Expected 2 instead of " << bounds[input.name()][0].max << "\n" ;
 }
 
-#define CMP(x, target) \
-    internal_assert(fabs((x) - (target)) < 1e-6f) << \
-        "Expected " << (target) << " instead of " << (x) << "\n";
+inline void CMP(float x, float target, float threshold = 1e-6f) {
+    internal_assert(fabs((x) - (target)) < threshold) << \
+        "Expected " << (target) << " instead of " << (x) << "\n";    
+}
 
 void test_scalar() {
-    Func x("x");
-    x() = 5.f;
-    Func y("y");
-    y() = x() * x() + 2.f * x() + 5.f;
-    Derivative d = propagate_adjoints(y);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
-
-    Buffer<float> dydx = adjoints[FuncKey{x.name(), -1}].realize();
-    // dydx = 2x + 2 = 12
-    CMP(dydx(0), 12.f);
+    { // Test + - * / const
+        Func x("x");
+        x() = 5.f;
+        Func y("y");
+        y() = x() * x() - 2.f * x() + 5.f + 3.f / x();
+        Derivative d = propagate_adjoints(y);
+        Buffer<float> dydx = d(x).realize();
+        // y = x^2 - 2x + 5 + 3 / x
+        // dydx = 2x - 2 - 3 / x^2 = 12 - 3 / 25
+        CMP(dydx(0), 8.f - 3.f / 25.f);
+    }
+    { // Test special functions
+        Func x("x");
+        x() = 0.5f;
+        Func y("y");
+        y() = sin(x()) +
+              cos(x()) +
+              tan(x()) +
+              exp(x()) +
+              log(x()) +
+              sqrt(x()) +
+              pow(x(), 1.5f) +
+              pow(1.5f, x()) +
+              asin(x()) +
+              1.2f * acos(x()) +
+              atan(x()) +
+              atan2(x(), 2.f) +
+              1.3f * atan2(2.f, x()) +
+              sinh(x()) +
+              1.2f * cosh(x()) +
+              tanh(x()) +
+              asinh(x()) +
+              acosh(x() + 1.f) +
+              atanh(x());
+        Derivative d = propagate_adjoints(y);
+        Buffer<float> dydx = d(x).realize();
+        // dydx = cos(x) -
+        //        sin(x) +
+        //        1 / cos(x)^2 +
+        //        exp(x) +
+        //        1/x +
+        //        1 / (2 sqrt(x)) +
+        //        1.5 * x^0.5 +
+        //        (1.5^x) * log(1.5) +
+        //        1 / sqrt(1 - x^2) -
+        //        1.2 / sqrt(1 - x^2) +
+        //        1 / (x^2 + 1) +
+        //        2.f / (4.f + x^2) -
+        //        x / (4.f + x^2) +
+        //        cosh(x) +
+        //        1.2 * sinh(x) +
+        //        tanh(x) +
+        //        1 / sqrt(x^2 + 1) +
+        //        1 / (sqrt(x - 1) * sqrt(x + 1)) +
+        //        1 / (1 - x^2)
+        CMP(dydx(0),
+            std::cos(0.5f) -
+            std::sin(0.5f) +
+            (1.f / (std::cos(0.5f) * std::cos(0.5f))) +
+            std::exp(0.5f) +
+            1.f / 0.5f +
+            1.f / (2.f * std::sqrt(0.5f)) +
+            1.5f * std::pow(0.5f, 0.5f) +
+            std::log(1.5f) * std::pow(1.5f, 0.5f) +
+            1.f / std::sqrt(1.f - 0.5f * 0.5f) -
+            1.2f / std::sqrt(1.f - 0.5f * 0.5f) +
+            (1.f / (0.5f * 0.5f + 1.f)) +
+            2.f / (4.f + 0.5f * 0.5f) -
+            1.3f * 2.f / (4.f + 0.5f * 0.5f) +
+            std::cosh(0.5f) +
+            1.2f * std::sinh(0.5f) +
+            1.f / (std::cosh(0.5f) * std::cosh(0.5f)) +
+            1.f / std::sqrt(0.5f * 0.5f + 1.f) +
+            1.f / (std::sqrt(0.5f) * std::sqrt(2.5f)) +
+            1.f / (1.f - 0.5f * 0.5f));
+    }
+    { // Test fast inv
+        Func x("x");
+        x() = 2.5f;
+        Func y("y");
+        y() = fast_inverse(x()) + fast_inverse_sqrt(x());
+        Derivative d = propagate_adjoints(y);
+        Buffer<float> dydx = d(x).realize();
+        // dy/dx = -1/x^2 - 1/(2*x^(3/2))
+        CMP(dydx(0), -1.f/(2.5f * 2.5f) - 1.f/(2.f*std::pow(2.5f, 3.f/2.f)), 1e-3f);
+    }
+    { // Test floor ceil round trunc
+        Func x("x");
+        x() = 2.5f;
+        Func y("y");
+        y() = ceil(x()) + floor(x()) + round(x()) + trunc(x());
+        Derivative d = propagate_adjoints(y);
+        Buffer<float> dydx = d(x).realize();
+        CMP(dydx(0), 0.f);
+    }
+    { // Test max min
+        Func x("x");
+        x() = 2.5f;
+        Func y("y");
+        y() = 2.f * max(x(), 5.f) +
+              3.f * max(x(), 1.f) +
+              5.f * min(x(), 3.f) +
+              7.f * min(x(), 2.f);
+        Derivative d = propagate_adjoints(y);
+        Buffer<float> dydx = d(x).realize();
+        CMP(dydx(0), 8.f);
+    }
+    { // Test abs
+        Func x("x");
+        x() = -2.5f;
+        Func y("y");
+        y() = 2.f * abs(x()) + 3.f * abs(-x());
+        Derivative d = propagate_adjoints(y);
+        Buffer<float> dydx = d(x).realize();
+        // y = -2x - 3x = -5x, dy/dx = -5
+        CMP(dydx(0), -5.f);
+    }
+    { // Test select
+        Func x("x");
+        x() = 5.f;
+        Func y("y");
+        y() = select(x() > 0.f, 2.f * x(), 3.f * x()) +
+              select(x() < 0.f, 5.f * x(), 7.f * x());
+        Derivative d = propagate_adjoints(y);
+        Buffer<float> dydx = d(x).realize();
+        CMP(dydx(0), 9.f);
+    }
 }
 
 void test_simple_1d_blur() {

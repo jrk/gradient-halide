@@ -22,13 +22,13 @@ struct Derivative {
     std::map<FuncKey, Func> adjoints;
 
     Func operator()(const Func &func, int update_id = -1, bool bounded = true) const {
-      std::string name = func.name();
-      if(!bounded) {
-        name += "_unbounded";
-      } 
-      auto it = adjoints.find(FuncKey{name, update_id});
-      assert(it != adjoints.end());
-      return it->second;
+        std::string name = func.name();
+        if (!bounded) {
+            name += "_unbounded";
+        }
+        auto it = adjoints.find(FuncKey{name, update_id});
+        assert(it != adjoints.end());
+        return it->second;
     }
 
     Func operator()(const Buffer<> &buffer) const {
