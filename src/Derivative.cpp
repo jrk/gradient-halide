@@ -1486,6 +1486,33 @@ void test_scalar() {
     }
 }
 
+void test_1d_box_no_clamp() {
+    Var x("x");
+    Buffer<float> input(3);
+    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
+    Func blur("blur");
+    blur(x) = input(x) + input(x + 1);
+    RDom r(0, 2);
+    Func f_loss("f_loss");
+    f_loss() += blur(r.x) * blur(r.x);
+    Derivative d = propagate_adjoints(f_loss);
+
+    Buffer<float> blur_buf = blur.realize(2);
+    // d loss / d blur = 2 * blur(x)
+    Buffer<float> d_blur_buf = d(blur).realize(2);
+    CMP(__LINE__, d_blur_buf(0), 2 * blur_buf(0));
+    CMP(__LINE__, d_blur_buf(1), 2 * blur_buf(1));
+    // d input(x) = d blur(x) + d blur(x - 1)
+    Func d_input = d(input);
+    // Every dependency of d_input should only use pure variables on lhs
+    internal_assert(!has_non_pure_update(d_input)) <<
+        "Function has non pure update\n";
+    Buffer<float> d_input_buf = d_input.realize(3);
+    CMP(__LINE__, d_input_buf(0), d_blur_buf(0));
+    CMP(__LINE__, d_input_buf(1), d_blur_buf(0) + d_blur_buf(1));
+    CMP(__LINE__, d_input_buf(2), d_blur_buf(1));
+}
+
 void test_1d_box() {
     Var x("x");
     Buffer<float> input(2);
@@ -1497,7 +1524,6 @@ void test_1d_box() {
     blur(x) = clamped(x) + clamped(x + 1);
     RDom r(0, 2);
     Func f_loss("f_loss");
-    f_loss() = 0.f;
     f_loss() += blur(r.x) * blur(r.x);
     Derivative d = propagate_adjoints(f_loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
@@ -1520,28 +1546,6 @@ void test_1d_box() {
     Buffer<float> d_input_buf = d(input).realize(2);
     CMP(__LINE__, d_input_buf(0), d_clamped_buf(0));
     CMP(__LINE__, d_input_buf(1), d_clamped_buf(1) + d_clamped_buf(2));
-}
-
-void test_simple_1d_blur_no_clamp() {
-    Var x("x");
-    float input_data[] = {1.f, 2.f};
-    Buffer<float> input(input_data, 2, "input");
-    Func blur("blur");
-    blur(x) = input(x) + input(x + 1);
-    RDom r(0, 1);
-    Func f_loss("f_loss");
-    f_loss() = 0.f;
-    f_loss() += blur(r.x) * blur(r.x);
-    Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
-
-    Buffer<float> blur_buf = blur.realize(1);
-    // d loss / d blur = 2 * blur(x)
-    Buffer<float> d_blur_buf = adjoints[FuncKey{blur.name(), -1}].realize(1);
-
-    CMP(__LINE__, d_blur_buf(0), 2 * blur_buf(0));
-    Buffer<float> d_clamped_buf = adjoints[FuncKey{input.name(), -1}].realize(1);
-    CMP(__LINE__, d_clamped_buf(0), d_blur_buf(0));
 }
 
 void test_simple_2d_blur() {
@@ -2191,8 +2195,8 @@ void derivative_test() {
     test_simple_bounds_inference();
     test_simple_bounds_inference_update();
     test_scalar();
+    test_1d_box_no_clamp();
     test_1d_box();
-    test_simple_1d_blur_no_clamp();
     test_simple_2d_blur();
     test_update();
     test_rdom_conv();
