@@ -62,7 +62,8 @@ void ReverseAccumulationVisitor::propagate_adjoints(
         const std::vector<std::pair<Expr, Expr>> &output_bounds) {
     // Topologically sort the functions
     std::map<std::string, Function> env = find_transitive_calls(output.function());
-    std::vector<std::string> order = realization_order({output.function()}, env).first;
+    std::vector<std::string> order =
+        realization_order({output.function()}, env).first;
     std::vector<Func> funcs;
     funcs.reserve(order.size());
     // Internal::debug(0) << "Sorted Func list:" << "\n";
@@ -1325,9 +1326,34 @@ void test_simple_bounds_inference_update() {
         << "Expected 2 instead of " << bounds[input.name()][0].max << "\n" ;
 }
 
-inline void CMP(float x, float target, float threshold = 1e-6f) {
+inline void CMP(int line_number, float x, float target, float threshold = 1e-6f) {
     internal_assert(fabs((x) - (target)) < threshold) << \
-        "Expected " << (target) << " instead of " << (x) << "\n";    
+        "Line " << line_number << ": Expected " <<
+            (target) << " instead of " << (x) << "\n";    
+}
+
+/**
+ *  Check all dependencies of func, return true if any of the dependent func
+ *  uses non pure variables on left hand side
+ */
+bool has_non_pure_update(const Func &func) {
+    std::map<std::string, Function> env = find_transitive_calls(func.function());
+    std::vector<std::string> order =
+        realization_order({func.function()}, env).first;
+    for (const auto &func_name : order) {
+        Func func(env[func_name]);
+        // For each update
+        for (int id = 0; id < func.num_update_definitions(); id++) {
+            // For each argument on left hand side
+            const std::vector<Expr> &args = func.update_args(id);
+            for (Expr arg : args) {
+                if (arg.as<Variable>() == nullptr) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
 }
 
 void test_scalar() {
@@ -1340,7 +1366,7 @@ void test_scalar() {
         Buffer<float> dydx = d(x).realize();
         // y = x^2 - 2x + 5 + 3 / x
         // dydx = 2x - 2 - 3 / x^2 = 12 - 3 / 25
-        CMP(dydx(0), 8.f - 3.f / 25.f);
+        CMP(__LINE__, dydx(0), 8.f - 3.f / 25.f);
     }
     { // Test special functions
         Func x("x");
@@ -1386,7 +1412,7 @@ void test_scalar() {
         //        1 / sqrt(x^2 + 1) +
         //        1 / (sqrt(x - 1) * sqrt(x + 1)) +
         //        1 / (1 - x^2)
-        CMP(dydx(0),
+        CMP(__LINE__, dydx(0),
             std::cos(0.5f) -
             std::sin(0.5f) +
             (1.f / (std::cos(0.5f) * std::cos(0.5f))) +
@@ -1415,7 +1441,7 @@ void test_scalar() {
         Derivative d = propagate_adjoints(y);
         Buffer<float> dydx = d(x).realize();
         // dy/dx = -1/x^2 - 1/(2*x^(3/2))
-        CMP(dydx(0), -1.f/(2.5f * 2.5f) - 1.f/(2.f*std::pow(2.5f, 3.f/2.f)), 1e-3f);
+        CMP(__LINE__, dydx(0), -1.f/(2.5f * 2.5f) - 1.f/(2.f*std::pow(2.5f, 3.f/2.f)), 1e-3f);
     }
     { // Test floor ceil round trunc
         Func x("x");
@@ -1424,7 +1450,7 @@ void test_scalar() {
         y() = ceil(x()) + floor(x()) + round(x()) + trunc(x());
         Derivative d = propagate_adjoints(y);
         Buffer<float> dydx = d(x).realize();
-        CMP(dydx(0), 0.f);
+        CMP(__LINE__, dydx(0), 0.f);
     }
     { // Test max min
         Func x("x");
@@ -1436,7 +1462,7 @@ void test_scalar() {
               7.f * min(x(), 2.f);
         Derivative d = propagate_adjoints(y);
         Buffer<float> dydx = d(x).realize();
-        CMP(dydx(0), 8.f);
+        CMP(__LINE__, dydx(0), 8.f);
     }
     { // Test abs
         Func x("x");
@@ -1446,7 +1472,7 @@ void test_scalar() {
         Derivative d = propagate_adjoints(y);
         Buffer<float> dydx = d(x).realize();
         // y = -2x - 3x = -5x, dy/dx = -5
-        CMP(dydx(0), -5.f);
+        CMP(__LINE__, dydx(0), -5.f);
     }
     { // Test select
         Func x("x");
@@ -1456,14 +1482,14 @@ void test_scalar() {
               select(x() < 0.f, 5.f * x(), 7.f * x());
         Derivative d = propagate_adjoints(y);
         Buffer<float> dydx = d(x).realize();
-        CMP(dydx(0), 9.f);
+        CMP(__LINE__, dydx(0), 9.f);
     }
 }
 
-void test_simple_1d_blur() {
+void test_1d_box() {
     Var x("x");
-    float input_data[] = {1.f, 2.f};
-    Buffer<float> input(input_data, 2, "input");
+    Buffer<float> input(2);
+    input(0) = 1.f; input(1) = 2.f;
     Func clamped("clamped");
     Expr clamped_x = Halide::clamp(x, 0, input.width() - 1);
     clamped(x) = input(clamped_x);
@@ -1478,13 +1504,22 @@ void test_simple_1d_blur() {
 
     Buffer<float> blur_buf = blur.realize(2);
     // d loss / d blur = 2 * blur(x)
-    Buffer<float> d_blur_buf = adjoints[FuncKey{blur.name(), -1}].realize(2);
-
-    CMP(d_blur_buf(0), 2 * blur_buf(0));
-    CMP(d_blur_buf(1), 2 * blur_buf(1));
-    Buffer<float> d_clamped_buf = adjoints[FuncKey{clamped.name(), -1}].realize(2);
-    CMP(d_clamped_buf(0), d_blur_buf(0));
-    CMP(d_clamped_buf(1), d_blur_buf(0) + d_blur_buf(1));
+    Buffer<float> d_blur_buf = d(blur).realize(2);
+    CMP(__LINE__, d_blur_buf(0), 2 * blur_buf(0));
+    CMP(__LINE__, d_blur_buf(1), 2 * blur_buf(1));
+    // d clamped(x) = d blur(x) + d blur(x - 1)
+    Func d_clamped = d(clamped);
+    // Every dependency of d_clamped should only use pure variables on lhs
+    internal_assert(!has_non_pure_update(d_clamped)) <<
+        "Function has non pure update\n";
+    Buffer<float> d_clamped_buf = d_clamped.realize(3);
+    CMP(__LINE__, d_clamped_buf(0), d_blur_buf(0));
+    CMP(__LINE__, d_clamped_buf(1), d_blur_buf(0) + d_blur_buf(1));
+    CMP(__LINE__, d_clamped_buf(2), d_blur_buf(1));
+    // d input(clamp(x, 0, 1)) = d clamped (x)
+    Buffer<float> d_input_buf = d(input).realize(2);
+    CMP(__LINE__, d_input_buf(0), d_clamped_buf(0));
+    CMP(__LINE__, d_input_buf(1), d_clamped_buf(1) + d_clamped_buf(2));
 }
 
 void test_simple_1d_blur_no_clamp() {
@@ -1504,9 +1539,9 @@ void test_simple_1d_blur_no_clamp() {
     // d loss / d blur = 2 * blur(x)
     Buffer<float> d_blur_buf = adjoints[FuncKey{blur.name(), -1}].realize(1);
 
-    CMP(d_blur_buf(0), 2 * blur_buf(0));
+    CMP(__LINE__, d_blur_buf(0), 2 * blur_buf(0));
     Buffer<float> d_clamped_buf = adjoints[FuncKey{input.name(), -1}].realize(1);
-    CMP(d_clamped_buf(0), d_blur_buf(0));
+    CMP(__LINE__, d_clamped_buf(0), d_blur_buf(0));
 }
 
 void test_simple_2d_blur() {
@@ -1605,11 +1640,11 @@ void test_update() {
     // d loss / d blur = 2 * blur(x)
     Buffer<float> d_blur_buf = adjoints[FuncKey{blur.name(), -1}].realize(2);
 
-    CMP(d_blur_buf(0), 2 * blur_buf(0));
-    CMP(d_blur_buf(1), 2 * blur_buf(1));
+    CMP(__LINE__, d_blur_buf(0), 2 * blur_buf(0));
+    CMP(__LINE__, d_blur_buf(1), 2 * blur_buf(1));
     Buffer<float> d_clamped_buf = adjoints[FuncKey{clamped.name(), -1}].realize(2);
-    CMP(d_clamped_buf(0), d_blur_buf(0));
-    CMP(d_clamped_buf(1), d_blur_buf(0) + d_blur_buf(1));
+    CMP(__LINE__, d_clamped_buf(0), d_blur_buf(0));
+    CMP(__LINE__, d_clamped_buf(1), d_blur_buf(0) + d_blur_buf(1));
 }
 
 void test_rdom_conv() {
@@ -1638,7 +1673,7 @@ void test_rdom_conv() {
     Buffer<float> d_convolved_buf = adjoints[FuncKey{convolved.name(), -1}].realize(4);
 
     for (int i = 0; i < 4; i++) {
-        CMP(d_convolved_buf(i), 2 * convolved_buf(i));
+        CMP(__LINE__, d_convolved_buf(i), 2 * convolved_buf(i));
     }
     // d loss / d clamped = d_convolved convolve with flipped kernel
     Buffer<float> d_clamped_buf = adjoints[FuncKey{clamped.name(), -1}].realize(4);
@@ -1647,7 +1682,7 @@ void test_rdom_conv() {
         if (i >= 1) {
             target += d_convolved_buf(i - 1) * kernel_data[1];
         }
-        CMP(d_clamped_buf(i), target);
+        CMP(__LINE__, d_clamped_buf(i), target);
     }
     // loss = (k0 + 2k1)^2 + (2k0 + 3k1)^2 + (3k0 + 4k1)^2 + (4k0 + 4k1)^2
     //      = k0^2 + 4k0k1 + 4k1^2 + 4k0^2 + 12 k0k1 + 9k1^2 + 9k0^2 + 24 k0k1 + 16 k1^2 + 16k0^2 + 32k0k1 + 16k1^2
@@ -1655,8 +1690,8 @@ void test_rdom_conv() {
     // d loss / d kernel(0) = 2 * 30 + 72 = 132
     // d loss / d kernel(1) = 2 * 45 + 72 = 162
     Buffer<float> d_kernel_buf = adjoints[FuncKey{kernel_func.name(), -1}].realize(2);
-    CMP(d_kernel_buf(0), 132);
-    CMP(d_kernel_buf(1), 162);
+    CMP(__LINE__, d_kernel_buf(0), 132);
+    CMP(__LINE__, d_kernel_buf(1), 162);
 }
 
 void test_1d_to_2d() {
@@ -1678,14 +1713,14 @@ void test_1d_to_2d() {
     // d loss / d i1 = 4i1 = 8
 
     Buffer<float> d_output = adjoints[FuncKey{f_output.name(), -1}].realize(2, 2);
-    CMP(d_output(0, 0), 2);
-    CMP(d_output(1, 0), 2);
-    CMP(d_output(0, 1), 4);
-    CMP(d_output(1, 1), 4);
+    CMP(__LINE__, d_output(0, 0), 2);
+    CMP(__LINE__, d_output(1, 0), 2);
+    CMP(__LINE__, d_output(0, 1), 4);
+    CMP(__LINE__, d_output(1, 1), 4);
 
     Buffer<float> d_input = adjoints[FuncKey{input.name(), -1}].realize(2);
-    CMP(d_input(0), 4);
-    CMP(d_input(1), 8);
+    CMP(__LINE__, d_input(0), 4);
+    CMP(__LINE__, d_input(1), 8);
 }
 
 void test_linear_interpolation() {
@@ -1728,17 +1763,17 @@ void test_linear_interpolation() {
     // d loss / d i1[2] = i0[1] - floor(i0[1])
 
     Buffer<float> interpolate = f_interpolate.realize(2);
-    CMP(interpolate(0), 1.3f);
-    CMP(interpolate(1), 3.6f);
+    CMP(__LINE__, interpolate(0), 1.3f);
+    CMP(__LINE__, interpolate(1), 3.6f);
 
     Buffer<float> d_input_0 = adjoints[FuncKey{f_input0.name(), -1}].realize(2);
-    CMP(d_input_0(0), 1.f);
-    CMP(d_input_0(1), 2.f);
+    CMP(__LINE__, d_input_0(0), 1.f);
+    CMP(__LINE__, d_input_0(1), 2.f);
 
     Buffer<float> d_input_1 = adjoints[FuncKey{f_input1.name(), -1}].realize(3);
-    CMP(d_input_1(0), 0.7f);
-    CMP(d_input_1(1), 0.5f);
-    CMP(d_input_1(2), 0.8f);
+    CMP(__LINE__, d_input_1(0), 0.7f);
+    CMP(__LINE__, d_input_1(1), 0.5f);
+    CMP(__LINE__, d_input_1(2), 0.8f);
 }
 
 void test_linear_interpolation_2d() {
@@ -1772,17 +1807,17 @@ void test_linear_interpolation_2d() {
 
     // Same as test_linear_interpolation()
     Buffer<float> interpolate = f_interpolate.realize(2, 1);
-    CMP(interpolate(0, 0), 1.3f);
-    CMP(interpolate(1, 0), 3.6f);
+    CMP(__LINE__, interpolate(0, 0), 1.3f);
+    CMP(__LINE__, interpolate(1, 0), 3.6f);
 
     Buffer<float> d_input_0 = adjoints[FuncKey{f_input0.name(), -1}].realize(2, 1);
-    CMP(d_input_0(0, 0), 1.f);
-    CMP(d_input_0(1, 0), 2.f);
+    CMP(__LINE__, d_input_0(0, 0), 1.f);
+    CMP(__LINE__, d_input_0(1, 0), 2.f);
 
     Buffer<float> d_input_1 = adjoints[FuncKey{f_input1.name(), -1}].realize(3, 1);
-    CMP(d_input_1(0, 0), 0.7f);
-    CMP(d_input_1(1, 0), 0.5f);
-    CMP(d_input_1(2, 0), 0.8f);
+    CMP(__LINE__, d_input_1(0, 0), 0.7f);
+    CMP(__LINE__, d_input_1(1, 0), 0.5f);
+    CMP(__LINE__, d_input_1(2, 0), 0.8f);
 }
 
 void test_sparse_update() {
@@ -1806,9 +1841,9 @@ void test_sparse_update() {
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
     Buffer<float> d_input = adjoints[FuncKey{input.name(), -1}].realize(3);
-    CMP(d_input(0), 1.0f);
-    CMP(d_input(1), 1.0f);
-    CMP(d_input(2), 0.0f);
+    CMP(__LINE__, d_input(0), 1.0f);
+    CMP(__LINE__, d_input(1), 1.0f);
+    CMP(__LINE__, d_input(2), 0.0f);
 }
 
 void test_rdom_update() {
@@ -1829,9 +1864,9 @@ void test_rdom_update() {
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
     Buffer<float> d_input = adjoints[FuncKey{input.name(), -1}].realize(3);
-    CMP(d_input(0), 2.0f);
-    CMP(d_input(1), 1.0f);
-    CMP(d_input(2), 0.0f);
+    CMP(__LINE__, d_input(0), 2.0f);
+    CMP(__LINE__, d_input(1), 1.0f);
+    CMP(__LINE__, d_input(2), 0.0f);
 }
 
 void test_repeat_edge() {
@@ -1853,8 +1888,8 @@ void test_repeat_edge() {
     Buffer<float> d_input_buf = adjoints[FuncKey{input.name(), -1}].realize(2);
     // d loss / d i0 = 1
     // d loss / d i1 = 5
-    CMP(d_input_buf(0), 1.f);
-    CMP(d_input_buf(1), 5.f);
+    CMP(__LINE__, d_input_buf(0), 1.f);
+    CMP(__LINE__, d_input_buf(1), 5.f);
 }
 
 void test_second_order() {
@@ -1872,10 +1907,10 @@ void test_second_order() {
     Buffer<float> buf = d_input.realize(1);
     Buffer<float> buf2 = d2_input.realize(1);
     // d/dx = 2x + 3
-    CMP(buf(0), 5.f);
+    CMP(__LINE__, buf(0), 5.f);
 
     // d^2/dx^2 = 2
-    CMP(buf2(0), 2.f);
+    CMP(__LINE__, buf2(0), 2.f);
 }
 
 void test_second_order_conv() {
@@ -1910,30 +1945,30 @@ void test_second_order_conv() {
     Buffer<float> d_conv_buf = d(conv).realize(9);
     // d_conv(x) = 2 * (conv(x) - target(x))
     for (int i = 0; i < 9; i++) {
-        CMP(d_conv_buf(i), 2.f * (conv_buf(i) - target(i)));
+        CMP(__LINE__, d_conv_buf(i), 2.f * (conv_buf(i) - target(i)));
     }
     // d_input(x) = d_conv(x + 1) + d_conv(x) + d_conv(x - 1)
     Buffer<float> d_input_buf = d_input.realize(10);
-    CMP(d_input_buf(0), d_conv_buf(0) + d_conv_buf(1));
+    CMP(__LINE__, d_input_buf(0), d_conv_buf(0) + d_conv_buf(1));
     for (int i = 1; i < 8; i++) {
-        CMP(d_input_buf(i), d_conv_buf(i+1) + d_conv_buf(i) + d_conv_buf(i-1));
+        CMP(__LINE__, d_input_buf(i), d_conv_buf(i+1) + d_conv_buf(i) + d_conv_buf(i-1));
     }
-    CMP(d_input_buf(8), d_conv_buf(7) + d_conv_buf(8));
-    CMP(d_input_buf(9), d_conv_buf(8));
+    CMP(__LINE__, d_input_buf(8), d_conv_buf(7) + d_conv_buf(8));
+    CMP(__LINE__, d_input_buf(9), d_conv_buf(8));
     Buffer<float> d2_conv_buf = d2(conv).realize(9);
     // d2_conv(x) = 6
     for (int i = 0; i < 8; i++) {
-        CMP(d2_conv_buf(i), 6.f);
+        CMP(__LINE__, d2_conv_buf(i), 6.f);
     }
-    CMP(d2_conv_buf(8), 4.f);
+    CMP(__LINE__, d2_conv_buf(8), 4.f);
     // d2_input(x) = d2_conv(x + 1) + d2_conv(x) + d2_conv(x - 1)
     Buffer<float> d2_input_buf = d2(input).realize(10);
-    CMP(d2_input_buf(0), d2_conv_buf(0) + d2_conv_buf(1));
+    CMP(__LINE__, d2_input_buf(0), d2_conv_buf(0) + d2_conv_buf(1));
     for (int i = 1; i <= 7; i++) {
-        CMP(d2_input_buf(i), d2_conv_buf(i) + d2_conv_buf(i + 1) + d2_conv_buf(i - 1));
+        CMP(__LINE__, d2_input_buf(i), d2_conv_buf(i) + d2_conv_buf(i + 1) + d2_conv_buf(i - 1));
     }
-    CMP(d2_input_buf(8), d2_conv_buf(8) + d2_conv_buf(7));
-    CMP(d2_input_buf(9), d2_conv_buf(7));
+    CMP(__LINE__, d2_input_buf(8), d2_conv_buf(8) + d2_conv_buf(7));
+    CMP(__LINE__, d2_input_buf(9), d2_conv_buf(7));
 }
 
 void test_implicit_vars() {
@@ -1950,11 +1985,11 @@ void test_implicit_vars() {
     std::map<FuncKey, Func> adjoints = d.adjoints;
 
     Buffer<float> d_input_buf = adjoints[FuncKey{input.name(), -1}].realize(2);
-    CMP(d_input_buf(0), 1.f);
-    CMP(d_input_buf(1), 1.f);
+    CMP(__LINE__, d_input_buf(0), 1.f);
+    CMP(__LINE__, d_input_buf(1), 1.f);
     Buffer<float> d_copy_buf = adjoints[FuncKey{copy.name(), -1}].realize(2);
-    CMP(d_copy_buf(0), 1.f);
-    CMP(d_copy_buf(1), 1.f);
+    CMP(__LINE__, d_copy_buf(0), 1.f);
+    CMP(__LINE__, d_copy_buf(1), 1.f);
 }
 
 void test_tuple() {
@@ -1983,15 +2018,15 @@ void test_tuple() {
     Realization d_tuple_buf = adjoints[FuncKey{tuple.name(), -1}].realize(2);
     Buffer<float> d_tuple_buf_0 = d_tuple_buf[0];
     Buffer<float> d_tuple_buf_1 = d_tuple_buf[1];
-    CMP(d_tuple_buf_0(0), 1.f);
-    CMP(d_tuple_buf_0(1), 1.f);
-    CMP(d_tuple_buf_1(0), 1.f);
-    CMP(d_tuple_buf_1(1), 1.f);
+    CMP(__LINE__, d_tuple_buf_0(0), 1.f);
+    CMP(__LINE__, d_tuple_buf_0(1), 1.f);
+    CMP(__LINE__, d_tuple_buf_1(0), 1.f);
+    CMP(__LINE__, d_tuple_buf_1(1), 1.f);
 
     Buffer<float> d_input_buf = adjoints[FuncKey{input.name(), -1}].realize(3);
-    CMP(d_input_buf(0), 1.f);
-    CMP(d_input_buf(1), 2.f);
-    CMP(d_input_buf(2), 1.f);
+    CMP(__LINE__, d_input_buf(0), 1.f);
+    CMP(__LINE__, d_input_buf(1), 2.f);
+    CMP(__LINE__, d_input_buf(2), 1.f);
 }
 
 void test_floor_ceil() {
@@ -2016,9 +2051,9 @@ void test_floor_ceil() {
     // ceil_output(5~7) = input[2]
     Buffer<float> d_input_buf = d(input).realize(3);
 
-    CMP(d_input_buf(0), 5.f);
-    CMP(d_input_buf(1), 8.f);
-    CMP(d_input_buf(2), 3.f);
+    CMP(__LINE__, d_input_buf(0), 5.f);
+    CMP(__LINE__, d_input_buf(1), 8.f);
+    CMP(__LINE__, d_input_buf(2), 3.f);
 }
 
 void test_downsampling() {
@@ -2041,10 +2076,10 @@ void test_downsampling() {
     Buffer<float> d_input_buf = d(input).realize(10);
 
     for (int i = 0; i < 8; i++) {
-        CMP(d_input_buf(i), 1.f);
+        CMP(__LINE__, d_input_buf(i), 1.f);
     }
-    CMP(d_input_buf(8), 0.f);
-    CMP(d_input_buf(9), 0.f);
+    CMP(__LINE__, d_input_buf(8), 0.f);
+    CMP(__LINE__, d_input_buf(9), 0.f);
 }
 
 void test_transpose() {
@@ -2072,7 +2107,7 @@ void test_transpose() {
     Buffer<float> d_input_buf = d_input.realize(5, 5);
     for (int i = 0; i < 5; i++) {
         for (int j = 0; j < 5; j++) {
-            CMP(d_input_buf(i, j), 2.f * (input(i, j) - target(j, i)));
+            CMP(__LINE__, d_input_buf(i, j), 2.f * (input(i, j) - target(j, i)));
         }
     }
 }
@@ -2094,7 +2129,7 @@ void test_forward() {
     Buffer<float> d_output_buf = d_output.realize(5);
 
     for (int i = 0; i < 5; i++) {
-        CMP(d_output_buf(i), 2.f);
+        CMP(__LINE__, d_output_buf(i), 2.f);
     }
 }
 
@@ -2126,37 +2161,37 @@ void test_reverse_forward() {
     // d_output(x) = 2 * (output(x) - target(x))
     Buffer<float> d_output_buf = d_output.realize(9);
     for (int i = 0; i < 9; i++) {
-        CMP(d_output_buf(i), 2.f * (output_buf(i) - target(i)));
+        CMP(__LINE__, d_output_buf(i), 2.f * (output_buf(i) - target(i)));
     }
     Func d_input = d(input);
     Buffer<float> d_input_buf = d_input.realize(10);
     // d_input(x) = d_output(x) + d_output(x - 1)
-    CMP(d_input_buf(0), d_output_buf(0));
+    CMP(__LINE__, d_input_buf(0), d_output_buf(0));
     for (int i = 1; i < 9; i++) {
-        CMP(d_input_buf(i), d_output_buf(i) + d_output_buf(i - 1));
+        CMP(__LINE__, d_input_buf(i), d_output_buf(i) + d_output_buf(i - 1));
     }
-    CMP(d_input_buf(9), d_output_buf(8));
+    CMP(__LINE__, d_input_buf(9), d_output_buf(8));
     Func d2_output = propagate_tangents(d_output, {{input.name(), d_input}});
     Buffer<float> d2_output_buf = d2_output.realize(9);
     // d2_output(x) = 2 * (d_input(x) + d_input(x + 1))
     for (int i = 0; i < 9; i++) {
-        CMP(d2_output_buf(i), 2.f * (d_input_buf(i) + d_input_buf(i + 1)));
+        CMP(__LINE__, d2_output_buf(i), 2.f * (d_input_buf(i) + d_input_buf(i + 1)));
     }
     Func d2_input = propagate_tangents(d_input, {{input.name(), d_input}});
     Buffer<float> d2_input_buf = d2_input.realize(10);
     // d2_input(x) = d2_output(x) + d2_output(x - 1)
-    CMP(d2_input_buf(0), d2_output_buf(0));
+    CMP(__LINE__, d2_input_buf(0), d2_output_buf(0));
     for (int i = 1; i < 9; i++) {
-        CMP(d2_input_buf(i), d2_output_buf(i) + d2_output_buf(i - 1));
+        CMP(__LINE__, d2_input_buf(i), d2_output_buf(i) + d2_output_buf(i - 1));
     }
-    CMP(d2_input_buf(9), d2_output_buf(8));
+    CMP(__LINE__, d2_input_buf(9), d2_output_buf(8));
 }
 
 void derivative_test() {
     test_simple_bounds_inference();
     test_simple_bounds_inference_update();
     test_scalar();
-    test_simple_1d_blur();
+    test_1d_box();
     test_simple_1d_blur_no_clamp();
     test_simple_2d_blur();
     test_update();
