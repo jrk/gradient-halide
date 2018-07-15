@@ -1822,48 +1822,45 @@ void test_linear_resampling_2d() {
 
 void test_sparse_update() {
     Var x("x");
-    float input_data[] = {1.0f, 2.0f, 3.0f};
-    Buffer<float> input(input_data, 3, "input");
+    Buffer<float> input(3);
+    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
     Func f_input("f_input");
     f_input(x) = input(x);
-    Func f_output("f_output");
-    f_output(x) = f_input(x);
-    f_output(1) = 0.f;
-    // XXX: if we do input(1) Halide returns a float
-    // which means it is impossible to propagate to input, so we need a surrogate
-    f_output(2) = f_input(1);
+    Func output("output");
+    output(x) = f_input(x);
+    output(1) = 0.f;
+    // XXX: if we write input(1) Halide returns a float
+    // which means it is impossible to propagate to input,
+    // so we need a surrogate f_input such that f_input(1) is symbolic
+    output(2) = 2.f * f_input(1);
 
-    Func f_loss("f_loss");
+    Func loss("loss");
     RDom r(0, 3);
-    f_loss() = 0.f;
-    f_loss() += f_output(r.x);
-    Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
+    loss() += output(r.x);
+    Derivative d = propagate_adjoints(loss);
 
-    Buffer<float> d_input = adjoints[FuncKey{input.name(), -1}].realize(3);
+    Buffer<float> d_input = d(input).realize(3);
     CMP(__LINE__, d_input(0), 1.0f);
-    CMP(__LINE__, d_input(1), 1.0f);
+    CMP(__LINE__, d_input(1), 2.0f);
     CMP(__LINE__, d_input(2), 0.0f);
 }
 
 void test_rdom_update() {
     Var x("x");
-    float input_data[] = {1.0f, 2.0f, 3.0f};
-    Buffer<float> input(input_data, 3, "input");
-    Func f_output("f_output");
+    Buffer<float> input(3);
+    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
+    Func output("output");
     RDom r0(1, 2), r1(3, 4);
-    f_output(x) = input(x);
-    f_output(r0) = input(r0 - 1);
-    f_output(r1) = 0.f;
+    output(x) = input(x);
+    output(r0) = input(r0 - 1);
+    output(r1) = 0.f;
 
-    Func f_loss("f_loss");
+    Func loss("f_loss");
     RDom r_target(0, 5);
-    f_loss() = 0.f;
-    f_loss() += f_output(r_target);
-    Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
+    loss() += output(r_target);
+    Derivative d = propagate_adjoints(loss);
 
-    Buffer<float> d_input = adjoints[FuncKey{input.name(), -1}].realize(3);
+    Buffer<float> d_input = d(input).realize(3);
     CMP(__LINE__, d_input(0), 2.0f);
     CMP(__LINE__, d_input(1), 1.0f);
     CMP(__LINE__, d_input(2), 0.0f);
@@ -1871,41 +1868,123 @@ void test_rdom_update() {
 
 void test_repeat_edge() {
     Var x("x");
-    float input_data[] = {1.f, 2.f};
-    Buffer<float> input(input_data, 2, "input");
+    Buffer<float> input(2);
+    input(0) = 1.f; input(1) = 2.f;
     Func clamped = BoundaryConditions::repeat_edge(input);
     Func blur("blur");
     blur(x) = clamped(x) + clamped(x + 1);
     RDom r(0, 3);
-    Func f_loss("f_loss");
-    f_loss() = 0.f;
-    f_loss() += blur(r.x);
-    Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
+    Func loss("loss");
+    loss() += blur(r.x);
+    Derivative d = propagate_adjoints(loss);
     // loss = (i0 + i1) + (i1 + i1) + (i1 + i1) = i0 + 5 * i1
 
     Buffer<float> d_blur_buf = blur.realize(3);
-    Buffer<float> d_input_buf = adjoints[FuncKey{input.name(), -1}].realize(2);
+    Buffer<float> d_input_buf = d(input).realize(2);
     // d loss / d i0 = 1
     // d loss / d i1 = 5
     CMP(__LINE__, d_input_buf(0), 1.f);
     CMP(__LINE__, d_input_buf(1), 5.f);
 }
 
+void test_constant_exterior() {
+    Var x("x");
+    Buffer<float> input(2);
+    input(0) = 1.f; input(1) = 2.f;
+    Func clamped = BoundaryConditions::constant_exterior(input, 0.f);
+    Func blur("blur");
+    blur(x) = clamped(x) + clamped(x + 1);
+    RDom r(0, 3);
+    Func loss("loss");
+    loss() += blur(r.x);
+    Derivative d = propagate_adjoints(loss);
+    // loss = (i0 + i1) + i1 = i0 + 2 * i1
+
+    Buffer<float> d_blur_buf = blur.realize(3);
+    Buffer<float> d_input_buf = d(input).realize(2);
+    // d loss / d i0 = 1
+    // d loss / d i1 = 2
+    CMP(__LINE__, d_input_buf(0), 1.f);
+    CMP(__LINE__, d_input_buf(1), 2.f);
+}
+
+void test_repeat_image() {
+    Var x("x");
+    Buffer<float> input(2);
+    input(0) = 1.f; input(1) = 2.f;
+    Func clamped = BoundaryConditions::repeat_image(input);
+    Func blur("blur");
+    blur(x) = clamped(x) + clamped(x + 1);
+    RDom r(0, 3);
+    Func loss("loss");
+    loss() += blur(r.x);
+    Derivative d = propagate_adjoints(loss);
+    // loss = (i0 + i1) + (i1 + i0) + (i0 + i1) = 3 * i0 + 3 * i1
+
+    Buffer<float> d_blur_buf = blur.realize(3);
+    Buffer<float> d_input_buf = d(input).realize(2);
+    // d loss / d i0 = 3
+    // d loss / d i1 = 3
+    CMP(__LINE__, d_input_buf(0), 3.f);
+    CMP(__LINE__, d_input_buf(1), 3.f);
+}
+
+void test_mirror_image() {
+    Var x("x");
+    Buffer<float> input(2);
+    input(0) = 1.f; input(1) = 2.f;
+    Func clamped = BoundaryConditions::mirror_image(input);
+    Func blur("blur");
+    blur(x) = clamped(x) + clamped(x + 1);
+    RDom r(0, 3);
+    Func loss("loss");
+    loss() += blur(r.x);
+    Derivative d = propagate_adjoints(loss);
+    // loss = (i0 + i1) + (i1 + i1) + (i1 + i0) = 2 * i0 + 4 * i1
+
+    Buffer<float> d_blur_buf = blur.realize(3);
+    Buffer<float> d_input_buf = d(input).realize(2);
+    // d loss / d i0 = 2
+    // d loss / d i1 = 4
+    CMP(__LINE__, d_input_buf(0), 2.f);
+    CMP(__LINE__, d_input_buf(1), 4.f);
+}
+
+void test_mirror_interior() {
+    Var x("x");
+    Buffer<float> input(2);
+    input(0) = 1.f; input(1) = 2.f;
+    Func clamped = BoundaryConditions::mirror_interior(input);
+    Func blur("blur");
+    blur(x) = clamped(x) + clamped(x + 1);
+    RDom r(0, 3);
+    Func loss("loss");
+    loss() += blur(r.x);
+    Derivative d = propagate_adjoints(loss);
+    // loss = (i0 + i1) + (i1 + i0) + (i0 + i1) = 3 * i0 + 3 * i1
+
+    Buffer<float> d_blur_buf = blur.realize(3);
+    Buffer<float> d_input_buf = d(input).realize(2);
+    // d loss / d i0 = 3
+    // d loss / d i1 = 3
+    CMP(__LINE__, d_input_buf(0), 3.f);
+    CMP(__LINE__, d_input_buf(1), 3.f);
+}
+
 void test_second_order() {
     Var x("x");
-    float input_data[] = {1.f};
-    Buffer<float> input(input_data, 1, "input");
+    Func input("input");
+    input() = 1.f;
     Func polynomial("polynomial");
     // x^2 + 3x + 4.f
-    polynomial(x) = input(x) * input(x) + 3.f * input(x) + 4.f;
+    polynomial() = input() * input() + 3.f * input() + 4.f;
     Derivative d = propagate_adjoints(polynomial);
-    Func d_input = d.adjoints[FuncKey{input.name(), -1}];
+    Func d_input = d(input);
     Derivative d2 = propagate_adjoints(d_input);
-    Func d2_input = d2.adjoints[FuncKey{input.name(), -1}];
+    Func d2_input = d2(input);
 
-    Buffer<float> buf = d_input.realize(1);
-    Buffer<float> buf2 = d2_input.realize(1);
+    Buffer<float> buf = d_input.realize();
+    Buffer<float> buf2 = d2_input.realize();
     // d/dx = 2x + 3
     CMP(__LINE__, buf(0), 5.f);
 
@@ -1928,16 +2007,13 @@ void test_second_order_conv() {
     Func input_re = BoundaryConditions::repeat_edge(input);
     RDom rc(0, 3);
     Func conv("conv");
-    conv(x) = 0.f;
     conv(x) += input_re(x + rc - 1) * kernel(rc);
     RDom rl(0, 9);
     Func loss0("loss0");
-    loss0() = 0.f;
     loss0() += pow(conv(rl) - target(rl), 2.f);
     Derivative d = propagate_adjoints(loss0);
     Func d_input = d(input);
     Func loss1("loss1");
-    loss1() = 0.f;
     loss1() += d_input(rl);
     Derivative d2 = propagate_adjoints(loss1);
 
@@ -2202,6 +2278,10 @@ void derivative_test() {
     test_sparse_update();
     test_rdom_update();
     test_repeat_edge();
+    test_constant_exterior();
+    test_repeat_image();
+    test_mirror_image();
+    test_mirror_interior();
     test_second_order();
     //test_second_order_conv();
     test_implicit_vars();
