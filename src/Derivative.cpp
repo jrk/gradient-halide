@@ -1504,7 +1504,7 @@ void test_1d_box_no_clamp() {
     CMP(__LINE__, d_blur_buf(1), 2 * blur_buf(1));
     // d input(x) = d blur(x) + d blur(x - 1)
     Func d_input = d(input);
-    // Every dependency of d_input should only use pure variables on lhs
+    // Every dependency of d_input should only use pure variables in lhs
     internal_assert(!has_non_pure_update(d_input)) <<
         "Function has non pure update\n";
     Buffer<float> d_input_buf = d_input.realize(3);
@@ -1535,7 +1535,7 @@ void test_1d_box() {
     CMP(__LINE__, d_blur_buf(1), 2 * blur_buf(1));
     // d clamped(x) = d blur(x) + d blur(x - 1)
     Func d_clamped = d(clamped);
-    // Every dependency of d_clamped should only use pure variables on lhs
+    // Every dependency of d_clamped should only use pure variables in lhs
     internal_assert(!has_non_pure_update(d_clamped)) <<
         "Function has non pure update\n";
     Buffer<float> d_clamped_buf = d_clamped.realize(3);
@@ -1548,16 +1548,14 @@ void test_1d_box() {
     CMP(__LINE__, d_input_buf(1), d_clamped_buf(1) + d_clamped_buf(2));
 }
 
-void test_simple_2d_blur() {
+void test_2d_box() {
     Var x("x"), y("y");
-    float input_data[] = {
-        0.f, 1.f, 0.f, 0.f, 0.f,
-        1.f, 1.f, 1.f, 0.f, 0.f,
-        0.f, 1.f, 0.f, 0.f, 0.f,
-        0.f, 0.f, 0.f, 0.f, 0.f,
-        0.f, 0.f, 0.f, 0.f, 0.f
-    };
-    Buffer<float> input(input_data, 5, 5, "input");
+    Buffer<float> input(5, 5, "input");
+    for (int i = 0; i < input.width(); i++) {
+        for (int j = 0; j < input.height(); j++) {
+            input(i, j) = (i + 1) * (j + 2);
+        }
+    }
     Func clamped("clamped");
     Expr clamped_x = Halide::clamp(x, 0, input.width()-1);
     Expr clamped_y = Halide::clamp(y, 0, input.height()-1);
@@ -1565,18 +1563,16 @@ void test_simple_2d_blur() {
     Func blur_x("blur_x");
     blur_x(x, y) = clamped(x, y) + clamped(x + 1, y) + clamped(x + 2, y);
     Func blur_y("blur_y");
-    blur_y(x, y) = blur_x(x, y) + blur_x(x, y + 1) + blur_x(x, y + 2);
+    blur_y(x, y) = blur_x(x, y - 1) + blur_x(x, y) + blur_x(x, y + 1);
 
     RDom r(0, 5, 0, 5);
     Func f_loss("f_loss");
-    f_loss() = 0.f;
     f_loss() += blur_y(r.x, r.y) * blur_y(r.x, r.y);
     Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
 
     Buffer<float> blur_y_buf = blur_y.realize(5, 5);
     // d loss / d blur_y = 2 * blur_y(x, y)
-    Buffer<float> d_blur_y_buf = adjoints[FuncKey{blur_y.name(), -1}].realize(5, 5);
+    Buffer<float> d_blur_y_buf = d(blur_y).realize(5, 5);
     const float eps = 1e-6;
     for (int y = 0; y < 5; y++) {
         for (int x = 0; x < 5; x++) {
@@ -1587,16 +1583,16 @@ void test_simple_2d_blur() {
                     target << " instead of " << d_blur_y_buf(x, y) << "\n" ;
         }
     }
-    // d loss / d blur_x = d blur_y(x, y) + d blur_y(x, y - 1) + d blur_y(x, y - 2)
-    Buffer<float> d_blur_x_buf = adjoints[FuncKey{blur_x.name(), -1}].realize(5, 5);
+    // d loss / d blur_x = d blur_y(x, y) + d blur_y(x, y - 1) + d blur_y(x, y + 1)
+    Buffer<float> d_blur_x_buf = d(blur_x).realize(5, 5);
     for (int y = 0; y < 5; y++) {
         for (int x = 0; x < 5; x++) {
             float target = d_blur_y_buf(x, y);
             if (y >= 1) {
                 target += d_blur_y_buf(x, y - 1);
             }
-            if (y >= 2) {
-                target += d_blur_y_buf(x, y - 2);
+            if (y < 4) {
+                target += d_blur_y_buf(x, y + 1);
             }
             float diff = fabs(d_blur_x_buf(x, y) - target);
             internal_assert(diff < eps)
@@ -1604,7 +1600,11 @@ void test_simple_2d_blur() {
                 target << " instead of " << d_blur_x_buf(x, y) << "\n" ;
         }
     }
-    Buffer<float> d_clamped = adjoints[FuncKey{clamped.name(), -1}].realize(5, 5);
+    Func d_clamped = d(clamped);
+    // Every dependency of d_clamped should only use pure variables in lhs
+    internal_assert(!has_non_pure_update(d_clamped)) <<
+        "Function has non pure update\n";
+    Buffer<float> d_clamped_buf = d_clamped.realize(5, 5);
     // d loss / d clamped = d blur_x(x, y) + d blur_x(x - 1, y) + d blur_x(x - 2, y)
     for (int y = 0; y < 5; y++) {
         for (int x = 0; x < 5; x++) {
@@ -1615,144 +1615,142 @@ void test_simple_2d_blur() {
             if (x >= 2) {
                 target += d_blur_x_buf(x - 2, y);
             }
-            float diff = fabs(d_clamped(x, y) - target);
+            float diff = fabs(d_clamped_buf(x, y) - target);
             internal_assert(diff < eps)
                 << "Expected d_clamped(" << x << ", " << y << ") to be " <<
-                target << " instead of " << d_clamped(x, y) << "\n" ;
+                target << " instead of " << d_clamped_buf(x, y) << "\n" ;
         }
     }
 }
 
 void test_update() {
     Var x("x");
-    float input_data[] = {1.f, 2.f};
-    Buffer<float> input(input_data, 2, "input");
+    Buffer<float> input(3);
+    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
     Func clamped("clamped");
     Expr clamped_x = Halide::clamp(x, 0, input.width() - 1);
     clamped(x) = input(clamped_x);
     Func blur("blur");
     blur(x) = clamped(x);
     blur(x) += clamped(x + 1);
-    RDom r(0, 2);
+    RDom r(0, 3);
     Func f_loss("f_loss");
-    f_loss() = 0.f;
     f_loss() += blur(r.x) * blur(r.x);
     Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
 
-    Buffer<float> blur_buf = blur.realize(2);
+    Buffer<float> blur_buf = blur.realize(3);
     // d loss / d blur = 2 * blur(x)
-    Buffer<float> d_blur_buf = adjoints[FuncKey{blur.name(), -1}].realize(2);
+    Buffer<float> d_blur_buf = d(blur).realize(3);
 
     CMP(__LINE__, d_blur_buf(0), 2 * blur_buf(0));
     CMP(__LINE__, d_blur_buf(1), 2 * blur_buf(1));
-    Buffer<float> d_clamped_buf = adjoints[FuncKey{clamped.name(), -1}].realize(2);
+    CMP(__LINE__, d_blur_buf(2), 2 * blur_buf(2));
+    Func d_clamped = d(clamped);
+    // Every dependency of d_clamped should only use pure variables in lhs
+    internal_assert(!has_non_pure_update(d_clamped)) <<
+        "Function has non pure update\n";
+    Buffer<float> d_clamped_buf = d_clamped.realize(3);
     CMP(__LINE__, d_clamped_buf(0), d_blur_buf(0));
     CMP(__LINE__, d_clamped_buf(1), d_blur_buf(0) + d_blur_buf(1));
+    CMP(__LINE__, d_clamped_buf(2), d_blur_buf(1) + d_blur_buf(2));
 }
 
 void test_rdom_conv() {
     Var x("x");
-    float input_data[] = {1.f, 2.f, 3.f, 4.f};
-    Buffer<float> input(input_data, 4, "input");
+    Buffer<float> input(4);
+    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f; input(3) = 4.f;
     Func clamped("clamped");
-    Expr clamped_x = Halide::clamp(x, 0, input.width() - 1);
-    clamped(x) = input(clamped_x);
-    float kernel_data[] = {1.f, 1.f};
-    Buffer<float> kernel(kernel_data, 2, "kernel");
-    Func kernel_func("kernel_func");
-    kernel_func(x) = kernel(x);
+    clamped(x) = input(Halide::clamp(x, 0, input.width() - 1));
+    Buffer<float> kernel(2);
+    kernel(0) = 2.f; kernel(1) = 1.f;
     Func convolved("convolved");
     RDom support(0, 2);
-    convolved(x) = 0.f;
-    convolved(x) += clamped(x + support.x) * kernel_func(support.x);
+    convolved(x) += clamped(x + support) * kernel(support);
     RDom r(0, 4);
     Func f_loss("f_loss");
-    f_loss() = 0.f;
     f_loss() += convolved(r.x) * convolved(r.x);
     Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
     Buffer<float> convolved_buf = convolved.realize(4);
     // d loss / d blur = 2 * blur(x)
-    Buffer<float> d_convolved_buf = adjoints[FuncKey{convolved.name(), -1}].realize(4);
-
+    Buffer<float> d_convolved_buf = d(convolved).realize(4);
     for (int i = 0; i < 4; i++) {
         CMP(__LINE__, d_convolved_buf(i), 2 * convolved_buf(i));
     }
     // d loss / d clamped = d_convolved convolve with flipped kernel
-    Buffer<float> d_clamped_buf = adjoints[FuncKey{clamped.name(), -1}].realize(4);
+    Func d_clamped = d(clamped);
+    // Every dependency of d_clamped should only use pure variables in lhs
+    internal_assert(!has_non_pure_update(d_clamped)) <<
+        "Function has non pure update\n";
+    Buffer<float> d_clamped_buf = d_clamped.realize(4);
     for (int i = 0; i < 4; i++) {
-        float target = d_convolved_buf(i) * kernel_data[0];
+        float target = d_convolved_buf(i) * kernel(0);
         if (i >= 1) {
-            target += d_convolved_buf(i - 1) * kernel_data[1];
+            target += d_convolved_buf(i - 1) * kernel(1);
         }
         CMP(__LINE__, d_clamped_buf(i), target);
     }
     // loss = (k0 + 2k1)^2 + (2k0 + 3k1)^2 + (3k0 + 4k1)^2 + (4k0 + 4k1)^2
     //      = k0^2 + 4k0k1 + 4k1^2 + 4k0^2 + 12 k0k1 + 9k1^2 + 9k0^2 + 24 k0k1 + 16 k1^2 + 16k0^2 + 32k0k1 + 16k1^2
     //      = 30 k0^2 + 72 k0k1 + 45 k1^2
-    // d loss / d kernel(0) = 2 * 30 + 72 = 132
-    // d loss / d kernel(1) = 2 * 45 + 72 = 162
-    Buffer<float> d_kernel_buf = adjoints[FuncKey{kernel_func.name(), -1}].realize(2);
-    CMP(__LINE__, d_kernel_buf(0), 132);
-    CMP(__LINE__, d_kernel_buf(1), 162);
+    // d loss / d kernel(0) = 2 * k0 * 30 + 72 * k1
+    // d loss / d kernel(1) = 72 * k0 + 90 * k1
+    Buffer<float> d_kernel = d(kernel).realize(2);
+    CMP(__LINE__, d_kernel(0), 60.f * kernel(0) + 72.f * kernel(1));
+    CMP(__LINE__, d_kernel(1), 72.f * kernel(0) + 90.f * kernel(1));
 }
 
 void test_1d_to_2d() {
     Var x("x"), y("y");
-    float input_data[] = {1.f, 2.f};
-    Buffer<float> input(input_data, 2, "input");
-    Func f_output("output");
-    f_output(x, y) = input(y);
+    Buffer<float> input(2);
+    input(0) = 1.f; input(1) = 2.f;
+    Func output("output");
+    output(x, y) = (x + 1.f) * input(y);
 
     RDom r(0, 2, 0, 2);
-    Func f_loss("f_loss");
-    f_loss() = 0.f;
-    f_loss() += f_output(r.x, r.y) * f_output(r.x, r.y);
-    Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
+    Func loss("loss");
+    loss() += output(r.x, r.y) * output(r.x, r.y);
+    Derivative d = propagate_adjoints(loss);
 
-    // loss = 2i0^2 + 2i1^2
-    // d loss / d i0 = 4i0 = 4
-    // d loss / d i1 = 4i1 = 8
-
-    Buffer<float> d_output = adjoints[FuncKey{f_output.name(), -1}].realize(2, 2);
+    // loss = 5i0^2 + 5i1^2
+    // d loss / d i0 = 10i0 = 10
+    // d loss / d i1 = 10i1 = 20
+    Buffer<float> d_output = d(output).realize(2, 2);
     CMP(__LINE__, d_output(0, 0), 2);
-    CMP(__LINE__, d_output(1, 0), 2);
+    CMP(__LINE__, d_output(1, 0), 4);
     CMP(__LINE__, d_output(0, 1), 4);
-    CMP(__LINE__, d_output(1, 1), 4);
+    CMP(__LINE__, d_output(1, 1), 8);
 
-    Buffer<float> d_input = adjoints[FuncKey{input.name(), -1}].realize(2);
-    CMP(__LINE__, d_input(0), 4);
-    CMP(__LINE__, d_input(1), 8);
+    Func d_input = d(input);
+    // Every dependency of d_input should only use pure variables in lhs
+    internal_assert(!has_non_pure_update(d_input)) <<
+        "Function has non pure update\n";
+    Buffer<float> d_input_buf = d_input.realize(2);
+    CMP(__LINE__, d_input_buf(0), 10);
+    CMP(__LINE__, d_input_buf(1), 20);
 }
 
-void test_linear_interpolation() {
+void test_linear_resampling_1d() {
+    // f(x) = i1(i0(x)) with linear resampling
     Var x("x");
-    float input_data0[] = {0.3f, 1.8f};
-    float input_data1[] = {1.0f, 2.0f, 4.0f};
-    Buffer<float> input0(input_data0, 2, "input0");
-    Buffer<float> input1(input_data1, 3, "input1");
-    Func f_input0("f_input0");
-    Expr clamped_x0 = Halide::clamp(x, 0, input0.width() - 1);
-    f_input0(x) = input0(clamped_x0);
-    Func f_input1("f_input1");
-    Expr clamped_x1 = Halide::clamp(x, 0, input1.width() - 1);
-    f_input1(x) = input1(clamped_x1);
-    Expr gx = f_input0(x);
-    Expr fx = cast<int>(clamp(floor(f_input0(x)), 0.f, 1.f));
+    Buffer<float> input0(2);
+    input0(0) = 0.3f; input0(1) = 1.8f;
+    Buffer<float> input1(3);
+    input1(0) = 1.0f; input1(1) = 2.0f; input1(2) = 4.0f;
+    Func clamped0("clamped0");
+    clamped0(x) = input0(Halide::clamp(x, 0, input0.width() - 1));
+    Func clamped1("clamped1");
+    clamped1(x) = input1(Halide::clamp(x, 0, input1.width() - 1));
+    Expr gx = clamped0(x);
+    Expr fx = cast<int>(clamp(floor(clamped0(x)), 0.f, 1.f));
     Expr cx = fx + 1;
     Expr wx = gx - fx;
-    Func f_interpolate("interpolate");
-    Expr f1 = f_input1(fx);
-    f_interpolate(x) = f_input1(fx) * (1.f - wx) + f_input1(cx) * wx;
+    Func interpolate("interpolate");
+    interpolate(x) = clamped1(fx) * (1.f - wx) + clamped1(cx) * wx;
 
     RDom r(0, 2);
-    Func f_loss("f_loss");
-    f_loss() = 0.f;
-    f_loss() += f_interpolate(r.x);
-    Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
+    Func loss("loss");
+    loss() += interpolate(r.x);
+    Derivative d = propagate_adjoints(loss);
 
     // f_interpolate = {i1[0] * (1 - (i0[0] - floor(i0[0]))) +
     //                  i1[1] * (i0[0] - floor(i0[0])),
@@ -1766,62 +1764,60 @@ void test_linear_interpolation() {
     //                    (1 - (i0[1] - floor(i0[1])))
     // d loss / d i1[2] = i0[1] - floor(i0[1])
 
-    Buffer<float> interpolate = f_interpolate.realize(2);
-    CMP(__LINE__, interpolate(0), 1.3f);
-    CMP(__LINE__, interpolate(1), 3.6f);
+    Buffer<float> interpolate_buf = interpolate.realize(2);
+    CMP(__LINE__, interpolate_buf(0), 1.3f);
+    CMP(__LINE__, interpolate_buf(1), 3.6f);
 
-    Buffer<float> d_input_0 = adjoints[FuncKey{f_input0.name(), -1}].realize(2);
-    CMP(__LINE__, d_input_0(0), 1.f);
-    CMP(__LINE__, d_input_0(1), 2.f);
+    Buffer<float> d_clamped0 = d(clamped0).realize(2);
+    CMP(__LINE__, d_clamped0(0), 1.f);
+    CMP(__LINE__, d_clamped0(1), 2.f);
 
-    Buffer<float> d_input_1 = adjoints[FuncKey{f_input1.name(), -1}].realize(3);
-    CMP(__LINE__, d_input_1(0), 0.7f);
-    CMP(__LINE__, d_input_1(1), 0.5f);
-    CMP(__LINE__, d_input_1(2), 0.8f);
+    Buffer<float> d_clamped1 = d(clamped1).realize(3);
+    CMP(__LINE__, d_clamped1(0), 0.7f);
+    CMP(__LINE__, d_clamped1(1), 0.5f);
+    CMP(__LINE__, d_clamped1(2), 0.8f);
 }
 
-void test_linear_interpolation_2d() {
+void test_linear_resampling_2d() {
+    // f(x, y) = i1(i0(x), y) with linear resampling
     Var x("x"), y("y");
-    float input_data0[] = {0.3f, 1.8f};
-    float input_data1[] = {1.0f, 2.0f, 4.0f};
-    Buffer<float> input0(input_data0, 2, 1, "input0");
-    Buffer<float> input1(input_data1, 3, 1, "input1");
-    Func f_input0("f_input0");
+    Buffer<float> input0(2, 1);
+    input0(0, 0) = 0.3f; input0(1, 0) = 1.8f;
+    Buffer<float> input1(3, 1);
+    input1(0, 0) = 1.0f; input1(1, 0) = 2.0f; input1(2, 0) = 4.0f;
+    Func clamped0("clamped0");
     Expr clamped_x0 = Halide::clamp(x, 0, input0.width() - 1);
     Expr clamped_y0 = Halide::clamp(y, 0, input0.height() - 1);
-    f_input0(x, y) = input0(clamped_x0, clamped_y0);
-    Func f_input1("f_input1");
+    clamped0(x, y) = input0(clamped_x0, clamped_y0);
+    Func clamped1("clamped1");
     Expr clamped_x1 = Halide::clamp(x, 0, input1.width() - 1);
     Expr clamped_y1 = Halide::clamp(y, 0, input1.height() - 1);
-    f_input1(x, y) = input1(clamped_x1, clamped_y1);
-    Expr gx = f_input0(x, y);
-    Expr fx = cast<int>(clamp(floor(f_input0(x, y)), 0.f, 1.f));
+    clamped1(x, y) = input1(clamped_x1, clamped_y1);
+    Expr gx = clamped0(x, y);
+    Expr fx = cast<int>(clamp(floor(clamped0(x, y)), 0.f, 1.f));
     Expr cx = fx + 1;
     Expr wx = gx - fx;
-    Func f_interpolate("interpolate");
-    Expr f1 = f_input1(fx, y);
-    f_interpolate(x, y) = f_input1(fx, y) * (1.f - wx) + f_input1(cx, y) * wx;
+    Func interpolate("interpolate");
+    interpolate(x, y) = clamped1(fx, y) * (1.f - wx) + clamped1(cx, y) * wx;
 
     RDom r(0, 2, 0, 1);
-    Func f_loss("f_loss");
-    f_loss() = 0.f;
-    f_loss() += f_interpolate(r.x, r.y);
-    Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
+    Func loss("loss");
+    loss() += interpolate(r.x, r.y);
+    Derivative d = propagate_adjoints(loss);
 
-    // Same as test_linear_interpolation()
-    Buffer<float> interpolate = f_interpolate.realize(2, 1);
-    CMP(__LINE__, interpolate(0, 0), 1.3f);
-    CMP(__LINE__, interpolate(1, 0), 3.6f);
+    // Same as test_linear_resampling_1d()
+    Buffer<float> interpolate_buf = interpolate.realize(2, 1);
+    CMP(__LINE__, interpolate_buf(0, 0), 1.3f);
+    CMP(__LINE__, interpolate_buf(1, 0), 3.6f);
 
-    Buffer<float> d_input_0 = adjoints[FuncKey{f_input0.name(), -1}].realize(2, 1);
-    CMP(__LINE__, d_input_0(0, 0), 1.f);
-    CMP(__LINE__, d_input_0(1, 0), 2.f);
+    Buffer<float> d_clamped0 = d(clamped0).realize(2, 1);
+    CMP(__LINE__, d_clamped0(0, 0), 1.f);
+    CMP(__LINE__, d_clamped0(1, 0), 2.f);
 
-    Buffer<float> d_input_1 = adjoints[FuncKey{f_input1.name(), -1}].realize(3, 1);
-    CMP(__LINE__, d_input_1(0, 0), 0.7f);
-    CMP(__LINE__, d_input_1(1, 0), 0.5f);
-    CMP(__LINE__, d_input_1(2, 0), 0.8f);
+    Buffer<float> d_clamped1 = d(clamped1).realize(3, 1);
+    CMP(__LINE__, d_clamped1(0, 0), 0.7f);
+    CMP(__LINE__, d_clamped1(1, 0), 0.5f);
+    CMP(__LINE__, d_clamped1(2, 0), 0.8f);
 }
 
 void test_sparse_update() {
@@ -2197,12 +2193,12 @@ void derivative_test() {
     test_scalar();
     test_1d_box_no_clamp();
     test_1d_box();
-    test_simple_2d_blur();
+    test_2d_box();
     test_update();
     test_rdom_conv();
     test_1d_to_2d();
-    test_linear_interpolation();
-    test_linear_interpolation_2d();
+    test_linear_resampling_1d();
+    test_linear_resampling_2d();
     test_sparse_update();
     test_rdom_update();
     test_repeat_edge();
