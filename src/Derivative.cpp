@@ -2039,49 +2039,54 @@ void test_second_order_conv() {
     CMP(__LINE__, d2_conv_buf(8), 4.f);
     // d2_input(x) = d2_conv(x + 1) + d2_conv(x) + d2_conv(x - 1)
     Buffer<float> d2_input_buf = d2(input).realize(10);
-    CMP(__LINE__, d2_input_buf(0), d2_conv_buf(0) + d2_conv_buf(1));
+    CMP(__LINE__, d2_input_buf(0), 2.f * d2_conv_buf(0) + d2_conv_buf(1));
     for (int i = 1; i <= 7; i++) {
         CMP(__LINE__, d2_input_buf(i), d2_conv_buf(i) + d2_conv_buf(i + 1) + d2_conv_buf(i - 1));
     }
     CMP(__LINE__, d2_input_buf(8), d2_conv_buf(8) + d2_conv_buf(7));
-    CMP(__LINE__, d2_input_buf(9), d2_conv_buf(7));
+    CMP(__LINE__, d2_input_buf(9), d2_conv_buf(8));
 }
 
 void test_implicit_vars() {
     Var x("x");
-    float input_data[] = {1.f, 2.f};
-    Buffer<float> input(input_data, 2, "input");
+    Buffer<float> input(2);
+    input(0) = 1.f; input(1) = 2.f;
     Func copy("copy");
     copy(_) = input(_);
     RDom r(0, 2);
-    Func f_loss("f_loss");
-    f_loss() = 0.f;
-    f_loss() += copy(r.x);
-    Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
+    Func loss("loss");
+    loss() += copy(r.x);
+    Derivative d = propagate_adjoints(loss);
 
-    Buffer<float> d_input_buf = adjoints[FuncKey{input.name(), -1}].realize(2);
+    Func d_input = d(input);
+    // Every dependency of d_input should only use pure variables in lhs
+    internal_assert(!has_non_pure_update(d_input)) <<
+        "Function has non pure update\n";
+    Buffer<float> d_input_buf = d_input.realize(2);
     CMP(__LINE__, d_input_buf(0), 1.f);
     CMP(__LINE__, d_input_buf(1), 1.f);
-    Buffer<float> d_copy_buf = adjoints[FuncKey{copy.name(), -1}].realize(2);
+    Func d_copy = d(copy);
+    // Every dependency of d_copy should only use pure variables in lhs
+    internal_assert(!has_non_pure_update(d_copy)) <<
+        "Function has non pure update\n";
+    Buffer<float> d_copy_buf = d_copy.realize(2);
     CMP(__LINE__, d_copy_buf(0), 1.f);
     CMP(__LINE__, d_copy_buf(1), 1.f);
 }
 
 void test_tuple() {
     Var x("x");
-    float input_data[] = {1.f, 2.f, 3.f};
-    Buffer<float> input(input_data, 3, "input");
+    Buffer<float> input(3);
+    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
     Func tuple("tuple");
     tuple(x) = Tuple(input(x), input(x + 1));
     tuple(x) += Tuple(1.f, 1.f);
     Func reduce("reduce");
     reduce(x) = tuple(x)[0] + tuple(x)[1];
     RDom r(0, 2);
-    Func f_loss("f_loss");
-    f_loss() = 0.f;
-    f_loss() += reduce(r.x);
-    Derivative d = propagate_adjoints(f_loss);
+    Func loss("loss");
+    loss() += reduce(r.x);
+    Derivative d = propagate_adjoints(loss);
     std::map<FuncKey, Func> adjoints = d.adjoints;
     // tuple(0) = {1, 2}
     // tuple(1) = {2, 3}
@@ -2091,7 +2096,11 @@ void test_tuple() {
     //      = tuple(0)[0] + tuple(0)[1] + tuple(1)[0] + tuple(1)[1]
     //      = input(0) + input(1) * 2 + input(2)
 
-    Realization d_tuple_buf = adjoints[FuncKey{tuple.name(), -1}].realize(2);
+    Func d_tuple = d(tuple);
+    // Every dependency of d_tuple should only use pure variables in lhs
+    internal_assert(!has_non_pure_update(d_tuple)) <<
+        "Function has non pure update\n";
+    Realization d_tuple_buf = d_tuple.realize(2);
     Buffer<float> d_tuple_buf_0 = d_tuple_buf[0];
     Buffer<float> d_tuple_buf_1 = d_tuple_buf[1];
     CMP(__LINE__, d_tuple_buf_0(0), 1.f);
@@ -2099,7 +2108,11 @@ void test_tuple() {
     CMP(__LINE__, d_tuple_buf_1(0), 1.f);
     CMP(__LINE__, d_tuple_buf_1(1), 1.f);
 
-    Buffer<float> d_input_buf = adjoints[FuncKey{input.name(), -1}].realize(3);
+    Func d_input = d(input);
+    // Every dependency of d_input should only use pure variables in lhs
+    internal_assert(!has_non_pure_update(d_input)) <<
+        "Function has non pure update\n";
+    Buffer<float> d_input_buf = d_input.realize(3);
     CMP(__LINE__, d_input_buf(0), 1.f);
     CMP(__LINE__, d_input_buf(1), 2.f);
     CMP(__LINE__, d_input_buf(2), 1.f);
@@ -2107,8 +2120,8 @@ void test_tuple() {
 
 void test_floor_ceil() {
     Var x("x");
-    float input_data[] = {1.f, 2.f, 3.f};
-    Buffer<float> input(input_data, 3, "input");
+    Buffer<float> input(3);
+    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
     Func floor_output("floor_output");
     floor_output(x) = input(cast<int>(floor(x / 4.f)));
     Func ceil_output("ceil_output");
@@ -2116,10 +2129,9 @@ void test_floor_ceil() {
     Func output("output");
     output(x) = ceil_output(x) + floor_output(x);
     RDom r(0, 8);
-    Func f_loss("f_loss");
-    f_loss() = 0.f;
-    f_loss() += output(r.x);
-    Derivative d = propagate_adjoints(f_loss);
+    Func loss("loss");
+    loss() += output(r.x);
+    Derivative d = propagate_adjoints(loss);
     // floor_output(0~3) == input[0]
     // floor_output(4~7) == input[1]
     // ceil_output(0) == input[0]
@@ -2140,22 +2152,47 @@ void test_downsampling() {
     }
     Func output("output");
     RDom r(0, 4);
-    output(x) = 0.f;
     output(x) += input(4 * x + r);
     RDom r_loss(0, 2);
-    Func f_loss("f_loss");
-    f_loss() = 0.f;
-    f_loss() += output(r_loss);
-    Derivative d = propagate_adjoints(f_loss);
+    Func loss("loss");
+    loss() += output(r_loss);
+    Derivative d = propagate_adjoints(loss);
     // output(0) = \sum input(0~4)
     // output(1) = \sum input(5~8)
-    Buffer<float> d_input_buf = d(input).realize(10);
+    Func d_input = d(input);
+    // Every dependency of d_tuple should only use pure variables in lhs
+    internal_assert(!has_non_pure_update(d_input)) <<
+        "Function has non pure update\n";
+    Buffer<float> d_input_buf = d_input.realize(10);
 
     for (int i = 0; i < 8; i++) {
         CMP(__LINE__, d_input_buf(i), 1.f);
     }
     CMP(__LINE__, d_input_buf(8), 0.f);
     CMP(__LINE__, d_input_buf(9), 0.f);
+}
+
+void test_upsampling() {
+    Var x("x");
+    Buffer<float> input(4);
+    for (int i = 0; i < 4; i++) {
+        input(i) = float(i);
+    }
+    Func output("output");
+    output(x) = input(x / 4);
+    RDom r_loss(0, 16);
+    Func loss("loss");
+    loss() += output(r_loss);
+    Derivative d = propagate_adjoints(loss);
+    Func d_input = d(input);
+    // Every dependency of d_tuple should only use pure variables in lhs
+    internal_assert(!has_non_pure_update(d_input)) <<
+        "Function has non pure update\n";
+    Buffer<float> d_input_buf = d_input.realize(4);
+
+    for (int i = 0; i < 4; i++) {
+        CMP(__LINE__, d_input_buf(i), 4.f);
+    }
 }
 
 void test_transpose() {
@@ -2283,11 +2320,12 @@ void derivative_test() {
     test_mirror_image();
     test_mirror_interior();
     test_second_order();
-    //test_second_order_conv();
+    test_second_order_conv();
     test_implicit_vars();
     test_tuple();
     test_floor_ceil();
     test_downsampling();
+    test_upsampling();
     test_transpose();
     test_forward();
     test_reverse_forward();
