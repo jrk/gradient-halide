@@ -132,20 +132,24 @@ std::vector<std::string> gather_variables(const Expr &expr,
 class RVarGatherer : public IRGraphVisitor {
 public:
     using IRGraphVisitor::visit;
-    std::map<std::string, std::pair<Expr, Expr>> gather(const Expr &expr) {
+    std::map<std::string, ReductionVariableInfo> gather(const Expr &expr) {
         expr.accept(this);
         return rvar_map;
     }
 
-    std::map<std::string, std::pair<Expr, Expr>> get_rvar_map() const {
+    std::map<std::string, ReductionVariableInfo> get_rvar_map() const {
         return rvar_map;
     }
 
     void visit(const Variable *op) {
         if (op->reduction_domain.defined()) {
-            for (const ReductionVariable &rv : op->reduction_domain.domain()) {
+            const std::vector<ReductionVariable> &domain =
+                op->reduction_domain.domain();
+            for (int i = 0; i < (int)domain.size(); i++) {
+                const ReductionVariable &rv = domain[i];
                 if (rv.var == op->name) {
-                    rvar_map[op->name] = std::make_pair(rv.min, rv.extent);
+                    rvar_map[op->name] = ReductionVariableInfo{
+                        rv.min, rv.extent, i, op->reduction_domain, op->name};
                     return;
                 }
             }
@@ -153,14 +157,14 @@ public:
         }
     }
 private:
-    std::map<std::string, std::pair<Expr, Expr>> rvar_map;
+    std::map<std::string, ReductionVariableInfo> rvar_map;
 };
 
-std::map<std::string, std::pair<Expr, Expr>> gather_rvariables(Expr expr) {
+std::map<std::string, ReductionVariableInfo> gather_rvariables(Expr expr) {
     return gather_rvariables(Tuple(expr));
 }
 
-std::map<std::string, std::pair<Expr, Expr>> gather_rvariables(Tuple tuple) {
+std::map<std::string, ReductionVariableInfo> gather_rvariables(Tuple tuple) {
 	RVarGatherer gatherer;
     for (const auto &expr : tuple.as_vector()) {
         gatherer.gather(expr);
@@ -277,9 +281,11 @@ std::map<std::string, Box> inference_bounds(const std::vector<Func> &funcs,
     for (const auto &it : env) {
         Func func = Func(it.second);
         for (int i = 0; i < func.num_update_definitions(); i++) {
-            std::map<std::string, std::pair<Expr, Expr>> rvars = gather_rvariables(func.update_values(i));
+            std::map<std::string, ReductionVariableInfo> rvars =
+                gather_rvariables(func.update_values(i));
             for (const auto &it : rvars) {
-                scope.push(it.first, Interval(it.second.first, it.second.first + it.second.second - 1));
+                Interval interval(it.second.min, it.second.min + it.second.extent - 1);
+                scope.push(it.first, interval);
             }
         }
     }

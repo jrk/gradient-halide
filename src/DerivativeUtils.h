@@ -17,19 +17,27 @@ bool has_variable(const Expr &expr, const std::string &name);
 bool has_let_defined(const Expr &expr, const std::string &name);
 Expr remove_let_definitions(const Expr &expr);
 std::vector<std::string> gather_variables(const Expr &expr,
-	const std::vector<std::string> &filter);
+    const std::vector<std::string> &filter);
 std::vector<std::string> gather_variables(const Expr &expr,
-	const std::vector<Var> &filter);
-std::map<std::string, std::pair<Expr, Expr>> gather_rvariables(Expr expr);
-std::map<std::string, std::pair<Expr, Expr>> gather_rvariables(Tuple tuple);
+    const std::vector<Var> &filter);
+
+struct ReductionVariableInfo {
+    Expr min, extent;
+    int index;
+    ReductionDomain domain;
+    std::string name;
+};
+
+std::map<std::string, ReductionVariableInfo> gather_rvariables(Expr expr);
+std::map<std::string, ReductionVariableInfo> gather_rvariables(Tuple tuple);
 Expr add_let_expression(const Expr &expr,
                         const std::map<std::string, Expr> &let_var_mapping,
                         const std::vector<std::string> &let_variables);
 std::vector<Expr> sort_expressions(const Expr &expr);
 std::map<std::string, Box> inference_bounds(const std::vector<Func> &funcs,
-	 									    const std::vector<FuncBounds> &output_bounds);
+                                            const std::vector<FuncBounds> &output_bounds);
 std::map<std::string, Box> inference_bounds(const Func &func,
-	 									    const FuncBounds &output_bounds);
+                                            const FuncBounds &output_bounds);
 std::vector<std::pair<Expr, Expr>> rdom_to_vector(const RDom &bounds);
 std::vector<std::pair<Expr, Expr>> box_to_vector(const Box &bounds);
 bool equal(const RDom &bounds0, const RDom &bounds1);

@@ -468,10 +468,15 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         for (int i = 0; i < (int)lhs.size(); i++) {
             lhs[i] = add_let_expression(lhs[i], let_var_mapping, let_variables);
         }
+        Expr adjoint_before_canonicalize = adjoint;
+        std::vector<Expr> lhs_before_canonicalize = lhs;
 
         // If target is the current function itself, send to previous update
         // e.g. f(x) = ...
         //      f(x) = f(x) + 1
+        // We create a function for the initial condition and each update
+        // When update i uses value from update i-1, we accumulate the
+        // adjoints to update i-1
         FuncKey func_key;
         if (op->func.defined()) {
             Function func(op->func);
@@ -539,7 +544,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // if that fails we will replace variables on lhs with RDoms
 
         // TODO: maybe modularize this more
-        // Try to do the canonicalization by substitution of variables
+        // Try to perform the canonicalization by substitution of variables
         // Create a set of new substitution variables
         std::vector<Var> new_args;
         std::set<std::string> new_args_set;
@@ -557,8 +562,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // Goal: rewrite to
         //  ==> d_f(x,y,z) += d_g(x,y+1,z-1)
         //
-        // First gather all arguments that contains multiple pure variables
-        // we don't want to mess with system solving yet, so we invalidate all of them
+        // First gather all arguments that contains multiple pure variables.
+        // We don't want to mess with system solving yet, so we invalidate all of them.
         // This is currently simple and conservative, solving each dimension independently, so
         // inter-dependencies like:
         // g(x, y) = f(x*y, x+y)
@@ -585,7 +590,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             if (!solved) {
                 continue;
             }
-            // debug(0) << "result : " << result_rhs << "\n";
 
             // Replace pure variable with the reverse
             adjoint = substitute(variables[0], result_rhs, adjoint);
@@ -764,21 +768,55 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
         }
 
-        // TODO: can we somehow enforce the same partial ordering?
-        // Merge RDoms on both lhs and rhs
-        std::map<std::string, std::pair<Expr, Expr>> rvar_maps =
+        // Merge RDoms on both lhs and rhs, preserve partial order
+        std::map<std::string, ReductionVariableInfo> rvar_maps =
             gather_rvariables(adjoint);
         for (const auto &lhs_arg : lhs) {
-            std::map<std::string, std::pair<Expr, Expr>> maps =
+            std::map<std::string, ReductionVariableInfo> maps =
                 gather_rvariables(lhs_arg);
             rvar_maps.insert(maps.begin(), maps.end());
         }
+        // Original set of reduction variables
+        std::map<std::string, ReductionVariableInfo> org_rvar_maps =
+            gather_rvariables(adjoint_before_canonicalize);
+        for (const auto &lhs_arg : lhs_before_canonicalize) {
+            std::map<std::string, ReductionVariableInfo> maps =
+                gather_rvariables(lhs_arg);
+            org_rvar_maps.insert(maps.begin(), maps.end());
+        }
+        // Order: newly introduced rvar -> original rvar
+        std::vector<ReductionVariableInfo> new_rvar_vec, old_rvar_vec;
+        for (const auto &it : rvar_maps) {
+            if (org_rvar_maps.find(it.first) == org_rvar_maps.end()) {
+                new_rvar_vec.push_back(it.second);
+            } else {
+                old_rvar_vec.push_back(it.second);
+            }
+        }
+        // Sort by index & domain
+        auto cmp_rv = [] (const ReductionVariableInfo &rv0,
+                          const ReductionVariableInfo &rv1) {
+            ReductionDomain::Compare cmp;
+            if (cmp(rv0.domain, rv1.domain)) {
+                return true;
+            } else {
+                return rv0.index < rv1.index;
+            }
+        };
+        std::sort(new_rvar_vec.begin(), new_rvar_vec.end(), cmp_rv);
+        std::sort(old_rvar_vec.begin(), old_rvar_vec.end(), cmp_rv);
+        // Flatten to an array
         std::vector<std::string> var_names;
         FuncBounds merged_bounds;
-        for (const auto &it : rvar_maps) {
-            var_names.push_back(it.first);
-            merged_bounds.emplace_back(it.second.first, it.second.second);
+        for (const auto &it : new_rvar_vec) {
+            var_names.push_back(it.name);
+            merged_bounds.emplace_back(it.min, it.extent);
         }
+        for (const auto &it : old_rvar_vec) {
+            var_names.push_back(it.name);
+            merged_bounds.emplace_back(it.min, it.extent);
+        }
+        // Produce final merged RDom
         RDom merged_r;
         if (merged_bounds.size() > 0) {
             merged_r = RDom(merged_bounds);
@@ -893,10 +931,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                     values[op->value_index] = simplify(values[op->value_index] + adjoint);
                 }
             }
-        }
-
-        if (debug_flag) {
-            //print_func(func_to_update);
         }
     } else {
         internal_assert(op->is_intrinsic());
