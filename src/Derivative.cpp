@@ -14,6 +14,12 @@
 #include <iostream>
 #include <cmath>
 
+namespace std {
+inline Halide::float16_t fabs(Halide::float16_t x) {
+    return x > Halide::float16_t(0) ? x : -x;
+}
+}
+
 namespace Halide {
 namespace Internal {
 
@@ -99,9 +105,12 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 adjoint_func(args) = adjoint(args);
             } else {
                 if (func.values().size() == 1) {
-                    adjoint_func(args) = 0.f;
+                    adjoint_func(args) = make_const(func.values()[0].type(), 0.0);
                 } else {
-                    std::vector<Expr> init(func.values().size(), Expr(0.f));
+                    std::vector<Expr> init(func.values().size());
+                    for (int i = 0; i < (int)init.size(); i++) {
+                        init[i] = make_const(func.values()[i].type(), 0.0);
+                    }
                     adjoint_func(args) = Tuple(init);
                 }
             }
@@ -110,29 +119,30 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             adjoint_funcs[func_key] = adjoint_func;
         }
     }
-    // Also create stubs for buffers
-    std::map<std::string, int> buffers_dimensions;
+    // Also create stubs for buffers referenced by the functions
+    std::map<std::string, BufferInfo> called_buffers;
     for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
         const Func &func = funcs[func_id];
-        std::map<std::string, int> func_buffers_dimensions = find_buffers_dimensions(func);
-        buffers_dimensions.insert(func_buffers_dimensions.begin(), func_buffers_dimensions.end());
+        std::map<std::string, BufferInfo> buffers = find_buffer_calls(func);
+        called_buffers.insert(buffers.begin(), buffers.end());
     }
-    for (const auto &it : buffers_dimensions) {
+    for (const auto &it : called_buffers) {
         Func adjoint_func(it.first + "_d__");
         std::vector<Var> args;
-        for (int i = 0; i < it.second; i++) {
+        for (int i = 0; i < it.second.dimension; i++) {
             args.push_back(Var());
         }
-        adjoint_func(args) = 0.f;
+        adjoint_func(args) = make_const(it.second.type, 0.0);
         FuncKey func_key{it.first, -1};
         if (adjoint_funcs.find(func_key) != adjoint_funcs.end()) {
-            user_error << "Naming conflict between buffer and function:" << it.first << "\n";
+            user_error << "Naming conflict between buffer and function:" <<
+                it.first << "\n";
         }
         adjoint_funcs[func_key] = adjoint_func;
     }
 
     // Traverse functions from producers to consumers for reverse accumulation
-    for (int func_id = funcs.size() - 1; func_id >=  0; func_id--) {
+    for (int func_id = funcs.size() - 1; func_id >= 0; func_id--) {
         const Func &func = funcs[func_id];
         current_func = func;
 
@@ -154,14 +164,18 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 adjoint_funcs[unbounded_func_key] = adjoint_func;
 
                 if (adjoint_func.values().size() == 1) {
+                    Type type = adjoint_func.values()[0].type();
                     adjoint_func = BoundaryConditions::constant_exterior(
-                            adjoint_func, 0.f, box_to_vector(bounds),
-                            adjoint_func.name() + "_ce");
+                        adjoint_func, make_const(type, 0.0), box_to_vector(bounds),
+                        adjoint_func.name() + "_ce");
                 } else {
-                    std::vector<Expr> values(adjoint_func.values().size(), Expr(0.f));
+                    std::vector<Expr> values(adjoint_func.values().size());
+                    for (int i = 0; i < (int)values.size(); i++) {
+                        values[i] = make_const(adjoint_func.values()[i].type(), 0.0);
+                    }
                     adjoint_func = BoundaryConditions::constant_exterior(
-                            adjoint_func, Tuple(values), box_to_vector(bounds),
-                            adjoint_func.name() + "_ce");
+                        adjoint_func, Tuple(values), box_to_vector(bounds),
+                        adjoint_func.name() + "_ce");
                 }
             }
 
@@ -202,9 +216,13 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                         adjoint_funcs[func_key](next_args);
                 }
                 if (func.values().size() == 1) {
-                    next_adjoint_func(update_args) = 0.f;
+                    Type type = func.values()[0].type();
+                    next_adjoint_func(update_args) = make_const(type, 0.0);
                 } else {
-                    std::vector<Expr> init(func.values().size(), Expr(0.f));
+                    std::vector<Expr> init(func.values().size());
+                    for (int i = 0; i < (int)init.size(); i++) {
+                        init[i] = make_const(func.values()[i].type(), 0.0);
+                    }
                     next_adjoint_func(update_args) = Tuple(init);
                 }
             }
@@ -276,12 +294,11 @@ void ReverseAccumulationVisitor::visit(const Cast *op) {
     assert(expr_adjoints.find(op) != expr_adjoints.end());
     Expr adjoint = expr_adjoints[op];
 
-    // XXX: Is this correct?
     // d/dx cast(x) = 1.f if op->type is float otherwise 0
     if (op->type.is_float()) {
-        accumulate(op->value, 1.f);
+        accumulate(op->value, make_const(op->type, 1.0));
     } else {
-        accumulate(op->value, 0.f);
+        accumulate(op->value, make_const(op->type, 0));
     }
 }
 
@@ -340,9 +357,11 @@ void ReverseAccumulationVisitor::visit(const Min *op) {
     Expr adjoint = expr_adjoints[op];
 
     // d/da min(a, b) = a <= b ? 1 : 0
-    accumulate(op->a, select(op->a <= op->b, adjoint, 0.f));
+    accumulate(op->a,
+        select(op->a <= op->b, adjoint, make_const(adjoint.type(), 0.0)));
     // d/db min(a, b) = b <= a ? 1 : 0
-    accumulate(op->b, select(op->b <= op->a, adjoint, 0.f));
+    accumulate(op->b,
+        select(op->b <= op->a, adjoint, make_const(adjoint.type(), 0.0)));
 }
 
 void ReverseAccumulationVisitor::visit(const Max *op) {
@@ -350,9 +369,11 @@ void ReverseAccumulationVisitor::visit(const Max *op) {
     Expr adjoint = expr_adjoints[op];
 
     // d/da max(a, b) = a >= b ? 1 : 0
-    accumulate(op->a, select(op->a >= op->b, adjoint, 0.f));
+    accumulate(op->a,
+        select(op->a >= op->b, adjoint, make_const(adjoint.type(), 0.0)));
     // d/db max(a, b) = b >= a ? 1 : 0
-    accumulate(op->b, select(op->b >= op->a, adjoint, 0.f));
+    accumulate(op->b,
+        select(op->b >= op->a, adjoint, make_const(adjoint.type(), 0.0)));
 }
 
 void ReverseAccumulationVisitor::visit(const Let *op) {
@@ -367,9 +388,11 @@ void ReverseAccumulationVisitor::visit(const Select *op) {
     Expr adjoint = expr_adjoints[op];
 
     // d/db select(a, b, c) = select(a, 1, 0)
-    accumulate(op->true_value, select(op->condition, adjoint, 0.f));
+    accumulate(op->true_value,
+        select(op->condition, adjoint, make_const(adjoint.type(), 0.0)));
     // d/dc select(a, b, c) = select(a, 0, 1)
-    accumulate(op->false_value, select(op->condition, 0.f, adjoint));
+    accumulate(op->false_value,
+        select(op->condition, make_const(adjoint.type(), 0.0), adjoint));
 }
 
 void ReverseAccumulationVisitor::visit(const Call *op) {
@@ -377,88 +400,104 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
     Expr adjoint = expr_adjoints[op];
     // Math functions
     if (op->is_extern()) {
-      if (op->name == "exp_f32") {
-          // d/dx exp(x) = exp(x)
-          accumulate(op->args[0], adjoint * exp(op->args[0]));
-      } else if (op->name == "log_f32") {
-          // d/dx log(x) = 1 / x
-          accumulate(op->args[0], adjoint / op->args[0]);
-      } else if (op->name == "sin_f32") {
-          // d/dx sin(x) = cos(x)
-          accumulate(op->args[0], adjoint * cos(op->args[0]));
-      } else if (op->name == "asin_f32") {
-          // d/dx asin(x) = 1 / sqrt(1 - x^2)
-          accumulate(op->args[0], adjoint / sqrt(1.f - op->args[0] * op->args[0]));
-      } else if (op->name == "cos_f32") {
-          // d/dx cos(x) = -sin(x)
-          accumulate(op->args[0], - adjoint * sin(op->args[0]));
-      } else if (op->name == "acos_f32") {
-          // d/dx acos(x) = - 1 / sqrt(1 - x^2)
-          accumulate(op->args[0], - adjoint / sqrt(1.f - op->args[0] * op->args[0]));
-      } else if (op->name == "tan_f32") {
-          // d/dx tan(x) = 1 / cos(x)^2
-          Expr c = cos(op->args[0]);
-          accumulate(op->args[0], adjoint / (c * c));
-      } else if (op->name == "atan_f32") {
-          // d/dx atan(x) = 1 / (1 + x^2)
-          accumulate(op->args[0], adjoint / (1.f + op->args[0] * op->args[0]));
-      } else if (op->name == "atan2_f32") {
-          Expr x2y2 = op->args[0] * op->args[0] + op->args[1] * op->args[1];
-          // d/dy atan2(y, x) = x / (x^2 + y^2)
-          accumulate(op->args[0], adjoint * op->args[1] / x2y2);
-          // d/dx atan2(y, x) = -y / (x^2 + y^2)
-          accumulate(op->args[1], -adjoint * op->args[0] / x2y2);
-      } else if (op->name == "sinh_f32") {
-          // d/dx sinh(x) = cosh(x)
-          accumulate(op->args[0], adjoint * cosh(op->args[0]));
-      } else if (op->name == "asinh_f32") {
-          // d/dx asin(x) = 1 / sqrt(1 + x^2)
-          accumulate(op->args[0], adjoint / sqrt(1.f + op->args[0] * op->args[0]));
-      } else if (op->name == "cosh_f32") {
-          // d/dx cosh(x) = sinh(x)
-          accumulate(op->args[0], adjoint * sinh(op->args[0]));
-      } else if (op->name == "acosh_f32") {
-          // d/dx acosh(x) = 1 / (sqrt(x - 1) sqrt(x + 1)))
-          accumulate(op->args[0],
-              adjoint / (sqrt(op->args[0] - 1.f) * sqrt(op->args[0] + 1.f)));
-      } else if (op->name == "tanh_f32") {
-          // d/dx tanh(x) = 1 / cosh(x)^2
-          Expr c = cosh(op->args[0]);
-          accumulate(op->args[0], adjoint / (c * c));
-      } else if (op->name == "atanh_f32") {
-          // d/dx atanh(x) = 1 / (1 - x^2)
-          accumulate(op->args[0], adjoint / (1.f - op->args[0] * op->args[0]));
-      } else if (op->name == "ceil_f32") {
-          // TODO: d/dx = dirac(n) for n in Z ...
-          accumulate(op->args[0], 0.0f);
-      } else if (op->name == "floor_f32") {
-          // TODO: d/dx = dirac(n) for n in Z ...
-          accumulate(op->args[0], 0.0f);
-      } else if (op->name == "round_f32") {
-          accumulate(op->args[0], 0.0f);
-      } else if (op->name == "trunc_f32") {
-          accumulate(op->args[0], 0.0f);
-      } else if (op->name == "sqrt_f32") {
-          accumulate(op->args[0], adjoint * 0.5f / sqrt(op->args[0]));
-      } else if (op->name == "pow_f32") {
-          accumulate(op->args[0],
-              adjoint * op->args[1] * pow(op->args[0], op->args[1] - 1.f));
-          accumulate(op->args[1],
-              adjoint * pow(op->args[0], op->args[1]) * log(op->args[0]));
-      } else if (op->name == "fast_inverse_f32") {
-          // d/dx 1/x = -1/x^2
-          Expr inv_x = fast_inverse(op->args[0]);
-          accumulate(op->args[0], -adjoint * inv_x * inv_x);
-      } else if (op->name == "fast_inverse_sqrt_f32") {
-          // d/dx x^(-0.5) = -0.5*x^(-1.5)
-          Expr inv_sqrt_x = fast_inverse_sqrt(op->args[0]);
-          accumulate(op->args[0],
-              -0.5f * adjoint * inv_sqrt_x * inv_sqrt_x * inv_sqrt_x);
-      } else if (op->name == "halide_print") {
-          accumulate(op->args[0], 0.0f);
-      } else {
-          internal_error << "The derivative of " << op->name << " is not implemented.";
-      }
+        auto check_opname = [] (const std::string &op_name,
+                                const std::string &func_name) {
+            return op_name == (func_name + "_f16") ||
+                   op_name == (func_name + "_f32") ||
+                   op_name == (func_name + "_f64");
+        };
+        if (check_opname(op->name, "exp")) {
+            // d/dx exp(x) = exp(x)
+            accumulate(op->args[0], adjoint * exp(op->args[0]));
+        } else if (check_opname(op->name, "log")) {
+            // d/dx log(x) = 1 / x
+            accumulate(op->args[0], adjoint / op->args[0]);
+        } else if (check_opname(op->name, "sin")) {
+            // d/dx sin(x) = cos(x)
+            accumulate(op->args[0], adjoint * cos(op->args[0]));
+        } else if (check_opname(op->name, "asin")) {
+            // d/dx asin(x) = 1 / sqrt(1 - x^2)
+            Expr one = make_const(op->type, 1.0);
+            accumulate(op->args[0], adjoint / sqrt(one - op->args[0] * op->args[0]));
+        } else if (check_opname(op->name, "cos")) {
+            // d/dx cos(x) = -sin(x)
+            accumulate(op->args[0], - adjoint * sin(op->args[0]));
+        } else if (check_opname(op->name, "acos")) {
+            // d/dx acos(x) = - 1 / sqrt(1 - x^2)
+            Expr one = make_const(op->type, 1.0);
+            accumulate(op->args[0], - adjoint / sqrt(one - op->args[0] * op->args[0]));
+        } else if (check_opname(op->name, "tan")) {
+            // d/dx tan(x) = 1 / cos(x)^2
+            Expr c = cos(op->args[0]);
+            accumulate(op->args[0], adjoint / (c * c));
+        } else if (check_opname(op->name, "atan")) {
+            // d/dx atan(x) = 1 / (1 + x^2)
+            Expr one = make_const(op->type, 1.0);
+            accumulate(op->args[0], adjoint / (one + op->args[0] * op->args[0]));
+        } else if (check_opname(op->name, "atan2")) {
+            Expr x2y2 = op->args[0] * op->args[0] + op->args[1] * op->args[1];
+            // d/dy atan2(y, x) = x / (x^2 + y^2)
+            accumulate(op->args[0], adjoint * op->args[1] / x2y2);
+            // d/dx atan2(y, x) = -y / (x^2 + y^2)
+            accumulate(op->args[1], -adjoint * op->args[0] / x2y2);
+        } else if (check_opname(op->name, "sinh")) {
+            // d/dx sinh(x) = cosh(x)
+            accumulate(op->args[0], adjoint * cosh(op->args[0]));
+        } else if (check_opname(op->name, "asinh")) {
+            // d/dx asin(x) = 1 / sqrt(1 + x^2)
+            Expr one = make_const(op->type, 1.0);
+            accumulate(op->args[0], adjoint / sqrt(one + op->args[0] * op->args[0]));
+        } else if (check_opname(op->name, "cosh")) {
+            // d/dx cosh(x) = sinh(x)
+            accumulate(op->args[0], adjoint * sinh(op->args[0]));
+        } else if (check_opname(op->name, "acosh")) {
+            // d/dx acosh(x) = 1 / (sqrt(x - 1) sqrt(x + 1)))
+            Expr one = make_const(op->type, 1.0);
+            accumulate(op->args[0],
+                adjoint / (sqrt(op->args[0] - one) * sqrt(op->args[0] + one)));
+        } else if (check_opname(op->name, "tanh")) {
+            // d/dx tanh(x) = 1 / cosh(x)^2
+            Expr c = cosh(op->args[0]);
+            accumulate(op->args[0], adjoint / (c * c));
+        } else if (check_opname(op->name, "atanh")) {
+            // d/dx atanh(x) = 1 / (1 - x^2)
+            Expr one = make_const(op->type, 1.0);
+            accumulate(op->args[0], adjoint / (one - op->args[0] * op->args[0]));
+        } else if (check_opname(op->name, "ceil")) {
+            // TODO: d/dx = dirac(n) for n in Z ...
+            accumulate(op->args[0], make_const(op->type, 0.0));
+        } else if (check_opname(op->name, "floor")) {
+            // TODO: d/dx = dirac(n) for n in Z ...
+            accumulate(op->args[0], make_const(op->type, 0.0));
+        } else if (check_opname(op->name, "round")) {
+            accumulate(op->args[0], make_const(op->type, 0.0));
+        } else if (check_opname(op->name, "trunc")) {
+            accumulate(op->args[0], make_const(op->type, 0.0));
+        } else if (check_opname(op->name, "sqrt")) {
+            Expr half = make_const(op->type, 0.5);
+            accumulate(op->args[0], adjoint * half / sqrt(op->args[0]));
+        } else if (check_opname(op->name, "pow")) {
+            Expr one = make_const(op->type, 1.0);
+            accumulate(op->args[0],
+                adjoint * op->args[1] * pow(op->args[0], op->args[1] - one));
+            accumulate(op->args[1],
+                adjoint * pow(op->args[0], op->args[1]) * log(op->args[0]));
+        } else if (check_opname(op->name, "fast_inverse")) {
+            // d/dx 1/x = -1/x^2
+            Expr inv_x = fast_inverse(op->args[0]);
+            accumulate(op->args[0], -adjoint * inv_x * inv_x);
+        } else if (check_opname(op->name, "fast_inverse_sqrt")) {
+            // d/dx x^(-0.5) = -0.5*x^(-1.5)
+            Expr inv_sqrt_x = fast_inverse_sqrt(op->args[0]);
+            Expr neg_half = make_const(op->type, -0.5);
+            accumulate(op->args[0],
+                neg_half * adjoint * inv_sqrt_x * inv_sqrt_x * inv_sqrt_x);
+        } else if (op->name == "halide_print") {
+            accumulate(op->args[0], make_const(op->type, 0.0));
+        } else {
+            internal_error << "The derivative of " << op->name <<
+                " is not implemented.";
+        }
     } else if (op->call_type == Call::Halide ||
                op->call_type == Call::Image) { // Halide function call or Halid buffer
         // TODO: check if we need this elsewhere
@@ -935,26 +974,28 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
     } else {
         internal_assert(op->is_intrinsic());
         if (op->is_intrinsic(Call::abs)) {
-            accumulate(op->args[0], adjoint*select(op->args[0] > 0, 1.0f, -1.0f));
+            accumulate(op->args[0],
+                adjoint*select(op->args[0] > 0,
+                    make_const(op->type, 1.0), make_const(op->type, -1.0)));
         } else if (op->is_intrinsic(Call::lerp)) {
             // z = x * (1 - w) + y * w
             // dz/dx = 1 - w
             // dz/dy = w
             // dz/dw = y - x
-            accumulate(op->args[0], adjoint * (1.f - op->args[2]));
+            accumulate(op->args[0], adjoint * (make_const(op->type, 1.0) - op->args[2]));
             accumulate(op->args[1], adjoint * op->args[2]);
             accumulate(op->args[2], adjoint * (op->args[1] - op->args[0]));
         } else if (op->is_intrinsic(Call::likely)) {
             accumulate(op->args[0], adjoint);
         } else if (op->is_intrinsic(Call::return_second)) {
-            accumulate(op->args[0], 0.f);
+            accumulate(op->args[0], make_const(op->type, 0.0));
             accumulate(op->args[1], adjoint);
         } else if (op->is_intrinsic(Call::undef)) {
             // do nothing
         } else {
             user_warning << "Dropping gradients at call to " << op->name << "\n";
             for (const auto &arg : op->args) {
-                accumulate(arg, 0.f);
+                accumulate(arg, make_const(op->type, 0.0));
             }
         }
     }
@@ -1010,7 +1051,7 @@ Expr forward_accumulation(const Expr &expr,
         if (scope.contains(op->name)) {
             return scope.get(op->name);
         } else {
-            return 0.f;
+            return make_const(op->type, 0.0);
         }
     } else if (const Call *op = expr.as<Call>()) {
         if (op->is_extern()) {
@@ -1031,9 +1072,9 @@ Expr forward_accumulation(const Expr &expr,
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return -sin(op->args[0]) * d;
             } else if (op->name == "ceil_f32") {
-                return 0.f;
+                return make_const(op->type, 0.0);
             } else if (op->name == "floor_f32") {
-                return 0.f;
+                return make_const(op->type, 0.0);
             } else if (op->name == "sqrt_f32") {
                 // d/dx f(x)^(0.5) = 0.5 * f(x)^(-0.5) f'
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
@@ -1047,9 +1088,11 @@ Expr forward_accumulation(const Expr &expr,
                     (op->args[1] * a +
                      // Special hack: if g' == 0 then even if f == 0 the following term is 0
                      // basically we want -Inf * 0 = 0
-                     select(b == 0.f, 0.f, op->args[0] * log(op->args[0]) * b));
+                     select(b == 0.f,
+                         make_const(op->type, 0.0),
+                         op->args[0] * log(op->args[0]) * b));
             } else if (op->name == "halide_print") {
-                return 0.f;
+                return make_const(op->type, 0.0);
             } else {
                 internal_error << "The derivative of " << op->name << " is not implemented.";
             }
@@ -1059,7 +1102,7 @@ Expr forward_accumulation(const Expr &expr,
                 Func tangent = it->second;
                 return tangent(op->args);
             } else {
-                return 0.f;
+                return make_const(op->type, 0.0);
             }
         } else {
             internal_assert(op->is_intrinsic());
@@ -1080,9 +1123,9 @@ Expr forward_accumulation(const Expr &expr,
                 Expr d = forward_accumulation(op->args[1], tangents, scope);
                 return d;
             } else if (op->is_intrinsic(Call::stringify)) {
-                return 0.f;
+                return make_const(op->type, 0.0);
             } else if (op->is_intrinsic(Call::undef)) {
-                return 0.f;
+                return make_const(op->type, 0.0);
             } else if (op->is_intrinsic(Call::reinterpret)) {
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 if (is_zero(d)) {
@@ -1095,9 +1138,9 @@ Expr forward_accumulation(const Expr &expr,
             }
         }
     } else {
-        return 0.f;
+        return make_const(expr.type(), 0.0);
     }
-    return 0.f;
+    return make_const(expr.type(), 0.0);
 }
 
 Expr forward_accumulation(const Expr &expr,
@@ -1137,7 +1180,7 @@ Derivative propagate_adjoints(const Func &output,
 
 Derivative propagate_adjoints(const Func &output) {
     Func adjoint("adjoint");
-    adjoint(output.args()) = 1.f;
+    adjoint(output.args()) = Internal::make_const(output.value().type(), 1.0);
     std::vector<std::pair<Expr, Expr>> output_bounds;
     output_bounds.reserve(output.dimensions());
     for (int i = 0; i < output.dimensions(); i++) {
@@ -1303,7 +1346,6 @@ void test_simple_bounds_inference() {
 
     RDom r(0, width-2, 0, height-2);
     Func f_loss("f_loss");
-    f_loss(x) = 0.f;
     f_loss(x) += blur_y(r.x, r.y);
 
     std::map<std::string, Box> bounds = inference_bounds(f_loss, {{0, 0}});
@@ -1345,7 +1387,6 @@ void test_simple_bounds_inference_update() {
     blur(x) += input(x + 1);
     RDom r(0, 2);
     Func f_loss("f_loss");
-    f_loss(x) = 0.f;
     f_loss(x) += blur(r.x);
 
     std::map<std::string, Box> bounds = inference_bounds(f_loss, {{0, 0}});
@@ -1360,10 +1401,15 @@ void test_simple_bounds_inference_update() {
         << "Expected 2 instead of " << bounds[input.name()][0].max << "\n" ;
 }
 
-inline void CMP(int line_number, float x, float target, float threshold = 1e-6f) {
-    internal_assert(fabs((x) - (target)) < threshold) << \
+template <typename T>
+inline void CMP(int line_number, T x, T target, T threshold = T(1e-6)) {
+    internal_assert(std::fabs((x) - (target)) < threshold) << \
         "Line " << line_number << ": Expected " <<
             (target) << " instead of " << (x) << "\n";    
+}
+
+inline void CMP(int line_number, float16_t x, float16_t target) {
+    return CMP(line_number, x, target, float16_t(5e-3));
 }
 
 /**
@@ -1390,21 +1436,23 @@ bool has_non_pure_update(const Func &func) {
     return false;
 }
 
+template <typename T>
 void test_scalar() {
     { // Test + - * / const
         Func x("x");
-        x() = 5.f;
+        x() = Expr(T(5));
         Func y("y");
-        y() = x() * x() - 2.f * x() + 5.f + 3.f / x();
+        y() = x() * x() - Expr(T(2)) * x() + Expr(T(5)) + Expr(T(3)) / x();
         Derivative d = propagate_adjoints(y);
-        Buffer<float> dydx = d(x).realize();
+        Func dx = d(x);
+        Buffer<T> dydx = dx.realize();
         // y = x^2 - 2x + 5 + 3 / x
         // dydx = 2x - 2 - 3 / x^2 = 12 - 3 / 25
-        CMP(__LINE__, dydx(0), 8.f - 3.f / 25.f);
+        CMP(__LINE__, dydx(0), T(8.0 - 3.0 / 25.0));
     }
     { // Test special functions
         Func x("x");
-        x() = 0.5f;
+        x() = Expr(T(0.5));
         Func y("y");
         y() = sin(x()) +
               cos(x()) +
@@ -1412,21 +1460,21 @@ void test_scalar() {
               exp(x()) +
               log(x()) +
               sqrt(x()) +
-              pow(x(), 1.5f) +
-              pow(1.5f, x()) +
+              pow(x(), Expr(T(1.5))) +
+              pow(Expr(T(1.5)), x()) +
               asin(x()) +
-              1.2f * acos(x()) +
+              Expr(T(1.2)) * acos(x()) +
               atan(x()) +
-              atan2(x(), 2.f) +
-              1.3f * atan2(2.f, x()) +
+              atan2(x(), Expr(T(2))) +
+              Expr(T(1.3)) * atan2(Expr(T(2)), x()) +
               sinh(x()) +
-              1.2f * cosh(x()) +
+              Expr(T(1.2)) * cosh(x()) +
               tanh(x()) +
               asinh(x()) +
-              acosh(x() + 1.f) +
+              acosh(x() + Expr(T(1))) +
               atanh(x());
         Derivative d = propagate_adjoints(y);
-        Buffer<float> dydx = d(x).realize();
+        Buffer<T> dydx = d(x).realize();
         // dydx = cos(x) -
         //        sin(x) +
         //        1 / cos(x)^2 +
@@ -1447,25 +1495,25 @@ void test_scalar() {
         //        1 / (sqrt(x - 1) * sqrt(x + 1)) +
         //        1 / (1 - x^2)
         CMP(__LINE__, dydx(0),
-            std::cos(0.5f) -
-            std::sin(0.5f) +
-            (1.f / (std::cos(0.5f) * std::cos(0.5f))) +
-            std::exp(0.5f) +
-            1.f / 0.5f +
-            1.f / (2.f * std::sqrt(0.5f)) +
-            1.5f * std::pow(0.5f, 0.5f) +
-            std::log(1.5f) * std::pow(1.5f, 0.5f) +
-            1.f / std::sqrt(1.f - 0.5f * 0.5f) -
-            1.2f / std::sqrt(1.f - 0.5f * 0.5f) +
-            (1.f / (0.5f * 0.5f + 1.f)) +
-            2.f / (4.f + 0.5f * 0.5f) -
-            1.3f * 2.f / (4.f + 0.5f * 0.5f) +
-            std::cosh(0.5f) +
-            1.2f * std::sinh(0.5f) +
-            1.f / (std::cosh(0.5f) * std::cosh(0.5f)) +
-            1.f / std::sqrt(0.5f * 0.5f + 1.f) +
-            1.f / (std::sqrt(0.5f) * std::sqrt(2.5f)) +
-            1.f / (1.f - 0.5f * 0.5f));
+            T(std::cos(0.5f) -
+              std::sin(0.5f) +
+              (1.f / (std::cos(0.5f) * std::cos(0.5f))) +
+              std::exp(0.5f) +
+              1.f / 0.5f +
+              1.f / (2.f * std::sqrt(0.5f)) +
+              1.5f * std::pow(0.5f, 0.5f) +
+              std::log(1.5f) * std::pow(1.5f, 0.5f) +
+              1.f / std::sqrt(1.f - 0.5f * 0.5f) -
+              1.2f / std::sqrt(1.f - 0.5f * 0.5f) +
+              (1.f / (0.5f * 0.5f + 1.f)) +
+              2.f / (4.f + 0.5f * 0.5f) -
+              1.3f * 2.f / (4.f + 0.5f * 0.5f) +
+              std::cosh(0.5f) +
+              1.2f * std::sinh(0.5f) +
+              1.f / (std::cosh(0.5f) * std::cosh(0.5f)) +
+              1.f / std::sqrt(0.5f * 0.5f + 1.f) +
+              1.f / (std::sqrt(0.5f) * std::sqrt(2.5f)) +
+              1.f / (1.f - 0.5f * 0.5f)));
     }
     { // Test fast inv
         Func x("x");
@@ -1479,44 +1527,44 @@ void test_scalar() {
     }
     { // Test floor ceil round trunc
         Func x("x");
-        x() = 2.5f;
+        x() = Expr(T(2.5));
         Func y("y");
         y() = ceil(x()) + floor(x()) + round(x()) + trunc(x());
         Derivative d = propagate_adjoints(y);
-        Buffer<float> dydx = d(x).realize();
-        CMP(__LINE__, dydx(0), 0.f);
+        Buffer<T> dydx = d(x).realize();
+        CMP(__LINE__, dydx(0), T(0));
     }
     { // Test max min
         Func x("x");
-        x() = 2.5f;
+        x() = Expr(T(2.5));
         Func y("y");
-        y() = 2.f * max(x(), 5.f) +
-              3.f * max(x(), 1.f) +
-              5.f * min(x(), 3.f) +
-              7.f * min(x(), 2.f);
+        y() = Expr(T(2)) * max(x(), Expr(T(5))) +
+              Expr(T(3)) * max(x(), Expr(T(1))) +
+              Expr(T(5)) * min(x(), Expr(T(3))) +
+              Expr(T(7)) * min(x(), Expr(T(2)));
         Derivative d = propagate_adjoints(y);
-        Buffer<float> dydx = d(x).realize();
-        CMP(__LINE__, dydx(0), 8.f);
+        Buffer<T> dydx = d(x).realize();
+        CMP(__LINE__, dydx(0), T(8));
     }
     { // Test abs
         Func x("x");
-        x() = -2.5f;
+        x() = Expr(T(-2.5));
         Func y("y");
-        y() = 2.f * abs(x()) + 3.f * abs(-x());
+        y() = Expr(T(2)) * abs(x()) + Expr(T(3)) * abs(-x());
         Derivative d = propagate_adjoints(y);
-        Buffer<float> dydx = d(x).realize();
+        Buffer<T> dydx = d(x).realize();
         // y = -2x - 3x = -5x, dy/dx = -5
-        CMP(__LINE__, dydx(0), -5.f);
+        CMP(__LINE__, dydx(0), T(-5));
     }
     { // Test select
         Func x("x");
-        x() = 5.f;
+        x() = Expr(T(5));
         Func y("y");
-        y() = select(x() > 0.f, 2.f * x(), 3.f * x()) +
-              select(x() < 0.f, 5.f * x(), 7.f * x());
+        y() = select(x() > Expr(T(0)), Expr(T(2)) * x(), Expr(T(3)) * x()) +
+              select(x() < Expr(T(0)), Expr(T(5)) * x(), Expr(T(7)) * x());
         Derivative d = propagate_adjoints(y);
-        Buffer<float> dydx = d(x).realize();
-        CMP(__LINE__, dydx(0), 9.f);
+        Buffer<T> dydx = d(x).realize();
+        CMP(__LINE__, dydx(0), T(9));
     }
 }
 
@@ -1749,18 +1797,18 @@ void test_1d_to_2d() {
     // d loss / d i0 = 10i0 = 10
     // d loss / d i1 = 10i1 = 20
     Buffer<float> d_output = d(output).realize(2, 2);
-    CMP(__LINE__, d_output(0, 0), 2);
-    CMP(__LINE__, d_output(1, 0), 4);
-    CMP(__LINE__, d_output(0, 1), 4);
-    CMP(__LINE__, d_output(1, 1), 8);
+    CMP(__LINE__, d_output(0, 0), 2.f);
+    CMP(__LINE__, d_output(1, 0), 4.f);
+    CMP(__LINE__, d_output(0, 1), 4.f);
+    CMP(__LINE__, d_output(1, 1), 8.f);
 
     Func d_input = d(input);
     // Every dependency of d_input should only use pure variables in lhs
     internal_assert(!has_non_pure_update(d_input)) <<
         "Function has non pure update\n";
     Buffer<float> d_input_buf = d_input.realize(2);
-    CMP(__LINE__, d_input_buf(0), 10);
-    CMP(__LINE__, d_input_buf(1), 20);
+    CMP(__LINE__, d_input_buf(0), 10.f);
+    CMP(__LINE__, d_input_buf(1), 20.f);
 }
 
 void test_linear_resampling_1d() {
@@ -2337,7 +2385,8 @@ void test_reverse_forward() {
 void derivative_test() {
     test_simple_bounds_inference();
     test_simple_bounds_inference_update();
-    test_scalar();
+    test_scalar<float>();
+    test_scalar<double>();
     test_1d_box_no_clamp();
     test_1d_box();
     test_2d_box();
