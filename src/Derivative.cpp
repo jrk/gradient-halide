@@ -23,6 +23,13 @@ inline Halide::float16_t fabs(Halide::float16_t x) {
 namespace Halide {
 namespace Internal {
 
+bool check_opname(const std::string &op_name,
+                  const std::string &func_name) {
+    return op_name == (func_name + "_f16") ||
+           op_name == (func_name + "_f32") ||
+           op_name == (func_name + "_f64");
+};
+
 /** An IR visitor that computes the derivatives through reverse accumulation
  */
 class ReverseAccumulationVisitor : public IRVisitor {
@@ -400,12 +407,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
     Expr adjoint = expr_adjoints[op];
     // Math functions
     if (op->is_extern()) {
-        auto check_opname = [] (const std::string &op_name,
-                                const std::string &func_name) {
-            return op_name == (func_name + "_f16") ||
-                   op_name == (func_name + "_f32") ||
-                   op_name == (func_name + "_f64");
-        };
         if (check_opname(op->name, "exp")) {
             // d/dx exp(x) = exp(x)
             accumulate(op->args[0], adjoint * exp(op->args[0]));
@@ -1121,31 +1122,91 @@ Expr forward_accumulation(const Expr &expr,
         }
     } else if (const Call *op = expr.as<Call>()) {
         if (op->is_extern()) {
-            if (op->name == "exp_f32") {
+            if (check_opname(op->name, "exp")) {
                 // d/dx exp(f(x)) = exp(f(x)) f'
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return expr * d;
-            } else if (op->name == "log_f32") {
+            } else if (check_opname(op->name, "log")) {
                 // d/dx log(f(x)) = f' / f(x)
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return d / expr;
-            } else if (op->name == "sin_f32") {
+            } else if (check_opname(op->name, "sin")) {
                 // d/dx sin(f(x)) = cos(f(x)) f'
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return cos(op->args[0]) * d;
-            } else if (op->name == "cos_f32") {
+            } else if (check_opname(op->name, "asin")) {
+                // d/dx asin(f(x)) = f' / sqrt(1 - f(x)^2)
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                Expr one = make_const(op->type, 1.0);
+                return d / sqrt(one - op->args[0] * op->args[0]);
+            } else if (check_opname(op->name, "cos")) {
                 // d/dx cos(f(x)) = -sin(f(x)) f'
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return -sin(op->args[0]) * d;
-            } else if (op->name == "ceil_f32") {
+            } else if (check_opname(op->name, "acos")) {
+                // d/dx acos(f(x)) = -f' / sqrt(1 - f(x)^2)
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                Expr one = make_const(op->type, 1.0);
+                return -d / sqrt(one - op->args[0] * op->args[0]);
+            } else if (check_opname(op->name, "tan")) {
+                // d/dx tan(f(x)) = f' / cos^2(f(x))
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                Expr cos_x = cos(op->args[0]);
+                return d / (cos_x * cos_x);
+            } else if (check_opname(op->name, "atan")) {
+                // d/dx tan(f(x)) = f' / cos^2(f(x))
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                Expr one = make_const(op->type, 1.0);
+                return d / (op->args[0] * op->args[0] + one);
+            } else if (check_opname(op->name, "atan2")) {
+                // d/dx atan2(f(x), g(x)) =
+                //   f' * (g(x) / (f(x)^2 + g(x)^2)) -
+                //   g' * (f(x) / (f(x)^2 + g(x)^2))
+                Expr d0 = forward_accumulation(op->args[0], tangents, scope);
+                Expr d1 = forward_accumulation(op->args[1], tangents, scope);
+                Expr norm = op->args[0] * op->args[0] + op->args[1] * op->args[1];
+                return (d0 * op->args[1] - d1 * op->args[0]) / norm;
+            } else if (check_opname(op->name, "sinh")) {
+                // d/dx sinh(f(x)) = f'cosh(f(x))
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                return d * cosh(op->args[0]);
+            } else if (check_opname(op->name, "asinh")) {
+                // d/dx asinh(f(x)) = f' / sqrt(f(x)^2 + 1)
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                Expr one = make_const(op->type, 1.0);
+                return d / sqrt(one + op->args[0] * op->args[0]);
+            } else if (check_opname(op->name, "cosh")) {
+                // d/dx cosh(f(x)) = f'sinh(f(x))
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                return d * sinh(op->args[0]);
+            } else if (check_opname(op->name, "acosh")) {
+                // d/dx asinh(f(x)) = f' / sqrt((f(x) - 1) * (f(x) + 1))
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                Expr one = make_const(op->type, 1.0);
+                return d / sqrt((op->args[0] - one) * (op->args[0] + one));
+            } else if (check_opname(op->name, "tanh")) {
+                // d/dx sinh(f(x)) = f'/cosh(f(x))^2
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                Expr cosh_x = cosh(op->args[0]);
+                return d / (cosh_x * cosh_x);
+            } else if (check_opname(op->name, "atanh")) {
+                // d/dx sinh(f(x)) = f'/(1 - f(x)^2)
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                Expr one = make_const(op->type, 1.0);
+                return d / (one - op->args[0] * op->args[0]);
+            } else if (check_opname(op->name, "ceil")) {
                 return make_const(op->type, 0.0);
-            } else if (op->name == "floor_f32") {
+            } else if (check_opname(op->name, "floor")) {
                 return make_const(op->type, 0.0);
-            } else if (op->name == "sqrt_f32") {
+            } else if (check_opname(op->name, "round")) {
+                return make_const(op->type, 0.0);
+            } else if (check_opname(op->name, "trunc")) {
+                return make_const(op->type, 0.0);
+            } else if (check_opname(op->name, "sqrt")) {
                 // d/dx f(x)^(0.5) = 0.5 * f(x)^(-0.5) f'
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
                 return (0.5f * d / expr);
-            } else if (op->name == "pow_f32") {
+            } else if (check_opname(op->name, "pow")) {
                 // d/dx pow(f(x), g(x)) = pow(f(x), g(x)-1) *
                 //                        (g(x) f'(x) + f(x) log(f(x))g'(x))
                 Expr a = forward_accumulation(op->args[0], tangents, scope);
@@ -1157,10 +1218,22 @@ Expr forward_accumulation(const Expr &expr,
                      select(b == 0.f,
                          make_const(op->type, 0.0),
                          op->args[0] * log(op->args[0]) * b));
+            } else if (check_opname(op->name, "fast_inverse")) {
+                // d/dx f(x)^(-1) = -f' * f(x)^(-2)
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                Expr inv_x = fast_inverse(op->args[0]);
+                return -d * inv_x * inv_x;
+            } else if (check_opname(op->name, "fast_inverse_sqrt")) {
+                // d/dx f(x)^(-0.5) = -0.5 * f' * f(x)^(-1.5)
+                Expr d = forward_accumulation(op->args[0], tangents, scope);
+                Expr inv_sqrt_x = fast_inverse_sqrt(op->args[0]);
+                Expr neg_half = make_const(op->type, -0.5);
+                return neg_half * d * inv_sqrt_x * inv_sqrt_x * inv_sqrt_x;
             } else if (op->name == "halide_print") {
                 return make_const(op->type, 0.0);
             } else {
-                internal_error << "The derivative of " << op->name << " is not implemented.";
+                internal_error << "The derivative of " << op->name <<
+                    " is not implemented.";
             }
         } else if (op->call_type == Call::Image || op->call_type == Call::Halide) {
             auto it = tangents.find(op->name);
@@ -1631,6 +1704,27 @@ void test_scalar() {
         Derivative d = propagate_adjoints(y);
         Buffer<T> dydx = d(x).realize();
         CMP(__LINE__, dydx(0), T(9));
+    }
+    { // Test lerp
+        Func x("x");
+        x() = Expr(T(2));
+        Func y("y");
+        y() = Expr(T(6));
+        Func w("w");
+        w() = Expr(T(0.1));
+        Func z("z");
+        // z = x * (1 - w) + y * w
+        z() = lerp(x(), y(), w());
+        Derivative d = propagate_adjoints(z);
+        // dzdx = 1 - w
+        Buffer<T> dzdx = d(x).realize();
+        CMP(__LINE__, dzdx(0), T(0.9));
+        // dzdy = w
+        Buffer<T> dzdy = d(y).realize();
+        CMP(__LINE__, dzdy(0), T(0.1));
+        // dzdw = y - x
+        Buffer<T> dzdw = d(w).realize();
+        CMP(__LINE__, dzdw(0), T(4.0));
     }
 }
 
@@ -2444,7 +2538,6 @@ void test_forward() {
     }
     Func output("output");
     RDom r(0, 2);
-    output(x) = 0.f;
     output(x) += input(x + r);
     Func d_input("d_input");
     d_input(x) = 1.f;
