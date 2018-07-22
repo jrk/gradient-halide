@@ -4,12 +4,113 @@
 #include "RealizationOrder.h"
 #include "Simplify.h"
 #include "Substitute.h"
+#include "IRVisitor.h"
 
 #include <numeric>
 
 namespace Halide {
 
 using namespace Internal;
+
+
+struct PointwiseOpChecker : public IRGraphVisitor {
+public:
+    using IRGraphVisitor::visit;
+    bool check(const Func &caller_, const Func &callee_) {
+        result = true;
+        caller = caller_;
+        callee = callee_;
+        // return false if the dimensionality of caller and callee are different
+        if (caller.dimensions() != callee.dimensions()) {
+            return false;
+        }
+        std::vector<Expr> vals;
+        vals = caller.values().as_vector();
+        for (Expr val : vals) {
+            val.accept(this);
+        }
+        if (!result) {
+            return false;
+        }
+        for (int update_id = 0; update_id < caller.num_update_definitions(); update_id++) {
+            vals = caller.update_values(update_id).as_vector();
+            for (Expr val : vals) {
+                val.accept(this);
+            }
+            if (!result) {
+                return false;
+            }
+        }
+        return result;
+    }
+
+    void visit(const Call *op) {
+        IRGraphVisitor::visit(op);
+        if (op->func.defined()) {
+            Function func(op->func);
+            if (func.name() == callee.name()) {
+                // Check: is the calling arguments the same as callee arguments?
+                if (op->args.size() != callee.args().size()) {
+                    result = false;
+                    return;
+                }
+                for (int i = 0; i < (int)op->args.size(); i++) {
+                    const Variable *var = op->args[i].as<Variable>();
+                    if (var == nullptr) {
+                        result = false;
+                        return;
+                    }
+                    if (var->name != callee.args()[i].name()) {
+                        result = false;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    bool result;
+    Func caller, callee;
+};
+
+bool is_pointwise(const Func &caller, const Func &callee) {
+    PointwiseOpChecker checker;
+    return checker.check(caller, callee);
+}
+
+struct DependencyFinder : public IRGraphVisitor {
+public:
+    using IRGraphVisitor::visit;
+    void find(const Func &func) {
+        dependency.clear();
+        std::vector<Expr> vals = func.values().as_vector();
+        for (Expr val : vals) {
+            val.accept(this);
+        }
+        for (int update_id = 0; update_id < func.num_update_definitions(); update_id++) {
+            vals = func.update_values(update_id).as_vector();
+            for (Expr val : vals) {
+                val.accept(this);
+            }
+        }
+    }
+
+    void visit(const Call *op) {
+        IRGraphVisitor::visit(op);
+        if (op->func.defined()) {
+            Function func(op->func);
+            dependency.insert(func.name());
+        }
+    }
+
+    std::set<std::string> dependency;
+};
+
+std::set<std::string> find_dependency(const Func &func) {
+    DependencyFinder finder;
+    finder.find(func);
+    return finder.dependency;
+}
 
 template <typename T>
 std::vector<int> sort_indices(const std::vector<T> &v) {

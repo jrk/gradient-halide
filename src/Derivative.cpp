@@ -30,7 +30,7 @@ bool check_opname(const std::string &op_name,
            op_name == (func_name + "_f64");
 };
 
-/** An IR visitor that computes the derivatives through reverse accumulation
+/** Compute derivatives through reverse accumulation
  */
 class ReverseAccumulationVisitor : public IRVisitor {
 public:
@@ -60,12 +60,18 @@ protected:
 private:
     void accumulate(const Expr &stub, const Expr &adjoint);
 
+    // For each expression, we store the accumulated adjoints expression
     std::map<const BaseExprNode *, Expr> expr_adjoints;
+    // For each function and each update, we store the accumulated adjoints func
     std::map<FuncKey, Func> adjoint_funcs;
+    // Let variables and their mapping
     std::map<std::string, Expr> let_var_mapping;
     std::vector<std::string> let_variables;
+    // Bounds of functions
     std::map<std::string, Box> func_bounds;
+    // Current function that scatters its adjoints to its dependencies
     Func current_func;
+    // Current update of the function
     int current_update_id;
 };
 
@@ -89,22 +95,21 @@ void ReverseAccumulationVisitor::propagate_adjoints(
     }
 
     internal_assert(funcs.size() > 0);
-
-    // debug(0) << "ReverseAccumulationVisitor: infering bounds...";
     func_bounds = inference_bounds(output, output_bounds);
-    // debug(0) << "done\n";
 
     // Create a stub for each function to accumulate adjoints.
     for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
         const Func &func = funcs[func_id];
-        for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
-            Func adjoint_func(func.name() + "_" + std::to_string(update_id + 1) + "_d_def__");
+        for (int update_id = -1;
+                update_id < func.num_update_definitions(); update_id++) {
+            Func adjoint_func(
+                func.name() + "_" + std::to_string(update_id + 1) + "_d_def__");
             bool is_final_output = func_id == (int)funcs.size() - 1 &&
                                    update_id == func.num_update_definitions() - 1;
             std::vector<Var> args = func.args();
             for (auto &arg : args) {
                 if (arg.is_implicit()) {
-                    // replace implicit variables with non implicit ones
+                    // Replace implicit variables with non implicit ones
                     arg = Var();
                 }
             }
@@ -313,6 +318,7 @@ void ReverseAccumulationVisitor::visit(const Variable *op) {
     assert(expr_adjoints.find(op) != expr_adjoints.end());
     Expr adjoint = expr_adjoints[op];
 
+    // If the variable is a let variable, accumulates adjoints into the content
     auto it = let_var_mapping.find(op->name);
     if (it != let_var_mapping.end()) {
         accumulate(it->second, Let::make(op->name, it->second, adjoint));
@@ -405,8 +411,8 @@ void ReverseAccumulationVisitor::visit(const Select *op) {
 void ReverseAccumulationVisitor::visit(const Call *op) {
     assert(expr_adjoints.find(op) != expr_adjoints.end());
     Expr adjoint = expr_adjoints[op];
-    // Math functions
     if (op->is_extern()) {
+        // Math functions
         if (check_opname(op->name, "exp")) {
             // d/dx exp(x) = exp(x)
             accumulate(op->args[0], adjoint * exp(op->args[0]));
@@ -556,7 +562,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         Func& func_to_update = adjoint_funcs[func_key];
         assert(func_to_update.dimensions() == (int)lhs.size());
 
-        bool debug_flag = false;//func_key.first == "f_grid";
+        bool debug_flag = false;
 
         if (debug_flag) {
             debug(0) << "current_func:" << current_func.name() << "\n";
