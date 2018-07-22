@@ -776,7 +776,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             const Add *add = lhs_arg.as<Add>();
             // f(r.x) = g(r.x)
             // => f(x) = g(x)
-            if (var != nullptr && var->reduction_domain.defined()) {
+            if (var != nullptr && var->reduction_domain.defined() &&
+                    var->reduction_domain.split_predicate().size() == 0) {
                 ReductionDomain rdom = var->reduction_domain;
                 int rvar_id = -1;
                 for (int rid = 0; rid < (int)rdom.domain().size(); rid++) {
@@ -948,8 +949,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
         }
 
+        // Substitute new_args back to original variables
         for (int arg_id = 0; arg_id < (int)func_to_update_args.size(); arg_id++) {
-            // Substitute new_args back to original variables
             for (auto &lhs_arg : lhs) {
                 lhs_arg = substitute(new_args[arg_id].name(),
                     func_to_update_args[arg_id], lhs_arg);
@@ -2360,7 +2361,6 @@ void test_transpose() {
     output(x, y) = input(y, x);
     RDom r(0, 5, 0, 5);
     Func loss("loss");
-    loss() = 0.f;
     loss() += pow(output(r.x, r.y) - target(r.x, r.y), 2);
     Derivative d = propagate_adjoints(loss);
     Func d_input = d(input);
@@ -2368,6 +2368,70 @@ void test_transpose() {
     for (int i = 0; i < 5; i++) {
         for (int j = 0; j < 5; j++) {
             CMP(__LINE__, d_input_buf(i, j), 2.f * (input(i, j) - target(j, i)));
+        }
+    }
+}
+
+void test_change_var() {
+    Var x("x"), y("y"), a("a"), b("b");
+    Buffer<float> input(5, 5);
+    for (int i = 0; i < 5; i++) {
+        for (int j = 0; j < 5; j++) {
+            input(i, j) = float(i + j);
+        }
+    }
+    Buffer<float> target(5, 5);
+    for (int i = 0; i < 5; i++) {
+        for (int j = 0; j < 5; j++) {
+            target(i, j) = float(i * j);
+        }
+    }
+    Func xy_func("xy");
+    xy_func(x, y) = input(x, y);
+    Func ab_func("ab");
+    ab_func(a, b) = xy_func(a, b);
+    RDom r(0, 5, 0, 5);
+    Func loss("loss");
+    loss() += pow(ab_func(r.x, r.y) - target(r.x, r.y), 2);
+    Derivative d = propagate_adjoints(loss);
+    Func d_input = d(input);
+    Buffer<float> d_input_buf = d_input.realize(5, 5);
+    for (int i = 0; i < 5; i++) {
+        for (int j = 0; j < 5; j++) {
+            CMP(__LINE__, d_input_buf(i, j), 2.f * (input(i, j) - target(j, i)));
+        }
+    }
+}
+
+void test_rdom_predicate() {
+    Var x("x"), y("y");
+    Buffer<float> input(7, 7);
+    for (int i = 0; i < 7; i++) {
+        for (int j = 0; j < 7; j++) {
+            input(i, j) = float(i + j);
+        }
+    }
+    RDom r(0, 7, 0, 7);
+    r.where((r.x - 3)*(r.x - 3) + (r.y - 3)*(r.y - 3) <= 10);
+    Func circle;
+    circle(x, y) = input(x, y);
+    circle(r.x, r.y) *= 2.f;
+
+    RDom r_full(0, 7, 0, 7);
+    Func loss("loss");
+    loss() += circle(r_full.x, r_full.y);
+    Derivative d = propagate_adjoints(loss);
+    Func d_input = d(input);
+    Buffer<float> d_input_buf = d_input.realize(7, 7);
+    for (int i = 0; i < 7; i++) {
+        for (int j = 0; j < 7; j++) {
+            bool in_circle =
+                (i - 3)*(i - 3) + (j - 3)*(j - 3) <= 10;
+            if (in_circle) {
+                CMP(__LINE__, d_input_buf(i, j), 2.f);
+            } else {
+                CMP(__LINE__, d_input_buf(i, j), 1.f);
+            }
         }
     }
 }
@@ -2475,6 +2539,8 @@ void derivative_test() {
     test_downsampling();
     test_upsampling();
     test_transpose();
+    test_change_var();
+    test_rdom_predicate();
     test_forward();
     test_reverse_forward();
     debug(0) << "Derivative test passed\n";
