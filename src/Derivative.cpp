@@ -498,6 +498,32 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             internal_error << "The derivative of " << op->name <<
                 " is not implemented.";
         }
+    } else if (op->is_intrinsic()) {
+        if (op->is_intrinsic(Call::abs)) {
+            accumulate(op->args[0],
+                adjoint*select(op->args[0] > 0,
+                    make_const(op->type, 1.0), make_const(op->type, -1.0)));
+        } else if (op->is_intrinsic(Call::lerp)) {
+            // z = x * (1 - w) + y * w
+            // dz/dx = 1 - w
+            // dz/dy = w
+            // dz/dw = y - x
+            accumulate(op->args[0], adjoint * (make_const(op->type, 1.0) - op->args[2]));
+            accumulate(op->args[1], adjoint * op->args[2]);
+            accumulate(op->args[2], adjoint * (op->args[1] - op->args[0]));
+        } else if (op->is_intrinsic(Call::likely)) {
+            accumulate(op->args[0], adjoint);
+        } else if (op->is_intrinsic(Call::return_second)) {
+            accumulate(op->args[0], make_const(op->type, 0.0));
+            accumulate(op->args[1], adjoint);
+        } else if (op->is_intrinsic(Call::undef)) {
+            // do nothing
+        } else {
+            user_warning << "Dropping gradients at call to " << op->name << "\n";
+            for (const auto &arg : op->args) {
+                accumulate(arg, make_const(op->type, 0.0));
+            }
+        }
     } else if (op->call_type == Call::Halide ||
                op->call_type == Call::Image) { // Halide function call or Halid buffer
         // TODO: check if we need this elsewhere
@@ -570,52 +596,71 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
         }
         {
-            std::set<std::string> implicit_variables = find_implicit_variables(adjoint);
+            std::set<std::string> implicit_variables =
+                find_implicit_variables(adjoint);
             for (const auto &var : implicit_variables) {
-                adjoint = substitute(var, current_args[Var::implicit_index(var)], adjoint);
+                adjoint = substitute(
+                    var, current_args[Var::implicit_index(var)], adjoint);
             }
         }
 
         // We want to do this:
         // func_to_update(op->args) += adjoint(current_update_args);
-        // But op->args can be invalid lhs, need to canonicalize
-        // we canonicalize by first trying to substitute with pure variables
-        // if that fails we will replace variables on lhs with RDoms
+        // But op->args can be invalid lhs, need to canonicalize.
+        // We canonicalize by first trying to substitute with pure variables.
+        // If that fails we will replace variables on lhs with RDoms
+        // (general scattering).
 
-        // TODO: maybe modularize this more
-        // Try to perform the canonicalization by substitution of variables
-        // Create a set of new substitution variables
-        std::vector<Var> new_args;
-        std::set<std::string> new_args_set;
-        for (int i = 0; i < (int)func_to_update.args().size(); i++) {
-            new_args.push_back(Var("u" + std::to_string(i) + "_"));
-            new_args_set.insert(new_args.back().name());
-        }
-
-        // We canonicalize the left hand side arguments (op->args) so that it's always x, y, z, ...
+        // We try canonicalize the left hand side arguments (op->args)
+        // so that it's always x, y, z, ...
         //
         // Given:
         // g(x, y, z) = f(x, y-1, z+1)
-        // we get:
-        // d_f(x, y - 1, z + 1) += d_g(x,y,z)
+        // we get an invalid update:
+        // f'(x, y - 1, z + 1) += g'(x, y, z)
         // Goal: rewrite to
-        //  ==> d_f(x,y,z) += d_g(x,y+1,z-1)
+        //  ==> f'(x, y, z) += g'(x, y+1, z-1)
+        // (below we would call g and g' the "current function" and 
+        //  we call f and d_f the "function to update")
         //
-        // First gather all arguments that contains multiple pure variables.
-        // We don't want to mess with system solving yet, so we invalidate all of them.
-        // This is currently simple and conservative, solving each dimension independently, so
-        // inter-dependencies like:
-        // g(x, y) = f(x*y, x+y)
-        // can't be simplified. In principle this can be inverted by solving a system of equations.
-        // (TODO: make this a routine? also the invalidated vars?)
+        // We do this by set up a new set of variables new_args
+        // new_args contains a set of variable u0, u1, u2, ...
+        // For each left hand side of the update (x, y - 1, z + 1 here),
+        // we set up the equation u0 = x, u1 = y - 1, u2 = z + 1.
+        // Then we solve for x, y, z and get x = u0, y = u1 + 1, z = u2 - 1
+        // We would get f'(u0, u1, u2) += g'(u0, u1 + 1, u2 - 1)
+        // We then substitute the original variable names back to get
+        // f'(x, y, z) += g'(x, x + 1, z - 1)
+        //
+        // Currently we don't want to mess with system solving yet,
+        // So we gather all arguments that contains multiple pure variables,
+        // and invalidate all of them.
+        // Inter-dependencies like:
+        // g(x, y) = f(x * y, x + y)
+        // can't be simplified.
+        // In principle this can be inverted by solving a system of equations.
+        // In this case we replace x and y with reduction variables that loop
+        // through g's bounds
+        // i.e.
+        // f'(r.x * r.y, r.x + r.y) += g'(r.x, r.y)
+
+        // Prepare a set of new substitution variables for func_to_update
+        std::vector<Var> new_args;
+        new_args.reserve(func_to_update.args().size());
+        for (int arg_id = 0; arg_id < (int)func_to_update.args().size(); arg_id++) {
+            new_args.push_back(Var("u" + std::to_string(arg_id) + "_"));
+        }
+
+        // Loop over the left hand side of the update, construct equations
+        // and invert them.
         std::vector<bool> canonicalized(lhs.size(), false);
         std::set<std::string> canonicalized_vars;
-        std::map<std::string, Var> lhs_substitute_map;
-        for (int i = 0; i < (int)lhs.size(); i++) {
-            // Gather all pure variables at op->args[i], substitute them with new_args
+        for (int arg_id = 0; arg_id < (int)lhs.size(); arg_id++) {
+            // Gather all pure variables at op->args[arg_id],
+            // substitute them with new_args
             // For now only support single pure variable
             std::vector<std::string> variables =
-                gather_variables(lhs[i], vars_to_strings(current_args));
+                gather_variables(lhs[arg_id], vars_to_strings(current_args));
             if (variables.size() != 1) {
                 continue;
             }
@@ -623,54 +668,56 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             bool solved;
             Expr result_rhs;
             std::tie(solved, result_rhs) =
-                solve_inverse(new_args[i] == lhs[i],
-                              new_args[i].name(),
+                solve_inverse(new_args[arg_id] == lhs[arg_id],
+                              new_args[arg_id].name(),
                               variables[0]);
             if (!solved) {
                 continue;
             }
 
-            // Replace pure variable with the reverse
-            adjoint = substitute(variables[0], result_rhs, adjoint);
+            // Replace pure variable with the reverse.
+            // Make sure to also substitute predicates
+            adjoint = substitute_rdom_predicate(variables[0], result_rhs, adjoint);
 
-            lhs[i] = func_to_update.args()[i];
-            canonicalized[i] = true;
+            // Since we successfully invert, the left hand side becomes
+            // new_args
+            lhs[arg_id] = new_args[arg_id];
+            // Record that we sucessfully invert, for those we fail
+            // we need to perform general scattering.
+            canonicalized[arg_id] = true;
             canonicalized_vars.insert(variables[0]);
-            lhs_substitute_map[variables[0]] = func_to_update.args()[i];
         }
 
-        // Deal with the case where the two functions have different set of variables
-        for (int i = 0; i < (int)lhs.size(); i++) {
-            for (const auto &it : lhs_substitute_map) {
-                lhs[i] = substitute(it.first, it.second, lhs[i]);
-            }
-        }
-
-        // Sometimes the canonicalization above doesn't work.
+        // Sometimes the canonicalization above fails.
         // We replace the pure variables inside lhs with RDoms for general scattering
-        // First find the corresponding current argument to obtain the bound
         std::vector<std::pair<Expr, Expr>> bounds;
         bounds.reserve(current_args.size());
         for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
-            bounds.push_back({current_bounds[arg_id].min,
-                              current_bounds[arg_id].max - current_bounds[arg_id].min + 1});
+            bounds.push_back({
+                current_bounds[arg_id].min,
+                current_bounds[arg_id].max - current_bounds[arg_id].min + 1});
         }
         RDom r_bounds(bounds);
         for (int lhs_id = 0; lhs_id < (int)lhs.size(); lhs_id++) {
-            Expr lhs_arg = lhs[lhs_id];
             if (!canonicalized[lhs_id]) {
+                Expr lhs_arg = lhs[lhs_id];
                 std::vector<std::string> variables =
                     gather_variables(lhs_arg, current_adjoint_func.function().args());
                 RDom r(bounds);
+                // For each variable found in lhs_arg, find the corresponding
+                // bound (by looping through all variables) and substitute
+                // with the bound reduction variable.
                 for (int var_id = 0; var_id < (int)variables.size(); var_id++) {
                     for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
                         if (current_args[arg_id].name() == variables[var_id] &&
-                                canonicalized_vars.find(current_args[arg_id].name()) ==
+                                canonicalized_vars.find(
+                                    current_args[arg_id].name()) ==
                                     canonicalized_vars.end()) {
                             lhs[lhs_id] = substitute(variables[var_id],
                                                      r_bounds[arg_id],
                                                      lhs[lhs_id]);
-                            adjoint = substitute(variables[var_id], r_bounds[arg_id], adjoint);
+                            adjoint = substitute(
+                                variables[var_id], r_bounds[arg_id], adjoint);
                             break;
                         }
                     }
@@ -680,9 +727,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
 
         // For each free variable on the rhs, replace it with current bounds
         // e.g. we have in forward pass f(x, y) = g(x)
-        //      then we need to do g'(x) += f(x, y)
+        //      then we would have g'(x) += f'(x, y) by now
         //      now we need to replace y with a reduction variable over f's bound
-        //      x is automatically excluded since it's
+        //      x is automatically excluded since it's currently
         //      replaced by the new substitution variable e.g. u_0
 
         // First gather all free variables
@@ -690,25 +737,27 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         std::vector<int> arg_id_to_substitute;
         bounds_subset.reserve(current_args.size());
         arg_id_to_substitute.reserve(current_args.size());
-        for (int i = 0; i < (int)current_args.size(); i++) {
-            if (has_variable(adjoint, current_args[i].name())) {
-                const Interval &interval = current_bounds[i];
-                bounds_subset.emplace_back(interval.min, interval.max - interval.min + 1);
-                arg_id_to_substitute.push_back(i);
+        for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
+            if (has_variable(adjoint, current_args[arg_id].name())) {
+                const Interval &interval = current_bounds[arg_id];
+                bounds_subset.emplace_back(
+                    interval.min, interval.max - interval.min + 1);
+                arg_id_to_substitute.push_back(arg_id);
             }
         }
 
         // Create a new RDom to loop over all free variables
         if (arg_id_to_substitute.size() > 0) {
             RDom r(bounds_subset);
-            for (int i = 0; i < (int) arg_id_to_substitute.size(); i++) {
+            for (int i = 0; i < (int)arg_id_to_substitute.size(); i++) {
                 int arg_id = arg_id_to_substitute[i];
                 adjoint = substitute(current_args[arg_id].name(), r[i], adjoint);
             }
         }
 
         // General scattering simplification rules
-        // For each expression in lhs, check if it is an expression of a single rvar and
+        // For each expression in lhs, 
+        // check if it is an expression of a single rvar and
         // spans the same interval of the function's bound
         // if so we can rewrite it back to pure variables
         // e.g.
@@ -725,6 +774,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             Expr lhs_arg = substitute_in_all_lets(lhs[i]);
             const Variable *var = lhs_arg.as<Variable>();
             const Add *add = lhs_arg.as<Add>();
+            // f(r.x) = g(r.x)
+            // => f(x) = g(x)
             if (var != nullptr && var->reduction_domain.defined()) {
                 ReductionDomain rdom = var->reduction_domain;
                 int rvar_id = -1;
@@ -749,14 +800,20 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                     // Replace other occurence of rvar in lhs
                     for (int j = 0; j < (int)lhs.size(); j++) {
                         if (j != i) {
-                            lhs[j] = simplify(substitute(rvar.var, func_to_update_args[i], lhs[j]));
+                            lhs[j] = simplify(substitute(
+                                rvar.var, func_to_update_args[i], lhs[j]));
                         }
                     }
-                    adjoint = simplify(substitute(rvar.var, func_to_update_args[i], adjoint));
+                    adjoint = simplify(substitute(
+                        rvar.var, func_to_update_args[i], adjoint));
                 }
+            // f(4 * r.x + r.y) = g(r.x) + h(4 * r.x + r.y)
+            // => f(x) = g(x/4) + h(x)
             } else if (add != nullptr &&
-                       ((add->a.as<Mul>() != nullptr && add->b.as<Variable>() != nullptr) ||
-                        (add->a.as<Variable>() != nullptr && add->b.as<Mul>() != nullptr))) {
+                       ((add->a.as<Mul>() != nullptr && 
+                            add->b.as<Variable>() != nullptr) ||
+                        (add->a.as<Variable>() != nullptr && 
+                            add->b.as<Mul>() != nullptr))) {
                 // Find pattern s * r.x + r.y where r.y.min == 0 && r.y.extent == s
                 Expr a = add->a, b = add->b;
                 if (add->b.as<Mul>() != nullptr) {
@@ -807,7 +864,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
         }
 
-        // Merge RDoms on both lhs and rhs, preserve partial order
+        // We can only have one RDom for each update.
+        // Therefore we have to merge RDoms on both lhs and rhs
+        // To make use of better locality we preserve partial order
         std::map<std::string, ReductionVariableInfo> rvar_maps =
             gather_rvariables(adjoint);
         for (const auto &lhs_arg : lhs) {
@@ -859,21 +918,49 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         RDom merged_r;
         if (merged_bounds.size() > 0) {
             merged_r = RDom(merged_bounds);
-            for (int i = 0; i < merged_r.dimensions(); i++) {
-                adjoint = substitute(var_names[i], merged_r[i], adjoint);
+            // Transfer the predicate from old RDoms to merged RDom
+            // Gather the set of RDoms
+            std::set<ReductionDomain, ReductionDomain::Compare> rdoms;
+            for (const auto &it : rvar_maps) {
+                rdoms.insert(it.second.domain);
+            }
+            Expr rdom_predicate = Internal::UIntImm::make(UInt(1), 1);
+            for (const auto &rdom : rdoms) {
+                rdom_predicate = simplify(rdom_predicate && rdom.predicate());
+            }
+            // Reference to new RDom
+            for (int rid = 0; rid < merged_r.dimensions(); rid++) {
+                adjoint = substitute(var_names[rid], merged_r[rid], adjoint);
                 for (auto &lhs_arg : lhs) {
-                    lhs_arg = substitute(var_names[i], merged_r[i], lhs_arg);
+                    lhs_arg = substitute(var_names[rid], merged_r[rid], lhs_arg);
                 }
+                rdom_predicate = substitute(
+                    var_names[rid], merged_r[rid], rdom_predicate);
+            }
+            if (!is_const(rdom_predicate)) {
+                for (int arg_id = 0; arg_id <
+                        (int)func_to_update_args.size(); arg_id++) {
+                    // Substitute new_args back to original variables
+                    rdom_predicate = substitute(new_args[arg_id].name(),
+                        func_to_update_args[arg_id], rdom_predicate);
+                }
+                merged_r.where(rdom_predicate);
             }
         }
 
-        for (int i = 0; i < (int)func_to_update_args.size(); i++) {
-            // substitute the new_args back to original variables
-            adjoint = substitute(new_args[i].name(), func_to_update_args[i], adjoint);
+        for (int arg_id = 0; arg_id < (int)func_to_update_args.size(); arg_id++) {
+            // Substitute new_args back to original variables
+            for (auto &lhs_arg : lhs) {
+                lhs_arg = substitute(new_args[arg_id].name(),
+                    func_to_update_args[arg_id], lhs_arg);
+            }
+            adjoint = substitute_rdom_predicate(
+                new_args[arg_id].name(), func_to_update_args[arg_id], adjoint);
         }
         adjoint = simplify(adjoint);
 
-        // Finally we update the function definitions, possibly merge with previous updates
+        // Finally we update the function definitions, 
+        // possibly merge with previous updates
         auto can_merge = [&]() -> bool {
             if (func_to_update.num_update_definitions() == 0) {
                 // If lhs are not pure variables we can't merge to pure definition
@@ -890,13 +977,14 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             std::vector<Expr> prev_lhs =
                 func_to_update.update_args(update_id);
             assert(prev_lhs.size() == lhs.size());
-            // If previous update has different left hand side, can't merge
+            // If previous update has different left hand side, don't merge
             for (int i = 0; i < (int)prev_lhs.size(); i++) {
                 if (!equal(lhs[i], prev_lhs[i])) {
                     return false;
                 }
             }
-            // If previous update has a different set of reduction variables, can't merge
+            // If previous update has a different set of reduction variables, 
+            // don't merge
             const std::vector<ReductionVariable> &rvars =
                 func_to_update.update(update_id).get_schedule().rvars();
             if (!merged_r.defined()) {
@@ -967,37 +1055,14 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                     // Make sure we don't include the undefs
                     values[op->value_index] = simplify(add->a + adjoint);
                 } else {
-                    values[op->value_index] = simplify(values[op->value_index] + adjoint);
+                    values[op->value_index] =
+                        simplify(values[op->value_index] + adjoint);
                 }
             }
         }
     } else {
-        internal_assert(op->is_intrinsic());
-        if (op->is_intrinsic(Call::abs)) {
-            accumulate(op->args[0],
-                adjoint*select(op->args[0] > 0,
-                    make_const(op->type, 1.0), make_const(op->type, -1.0)));
-        } else if (op->is_intrinsic(Call::lerp)) {
-            // z = x * (1 - w) + y * w
-            // dz/dx = 1 - w
-            // dz/dy = w
-            // dz/dw = y - x
-            accumulate(op->args[0], adjoint * (make_const(op->type, 1.0) - op->args[2]));
-            accumulate(op->args[1], adjoint * op->args[2]);
-            accumulate(op->args[2], adjoint * (op->args[1] - op->args[0]));
-        } else if (op->is_intrinsic(Call::likely)) {
-            accumulate(op->args[0], adjoint);
-        } else if (op->is_intrinsic(Call::return_second)) {
-            accumulate(op->args[0], make_const(op->type, 0.0));
-            accumulate(op->args[1], adjoint);
-        } else if (op->is_intrinsic(Call::undef)) {
-            // do nothing
-        } else {
-            user_warning << "Dropping gradients at call to " << op->name << "\n";
-            for (const auto &arg : op->args) {
-                accumulate(arg, make_const(op->type, 0.0));
-            }
-        }
+        // TODO: let user provide derivatives for external functions
+        internal_error << "Unknown call type of operation: " << op->name << "\n";
     }
 }
 
@@ -1648,9 +1713,9 @@ void test_2d_box() {
     blur_y(x, y) = blur_x(x, y - 1) + blur_x(x, y) + blur_x(x, y + 1);
 
     RDom r(0, 5, 0, 5);
-    Func f_loss("f_loss");
-    f_loss() += blur_y(r.x, r.y) * blur_y(r.x, r.y);
-    Derivative d = propagate_adjoints(f_loss);
+    Func loss("loss");
+    loss() += blur_y(r.x, r.y) * blur_y(r.x, r.y);
+    Derivative d = propagate_adjoints(loss);
 
     Buffer<float> blur_y_buf = blur_y.realize(5, 5);
     // d loss / d blur_y = 2 * blur_y(x, y)

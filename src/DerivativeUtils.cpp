@@ -606,5 +606,24 @@ std::set<std::string> find_implicit_variables(Expr expr) {
     return finder.find(expr);
 }
 
+Expr substitute_rdom_predicate(
+        const std::string &name, const Expr &replacement, const Expr &expr) {
+    Expr substituted = substitute(name, replacement, expr);
+    std::map<std::string, ReductionVariableInfo> rvars =
+        gather_rvariables(substituted);
+    std::set<ReductionDomain, ReductionDomain::Compare> rdoms_set;
+    for (const auto &it : rvars) {
+        rdoms_set.insert(it.second.domain);
+    }
+    std::vector<ReductionDomain> rdoms;
+    std::copy(rdoms_set.begin(), rdoms_set.end(), std::back_inserter(rdoms));
+    for (auto &r : rdoms) {
+        Expr predicate = r.predicate();
+        predicate = substitute(name, replacement, predicate);
+        r.set_predicate(predicate);
+    }
+    return substituted;
+}
+
 } // namespace Internal
 } // namespace Halide

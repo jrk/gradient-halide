@@ -54,6 +54,11 @@ struct BufferInfo {
 };
 std::map<std::string, BufferInfo> find_buffer_calls(const Func &func);
 std::set<std::string> find_implicit_variables(Expr expr);
+/**
+ *  Substitute the variable. Also replace all occurence in rdom.where() predicates.
+ */
+Expr substitute_rdom_predicate(
+    const std::string &name, const Expr &replacement, const Expr &expr);
 
 }
 }
