@@ -145,6 +145,22 @@ string type_to_pytorch_tensor(Type type, bool isCuda) {
         } else {
             user_error << "Can't represent a float with this many bits in C: " << type << "\n";
         }
+    } else if (type.is_int()) {
+        if (type.bits() == 32) {
+          if(isCuda) {
+            oss << "THCudaIntTensor";
+          } else {
+            oss << "THIntTensor";
+          }
+        } else if (type.bits() == 64) {
+          if(isCuda) {
+            oss << "THCudaLongTensor";
+          } else {
+            oss << "THLongTensor";
+          }
+        } else {
+            user_error << "Can't represent a float with this many bits in C: " << type << "\n";
+        }
     } else {
       user_error << "Type " << type << " not handled by pytorch wrapper" << type << "\n";
     }
@@ -253,7 +269,8 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
       if (isCuda) {
         if (i == 0) {
           do_indent();
-          stream << "int device_id = THCudaTensor_getDevice(state, "
+          stream << "int device_id = " << type_to_pytorch_tensor(buffer_args[i].type, isCuda) << "_getDevice(state, "
+          // stream << "int device_id = THCudaTensor_getDevice(state, "
                  << print_name(buffer_args[i].name) << ");\n";
           do_indent();
           stream << "CUcontext ctx = 0;\n";
@@ -270,7 +287,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
         } 
         else {
           do_indent();
-          stream << "if(device_id != THCudaTensor_getDevice(state, "
+          stream << "if(device_id != " << type_to_pytorch_tensor(buffer_args[i].type, isCuda) << "_getDevice(state, "
                  << print_name(buffer_args[i].name) << ")) throw Halide::Pytorch::InvalidDeviceException();\n";
         }
       }
@@ -299,12 +316,28 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
       if (!buffer_args[i].is_buffer())
         continue;
       do_indent();
+      // stream
+      //   << "Buffer<"
+      //   << type_to_c_type(buffer_args[i].type, false)
+      //   << "> "
+      //   << print_name(buffer_args[i].name) 
+      //   << "_buffer;\n";
+      // do_indent();
+      // stream
+      //   << "Halide::Pytorch::wrap("
+      //   << print_name(buffer_args[i].name) 
+      //   << ", "
+      //   << print_name(buffer_args[i].name) 
+      //   << "_buffer);\n"
+      //   ;
+      
+      string tp = type_to_c_type(buffer_args[i].type, false);
       stream
         << "Buffer<"
-        << type_to_c_type(buffer_args[i].type, false)
+        << tp
         << "> "
         << print_name(buffer_args[i].name) 
-        << "_buffer = Halide::Pytorch::wrap("
+        << "_buffer = Halide::Pytorch::wrap<" << tp << ">("
         << print_name(buffer_args[i].name) 
         << ");\n"
         ;
