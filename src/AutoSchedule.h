@@ -37,6 +37,22 @@ struct MachineParams {
 
 namespace Internal {
 
+/** If the cost of computing a Func is about the same as calling the Func,
+ *  inline the Func. Return true of any of the Funcs is inlined. */
+bool inline_all_trivial_functions(const std::vector<Function> &outputs,
+                                  const std::vector<std::string> &order,
+                                  const std::map<std::string, Function> &env);
+
+/** Inline a Func if its values are only consumed by another single Func in
+ * element-wise manner. */
+bool inline_all_element_wise_functions(const std::vector<Function> &outputs,
+                                       const std::vector<std::string> &order,
+                                       const std::map<std::string, Function> &env);
+
+/** Check if all the pipeline outputs have estimates specified
+ *  on each of their dimensions; otherwise, throw an assertion. */
+void check_estimates_on_outputs(const std::vector<Function> &outputs);
+
 /** Generate schedules for Funcs within a pipeline. The Funcs should not already
  * have specializations or schedules as the current auto-scheduler does not take
  * into account user-defined schedules or specializations. This applies the

@@ -18,6 +18,7 @@
 #include "Generator.h"
 #include "Derivative.h"
 #include "AutoScheduleUtils.h"
+#include "SimpleAutoSchedule.h"
 
 using namespace Halide;
 using namespace Halide::Internal;
@@ -39,8 +40,9 @@ int main(int argc, const char **argv) {
     interval_test();
     associativity_test();
     generator_test();
-    derivative_test();
     propagate_estimate_test();
+    derivative_test();
+    simple_autoschedule_test();
 
     return 0;
 }

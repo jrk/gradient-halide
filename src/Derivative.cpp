@@ -207,7 +207,8 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 std::vector<Expr> update_args = func.update_args(update_id);
                 // Replace implicit variables
                 for (auto &arg : update_args) {
-                    std::set<std::string> implicit_variables = find_implicit_variables(arg);
+                    std::set<std::string> implicit_variables =
+                        find_implicit_variables(arg);
                     for (const auto &var : implicit_variables) {
                         arg = substitute(var, next_args[Var::implicit_index(var)], arg);
                     }

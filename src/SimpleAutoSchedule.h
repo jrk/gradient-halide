@@ -1,6 +1,14 @@
 #ifndef HALIDE_SIMPLE_AUTO_SCHEDULE_H
 #define HALIDE_SIMPLE_AUTO_SCHEDULE_H
 
+/** \file
+ *  A less sophisticated automatic scheduler (compare to AutoSchedule)
+ *  It inlines some trivial and element-wise functions (as in AutoSchedule),
+ *  tiles on the rest and parallelize.
+ *  It also recognize large reduction and try to rfactor() to increase parallelism.
+ *  In addition it supports GPU scheduling.
+ */
+
 #include "Func.h"
 
 #include <string>
@@ -20,19 +28,24 @@ struct SimpleAutoscheduleOptions {
     int unroll_rvar_size = 0;
 };
 
-// Bounds are {min, max}
+/**
+ *  Given one or more Funcs, and an estimation of the values of the parameters and
+ *  function bounds (in {min, max}), automatically schedule all the dependencies.
+ */
 void simple_autoschedule(std::vector<Func> &outputs,
                          const std::map<std::string, int> &parameters,
                          const std::vector<std::vector<std::pair<int, int>>> &output_bounds,
-                         const SimpleAutoscheduleOptions &options = SimpleAutoscheduleOptions(),
-                         const std::set<std::string> &dont_inline = {},
-                         const std::set<std::string> &skip_functions = {});
+                         const SimpleAutoscheduleOptions &options = SimpleAutoscheduleOptions());
 void simple_autoschedule(Func &output,
                          const std::map<std::string, int> &parameters,
                          const std::vector<std::pair<int, int>> &output_bounds,
-                         const SimpleAutoscheduleOptions &options = SimpleAutoscheduleOptions(),
-                         const std::set<std::string> &dont_inline = {},
-                         const std::set<std::string> &skip_functions = {});
+                         const SimpleAutoscheduleOptions &options = SimpleAutoscheduleOptions());
+
+namespace Internal {
+
+void simple_autoschedule_test();
+
+}
 
 }
 

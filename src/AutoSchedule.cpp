@@ -115,34 +115,6 @@ struct FStage {
     }
 };
 
-// Check if all the pipeline outputs have estimates specified
-// on each of their dimensions; otherwise, throw an assertion.
-void check_estimates_on_outputs(const vector<Function> &outputs) {
-    for (const auto &out : outputs) {
-        const vector<Bound> &estimates = out.schedule().estimates();
-        // Check if the estimate for each dimension of the output is available
-        // and is an integer. If there are duplicates for the estimate of a
-        // dimension, we only check the last defined estimate (which min and
-        // extent values are defined) since it is the one that would be
-        // eventually used.
-        Bound est;
-        for (const auto &arg : out.args()) {
-            bool found = false;
-            for (int i = (int)estimates.size() - 1; i >= 0; --i) {
-                if ((estimates[i].var == arg) && estimates[i].min.defined() &&
-                    estimates[i].extent.defined()) {
-                    found = true;
-                    est = estimates[i];
-                    break;
-                }
-            }
-            user_assert(found && est.min.type().is_int() && est.extent.type().is_int())
-                << "Please provide a valid estimate for dimension "
-                << est.var << " of output \"" << out.name() << "\"\n";
-        }
-    }
-}
-
 struct DependenceAnalysis {
     // Map containing all the functions in the pipeline.
     map<string, Function> env;
@@ -3134,51 +3106,6 @@ void validate_no_partial_schedules(const Function &f) {
     }
 }
 
-// If the cost of computing a Func is about the same as calling the Func,
-// inline the Func. Return true of any of the Funcs is inlined.
-bool inline_all_trivial_functions(const vector<Function> &outputs,
-                                  const vector<string> &order,
-                                  const map<string, Function> &env) {
-    bool inlined = false;
-    // The very last few functions in 'order' are the last to be realized in the
-    // pipeline (the final producers) so there is no point in checking it.
-    for (int i = 0; i < (int)order.size() - (int)outputs.size(); ++i) {
-        bool is_output = false;
-        for (const Function &f : outputs) {
-            if (order[i] == f.name()) {
-                is_output = true;
-                break;
-            }
-        }
-        if (is_output) {
-            // Should not inline output Func
-            debug(5) << "Skip inlining " << order[i] << " since it is an output\n";
-            continue;
-        }
-        Function f1 = env.at(order[i]);
-        if (is_func_trivial_to_inline(f1)) {
-            inlined = true;
-            debug(4) << "Function \"" << order[i] << "\" is trivial to inline\n";
-            for (int j = i + 1; j < (int)order.size() - (int)outputs.size(); ++j) {
-                internal_assert(order[i] != order[j]);
-                Function f2 = env.at(order[j]);
-
-                if (f2.has_extern_definition() &&  !f1.is_wrapper()) {
-                    debug(5) << "Skip inlining of function \"" << f1.name()
-                             << "\" inside \"" << f2.name() << "\", because "
-                             << "non-wrapper functions cannot be inlined inside "
-                             << "extern functions.\n";
-                } else {
-                    debug(5) << "Inline trivial function \"" << f1.name()
-                             << "\" inside \"" << f2.name() << "\"\n";
-                    inline_function(f2, f1);
-                }
-            }
-        }
-    }
-    return inlined;
-}
-
 // Determine if a Func (order[index]) is only consumed by another single Func
 // in element-wise manner. If it is, return the name of the consumer Func;
 // otherwise, return an empty string.
@@ -3228,39 +3155,6 @@ string is_func_called_element_wise(const vector<string> &order, size_t index,
         }
     }
     return caller;
-}
-
-// Inline a Func if its values are only consumed by another single Func in
-// element-wise manner.
-bool inline_all_element_wise_functions(const vector<Function> &outputs,
-                                       const vector<string> &order,
-                                       const map<string, Function> &env) {
-    bool inlined = false;
-    // The very last few functions in 'order' are the last to be realized in the
-    // pipeline (the final producers) so there is no point in checking it.
-    for (int i = 0; i < (int)order.size() - (int)outputs.size(); ++i) {
-        bool is_output = false;
-        for (const Function &f : outputs) {
-            if (order[i] == f.name()) {
-                is_output = true;
-                break;
-            }
-        }
-        if (is_output) {
-            // Should not inline output Func
-            debug(5) << "Skip inlining " << order[i] << " since it is an output\n";
-            continue;
-        }
-        string caller = is_func_called_element_wise(order, i, env);
-        if (!caller.empty()) {
-            inlined = true;
-            debug(4) << "Inline function \"" << order[i] << "\" since it is called only by "
-                     << caller << " in element-wise manner\n";
-            internal_assert(order[i] != caller);
-            inline_function(env.at(caller), get_element(env, order[i]));
-        }
-    }
-    return inlined;
 }
 
 // Return true if 'f' is used by some extern Func.
@@ -3321,6 +3215,113 @@ bool inline_unbounded(const vector<Function> &outputs,
 }
 
 }  // anonymous namespace
+
+
+// Check if all the pipeline outputs have estimates specified
+// on each of their dimensions; otherwise, throw an assertion.
+void check_estimates_on_outputs(const vector<Function> &outputs) {
+    for (const auto &out : outputs) {
+        const vector<Bound> &estimates = out.schedule().estimates();
+        // Check if the estimate for each dimension of the output is available
+        // and is an integer. If there are duplicates for the estimate of a
+        // dimension, we only check the last defined estimate (which min and
+        // extent values are defined) since it is the one that would be
+        // eventually used.
+        Bound est;
+        for (const auto &arg : out.args()) {
+            bool found = false;
+            for (int i = (int)estimates.size() - 1; i >= 0; --i) {
+                if ((estimates[i].var == arg) && estimates[i].min.defined() &&
+                    estimates[i].extent.defined()) {
+                    found = true;
+                    est = estimates[i];
+                    break;
+                }
+            }
+            user_assert(found && est.min.type().is_int() && est.extent.type().is_int())
+                << "Please provide a valid estimate for dimension "
+                << est.var << " of output \"" << out.name() << "\"\n";
+        }
+    }
+}
+
+// If the cost of computing a Func is about the same as calling the Func,
+// inline the Func. Return true of any of the Funcs is inlined.
+bool inline_all_trivial_functions(const vector<Function> &outputs,
+                                  const vector<string> &order,
+                                  const map<string, Function> &env) {
+    bool inlined = false;
+    // The very last few functions in 'order' are the last to be realized in the
+    // pipeline (the final producers) so there is no point in checking it.
+    for (int i = 0; i < (int)order.size() - (int)outputs.size(); ++i) {
+        bool is_output = false;
+        for (const Function &f : outputs) {
+            if (order[i] == f.name()) {
+                is_output = true;
+                break;
+            }
+        }
+        if (is_output) {
+            // Should not inline output Func
+            debug(5) << "Skip inlining " << order[i] << " since it is an output\n";
+            continue;
+        }
+        Function f1 = env.at(order[i]);
+        if (is_func_trivial_to_inline(f1)) {
+            inlined = true;
+            debug(4) << "Function \"" << order[i] << "\" is trivial to inline\n";
+            for (int j = i + 1; j < (int)order.size() - (int)outputs.size(); ++j) {
+                internal_assert(order[i] != order[j]);
+                Function f2 = env.at(order[j]);
+
+                if (f2.has_extern_definition() &&  !f1.is_wrapper()) {
+                    debug(5) << "Skip inlining of function \"" << f1.name()
+                             << "\" inside \"" << f2.name() << "\", because "
+                             << "non-wrapper functions cannot be inlined inside "
+                             << "extern functions.\n";
+                } else {
+                    debug(5) << "Inline trivial function \"" << f1.name()
+                             << "\" inside \"" << f2.name() << "\"\n";
+                    inline_function(f2, f1);
+                }
+            }
+        }
+    }
+    return inlined;
+}
+
+// Inline a Func if its values are only consumed by another single Func in
+// element-wise manner.
+bool inline_all_element_wise_functions(const vector<Function> &outputs,
+                                       const vector<string> &order,
+                                       const map<string, Function> &env) {
+    bool inlined = false;
+    // The very last few functions in 'order' are the last to be realized in the
+    // pipeline (the final producers) so there is no point in checking it.
+    for (int i = 0; i < (int)order.size() - (int)outputs.size(); ++i) {
+        bool is_output = false;
+        for (const Function &f : outputs) {
+            if (order[i] == f.name()) {
+                is_output = true;
+                break;
+            }
+        }
+        if (is_output) {
+            // Should not inline output Func
+            debug(5) << "Skip inlining " << order[i] << " since it is an output\n";
+            continue;
+        }
+        string caller = is_func_called_element_wise(order, i, env);
+        if (!caller.empty()) {
+            inlined = true;
+            debug(4) << "Inline function \"" << order[i] << "\" since it is called only by "
+                     << caller << " in element-wise manner\n";
+            internal_assert(order[i] != caller);
+            inline_function(env.at(caller), get_element(env, order[i]));
+        }
+    }
+    return inlined;
+}
 
 // Generate schedules for all functions in the pipeline required to compute the
 // outputs. This applies the schedules and returns a string representation of
