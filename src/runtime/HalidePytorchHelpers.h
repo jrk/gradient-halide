@@ -23,7 +23,8 @@ namespace Pytorch {
 
 struct DeviceNotSynchronizedException : public std::exception {
   std::string buffer_name;
-  DeviceNotSynchronizedException(std::string buffer_name) : buffer_name(buffer_name) { }
+  DeviceNotSynchronizedException(std::string buffer_name)
+    : buffer_name(buffer_name) { }
   const char* what() const throw() {
     std::stringstream buf;
     buf << "Halide output buffer "
@@ -51,29 +52,124 @@ struct CudaRunException : public std::exception {
   }
 };
 
-inline Buffer<float> wrap(THFloatTensor* tensor) {
-  int ndims = THFloatTensor_nDimension(tensor);
+template <typename T>
+inline int get_ndims(const THTensor* tensor);
+
+template <typename T>
+inline int get_size(const THTensor* tensor, int idx);
+
+template <typename T>
+inline T* get_torch_data(const THTensor* tensor);
+
+template <typename T>
+inline int get_ndims(THCState* state, const THCTensor* tensor);
+
+template <typename T>
+inline int get_size(THCState* state, const THCTensor* tensor, int idx);
+
+template <typename T>
+inline T* get_torch_data(THCState* state, const THCTensor* tensor);
+
+// Tensor API specializations ---------------------
+template <>
+inline int get_ndims<float>(const THTensor* tensor) { return THFloatTensor_nDimension(tensor); };
+
+template <>
+inline int get_ndims<double>(const THTensor* tensor) { return THDoubleTensor_nDimension(tensor); };
+
+template <>
+inline int get_ndims<int32_t>(const THTensor* tensor) { return THIntTensor_nDimension(tensor); };
+
+template <>
+inline int get_ndims<int64_t>(const THTensor* tensor) { return THLongTensor_nDimension(tensor); };
+
+template <>
+inline int get_ndims<float>(THCState* state, const THCTensor* tensor) { return THCudaTensor_nDimension(state, tensor); };
+
+template <>
+inline int get_ndims<double>(THCState* state, const THCTensor* tensor) { return THCudaDoubleTensor_nDimension(state, tensor); };
+
+template <>
+inline int get_ndims<int32_t>(THCState* state, const THCTensor* tensor) { return THCudaIntTensor_nDimension(state, tensor); };
+
+template <>
+inline int get_ndims<int64_t>(THCState* state, const THCTensor* tensor) { return THCudaDoubleTensor_nDimension(state, tensor); };
+
+template <>
+inline int get_size<float>(const THTensor* tensor, int idx) { return THFloatTensor_size(tensor, idx); };
+
+template <>
+inline int get_size<double>(const THTensor* tensor, int idx) { return THDoubleTensor_size(tensor, idx); };
+
+template <>
+inline int get_size<int32_t>(const THTensor* tensor, int idx) { return THIntTensor_size(tensor, idx); };
+
+template <>
+inline int get_size<int64_t>(const THTensor* tensor, int idx) { return THLongTensor_size(tensor, idx); };
+
+template <>
+inline int get_size<float>(THCState* state, const THCTensor* tensor, int idx) { return THCudaTensor_size(state, tensor, idx); };
+
+template <>
+inline int get_size<double>(THCState* state, const THCTensor* tensor, int idx) { return THCudaDoubleTensor_size(state, tensor, idx); };
+
+template <>
+inline int get_size<int32_t>(THCState* state, const THCTensor* tensor, int idx) { return THCudaIntTensor_size(state, tensor, idx); };
+
+template <>
+inline int get_size<int64_t>(THCState* state, const THCTensor* tensor, int idx) { return THCudaLongTensor_size(state, tensor, idx); };
+
+template <>
+inline float* get_torch_data<float>(const THTensor* tensor) { return THFloatTensor_data(tensor); };
+
+template <>
+inline double* get_torch_data<double>(const THTensor* tensor) { return THDoubleTensor_data(tensor); };
+
+template <>
+inline int32_t* get_torch_data<int32_t>(const THTensor* tensor) { return THIntTensor_data(tensor); };
+
+template <>
+inline int64_t* get_torch_data<int64_t>(const THTensor* tensor) { return THLongTensor_data(tensor); };
+
+template <>
+inline float* get_torch_data<float>(THCState* state, const THCTensor* tensor) { return THCudaTensor_data(state, tensor); };
+
+template <>
+inline double* get_torch_data<double>(THCState* state, const THCTensor* tensor) { return THCudaDoubleTensor_data(state, tensor); };
+
+template <>
+inline int32_t* get_torch_data<int32_t>(THCState* state, const THCTensor* tensor) { return THCudaIntTensor_data(state, tensor); };
+
+template <>
+inline int64_t* get_torch_data<int64_t>(THCState* state, const THCTensor* tensor) { return THCudaLongTensor_data(state, tensor); };
+// End Tensor API specializations -----------------
+
+
+template <typename T>
+inline Buffer<T> wrap(THTensor* tensor) {
+  int ndims = get_ndims<T>(tensor);
   std::vector<int> dims(ndims, 0);
   for(int dim = 0; dim < ndims; ++dim) {
-    dims[dim] = THFloatTensor_size(tensor, ndims-1-dim);
+    dims[dim] = get_size<T>(tensor, ndims-1-dim);
   }
-  float* pData  = THFloatTensor_data(tensor);
-  Buffer<float> buffer(pData, dims);
+  T* pData  = get_torch_data<T>(tensor);
+  Buffer<T> buffer(pData, dims);
   return buffer;
 }
 
-inline Buffer<float> wrap(THCudaTensor* tensor) {
+template <typename T>
+inline Buffer<T> wrap(THCudaTensor* tensor) {
   const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();
 
-  int ndims = THCudaTensor_nDimension(state, tensor);
+  int ndims = get_ndims<T>(state, tensor);
   std::vector<int> dims(ndims, 0);
   for(int dim = 0; dim < ndims; ++dim) {
-    dims[dim] = THCudaTensor_size(state, tensor, ndims-1-dim);
+    dims[dim] = get_size<T>(state, tensor, ndims-1-dim);
   }
 
-  Buffer<float> buffer(dims);
+  Buffer<T> buffer(dims);
 
-  float* pData  = THCudaTensor_data(state, tensor);
+  T* pData  = get_torch_data<T>(state, tensor);
   int err = buffer.device_wrap_native(cuda_interface, (uint64_t)pData);
   if (err != 0) {
     throw "halide_device_wrap failed";
