@@ -2382,7 +2382,49 @@ void test_rdom_conv() {
     CMP(__LINE__, d_kernel(1), 72.f * kernel(0) + 90.f * kernel(1));
 }
 
-void test_non_commutative_rdom() {
+void test_nonlinear_order_dependent_rdom() {
+    Var x("x");
+    Buffer<float> in(2);
+    for (int i = 0; i < 2; i++) {
+        in(i) = (i + 2.f);
+    }
+    RDom r(in);
+    Func f;
+    f(x) = in(x);
+    f(x) = f(x) * f(x) + in(r.x);
+
+    Func loss("loss");
+    loss() += f(r);
+    Derivative d = propagate_adjoints(loss);
+
+    // Manual backprop
+    float f0 = in(0);
+    float f1 = in(1);
+    float f0_a = f0 * f0 + in(0);
+    float f0_b = f0_a * f0_a + in(1);
+    float f1_a = f1 * f1 + in(0);
+    float f1_b = f1_a * f1_a + in(1);
+    float loss_ = f0_b + f1_b;
+    float df0_b = 1.f;
+    float df1_b = 1.f;
+    float df1_a = df1_b * 2.f * f1_a;
+    float din1 = df1_b;
+    float df1 = df1_a * 2.f * f1;
+    float din0 = df1_a;
+    float df0_a = df0_b * 2.f * f0_a;
+    din1 += df0_b;
+    float df0 = df0_a * 2.f * f0;
+    din0 += df0_a;
+    din1 += df1;
+    din0 += df0;
+    Buffer<float> loss_buf = loss.realize();
+    CMP(__LINE__, loss_, loss_buf());
+    Buffer<float> d_in = d(in).realize(2);
+    CMP(__LINE__, d_in(0), din0);
+    CMP(__LINE__, d_in(1), din1);
+}
+
+void test_order_dependent_rdom() {
     Var x("x");
     Buffer<float> coeffs(8);
     for (int i = 0; i < 8; i++) {
@@ -3099,7 +3141,8 @@ void derivative_test() {
     test_update();
     test_nonlinear_update();
     test_rdom_conv();
-    test_non_commutative_rdom();
+    test_order_dependent_rdom();
+    test_nonlinear_order_dependent_rdom();
     test_1d_to_2d();
     test_linear_resampling_1d();
     test_linear_resampling_2d();
