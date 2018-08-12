@@ -851,6 +851,9 @@ private:
                 // If the argument is unbounded on one side, then the max is unbounded.
                 interval.max = Interval::pos_inf;
             }
+        } else if (op->is_intrinsic(Call::unsafe_promise_clamped)) {
+            Expr full_clamp = clamp(op->args[0], op->args[1], op->args[2]);
+            full_clamp.accept(this);
         } else if (op->is_intrinsic(Call::likely) ||
                    op->is_intrinsic(Call::likely_if_innermost) ||
                    op->is_intrinsic(Call::strict_float)) {
@@ -1664,7 +1667,7 @@ private:
                         }
 
                         Interval bi = bounds_of_expr_in_scope(b, scope, func_bounds);
-                        if (bi.has_upper_bound()) {
+                        if (bi.has_upper_bound() && i.has_upper_bound()) {
                             if (lt) {
                                 i.max = min(likely_i.max, bi.max - 1);
                             }
@@ -1672,7 +1675,7 @@ private:
                                 i.max = min(likely_i.max, bi.max);
                             }
                         }
-                        if (bi.has_lower_bound()) {
+                        if (bi.has_lower_bound() && i.has_lower_bound()) {
                             if (gt) {
                                 i.min = max(likely_i.min, bi.min + 1);
                             }
@@ -1695,7 +1698,7 @@ private:
                         }
 
                         Interval ai = bounds_of_expr_in_scope(a, scope, func_bounds);
-                        if (ai.has_upper_bound()) {
+                        if (ai.has_upper_bound() && i.has_upper_bound()) {
                             if (gt) {
                                 i.max = min(likely_i.max, ai.max - 1);
                             }
@@ -1703,7 +1706,7 @@ private:
                                 i.max = min(likely_i.max, ai.max);
                             }
                         }
-                        if (ai.has_lower_bound()) {
+                        if (ai.has_lower_bound() && i.has_lower_bound()) {
                             if (lt) {
                                 i.min = max(likely_i.min, ai.min + 1);
                             }
