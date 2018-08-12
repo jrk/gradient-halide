@@ -668,7 +668,7 @@ void Function::define_update(const vector<Expr> &_args, vector<Expr> values) {
     if (!check.reduction_domain.defined() &&
         weakener.count == 0 &&
         pure) {
-        user_error
+        user_warning
             << "In update definition " << update_idx << " of Func \"" << name() << "\":\n"
             << "Update definition completely hides earlier definitions, "
             << " because all the arguments are pure, it contains no self-references, "
