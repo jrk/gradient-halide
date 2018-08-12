@@ -1039,6 +1039,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // and invert them.
         std::vector<bool> canonicalized(lhs.size(), false);
         std::set<std::string> canonicalized_vars;
+        std::map<std::string, Var> lhs_substitute_map;
         for (int arg_id = 0; arg_id < (int)lhs.size(); arg_id++) {
             // Gather all pure variables at op->args[arg_id],
             // substitute them with new_args
@@ -1070,6 +1071,19 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             // we need to perform general scattering.
             canonicalized[arg_id] = true;
             canonicalized_vars.insert(variables[0]);
+            lhs_substitute_map[variables[0]] = new_args[arg_id];
+        }
+
+        // Sometimes we have this kind of pathelogical case:
+        // f(x, y) = ...
+        // k(n) = f(g(n), n)
+        // When we update d_f, we the second n would be replaced by y
+        // We need to make sure we also update the call argument to g
+        // adjoint is automatically handles in the loop above
+        for (int i = 0; i < (int)lhs.size(); i++) {
+            for (const auto &it : lhs_substitute_map) {
+                lhs[i] = substitute(it.first, it.second, lhs[i]);
+            }
         }
 
         // Sometimes the canonicalization above fails.
