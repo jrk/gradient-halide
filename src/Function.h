@@ -330,6 +330,9 @@ public:
 
     /** Return true iff the name matches one of the Function's pure args. */
     bool is_pure_arg(const std::string &name) const;
+
+    /** Remove all update definitions */
+    void remove_updates();
 };
 
 /** Deep copy an entire Function DAG. */

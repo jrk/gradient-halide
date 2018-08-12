@@ -267,6 +267,7 @@ std::vector<Expr> sort_expressions(const Expr &expr) {
 std::map<std::string, Box> inference_bounds(const std::vector<Func> &funcs,
                                             const std::vector<FuncBounds> &output_bounds) {
     assert(funcs.size() == output_bounds.size());
+    // Obtain all dependencies
     std::vector<Function> functions;
     functions.reserve(funcs.size());
     for (const auto &func : funcs) {
@@ -277,6 +278,7 @@ std::map<std::string, Box> inference_bounds(const std::vector<Func> &funcs,
         std::map<std::string, Function> local_env = find_transitive_calls(func);
         env.insert(local_env.begin(), local_env.end());
     }
+    // Reduction variable scopes
     Scope<Interval> scope;
     for (const auto &it : env) {
         Func func = Func(it.second);
@@ -289,9 +291,11 @@ std::map<std::string, Box> inference_bounds(const std::vector<Func> &funcs,
             }
         }
     }
+    // Sort functions
     std::vector<std::string> order = realization_order(functions, env).first;
 
     std::map<std::string, Box> bounds;
+    // Set up bounds for outputs
     for (int i = 0; i < (int)funcs.size(); i++) {
         const Func &func = funcs[i];
         const FuncBounds &func_bounds = output_bounds[i];
@@ -305,19 +309,28 @@ std::map<std::string, Box> inference_bounds(const std::vector<Func> &funcs,
     // Traverse from the consumers to the producers
     for (auto it = order.rbegin(); it != order.rend(); it++) {
         Func func = Func(env[*it]);
+        // We should already have the bounds of this function
         assert(bounds.find(*it) != bounds.end());
         const Box &current_bounds = bounds[*it];
         assert(func.args().size() == current_bounds.size());
+        // We know the range for each argument of this function
         for (int i = 0; i < (int)current_bounds.size(); i++) {
             std::string arg = func.args()[i].name();
             scope.push(arg, current_bounds[i]);
         }
+        // Propagate the bounds
         for (int update_id = -1; update_id < func.num_update_definitions(); update_id++) {
-            Tuple tuple = update_id == -1 ? func.values() : func.update_values(update_id);
+            // For each rhs expression
+            Tuple tuple = update_id == -1 ? func.values() :
+                func.update_values(update_id);
             for (const auto &expr : tuple.as_vector()) {
+                // For all the immediate dependencies of this expression,
+                // find the required ranges
                 std::map<std::string, Box> update_bounds =
                     boxes_required(expr, scope);
+                // Loop over the dependencies
                 for (const auto &it : update_bounds) {
+                    // Update the bounds, if not exists then create a new one
                     auto found = bounds.find(it.first);
                     if (found == bounds.end()) {
                         bounds[it.first] = it.second;
@@ -515,6 +528,93 @@ Expr substitute_rdom_predicate(
         r.set_predicate(predicate);
     }
     return substituted;
+}
+
+struct FunctionCallFinder : public IRGraphVisitor {
+public:
+    using IRGraphVisitor::visit;
+    bool find(const std::string &func_name_,
+              const Expr &expr,
+              const std::map<std::string, Expr> &let_var_mapping_) {
+        func_name = func_name_;
+        let_var_mapping = &let_var_mapping_;
+        found = false;
+        expr.accept(this);
+        return found;
+    }
+
+    void visit(const Variable *var) {
+        if (!found) {
+            auto it = let_var_mapping->find(var->name);
+            if (it != let_var_mapping->end()) {
+                found = find(func_name, it->second, *let_var_mapping);
+            }
+        }
+    }
+
+    void visit(const Call *op) {
+        if (op->name == func_name) {
+            found = true;
+        } else {
+            IRGraphVisitor::visit(op);
+        }
+    }
+
+    std::string func_name;
+    std::map<std::string, Expr> const *let_var_mapping;
+    bool found;
+};
+
+bool is_calling_function(
+        const std::string &func_name, const Expr &expr,
+        const std::map<std::string, Expr> &let_var_mapping) {
+    FunctionCallFinder finder;
+    return finder.find(func_name, expr, let_var_mapping);
+}
+
+struct CallReplacer : public IRMutator2 {
+public:
+    using IRMutator2::visit;
+    Expr replace(const std::string &func_name_,
+                 const Func &replace_func_,
+                 const Expr &expr,
+                 const Expr &extra_arg_) {
+        func_name = func_name_;
+        replace_func = replace_func_;
+        extra_arg = extra_arg_;
+        return mutate(expr);
+    }
+
+    Expr visit(const Call *op) {
+        if (op->name != func_name) {
+            return IRMutator2::visit(op);
+        }
+
+        std::vector<Expr> new_args(op->args.size());
+        // Mutate the args
+        for (size_t i = 0; i < op->args.size(); i++) {
+            const Expr &old_arg = op->args[i];
+            Expr new_arg = mutate(old_arg);
+            new_args[i] = std::move(new_arg);
+        }
+        new_args.push_back(extra_arg);
+
+        return Call::make(replace_func.function(), new_args,
+            op->value_index);
+    }
+
+    std::string func_name;
+    Func replace_func;
+    Expr extra_arg;
+};
+
+Expr replace_call_add_argument(
+        const std::string &func_name,
+        const Func &replace_func,
+        const Expr &expr,
+        const Expr &extra_arg) {
+    CallReplacer replacer;
+    return replacer.replace(func_name, replace_func, expr, extra_arg);
 }
 
 } // namespace Internal

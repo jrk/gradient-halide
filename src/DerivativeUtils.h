@@ -98,10 +98,25 @@ std::map<std::string, BufferInfo> find_buffer_calls(const Func &func);
  */
 std::set<std::string> find_implicit_variables(Expr expr);
 /**
- *  Substitute the variable. Also replace all occurence in rdom.where() predicates.
+ * Substitute the variable. Also replace all occurence in rdom.where() predicates.
  */
 Expr substitute_rdom_predicate(
     const std::string &name, const Expr &replacement, const Expr &expr);
+/**
+ * Return true if expr contains call to func_name
+ */
+bool is_calling_function(
+    const std::string &func_name, const Expr &expr,
+    const std::map<std::string, Expr> &let_var_mapping);
+/**
+ * Replace the call and add an extra argument
+ * (e.g. f(x) -> g(x, y))
+ */
+Expr replace_call_add_argument(
+    const std::string &func_name,
+    const Func &replace_func,
+    const Expr &expr,
+    const Expr &extra_arg);
 
 }
 }
