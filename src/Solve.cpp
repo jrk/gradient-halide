@@ -904,8 +904,8 @@ class SolveForInterval : public IRVisitor {
                             (a_type.is_float() && b_type.is_float())) {
                         e = cast_a->value < lt->b;
                     } else {
-                        // what can this be?
                         fail();
+                        return;
                     }
                     cached_solve(e);
                 } else {
@@ -948,8 +948,8 @@ class SolveForInterval : public IRVisitor {
                             (a_type.is_float() && b_type.is_float())) {
                         e = cast_a->value > gt->b;
                     } else {
-                        // what can this be?
                         fail();
+                        return;
                     }
                     cached_solve(e);
                 } else {
@@ -1070,8 +1070,8 @@ class SolveForInterval : public IRVisitor {
                            (a_type.is_float() && b_type.is_float())) {
                     e = cast_a->value <= le->b;
                 } else {
-                    // what can this be?
                     fail();
+                    return;
                 }
                 cached_solve(e);
             } else {
