@@ -1168,6 +1168,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // e.g.
         // f(r.x) = g(r.x)
         // => f(x) = g(x)
+        //
         // Another common pattern is the reverse of downsampling
         // if we see s * r.x + r.y and r.y has min == 0 and extent == s
         // we simplify them to x and replace all occurence of r.x by x/4
@@ -1193,7 +1194,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 }
                 assert(rvar_id != -1);
                 ReductionVariable rvar = rdom.domain()[rvar_id];
-                // Check if the min/max of the rvariable is the same as the target function
+                // Check if the min/max of the rvariable equal to
+                // the target function
                 const Box &target_bounds = func_bounds[op->name];
                 Interval t_interval = target_bounds[i];
                 t_interval.min = simplify(t_interval.min);
@@ -1201,7 +1203,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 Interval r_interval(simplify(rvar.min),
                                     simplify(rvar.min + rvar.extent - 1));
                 if (can_prove(r_interval.min <= t_interval.min &&
-                              r_interval.max >= t_interval.max)) {
+                              r_interval.max >= t_interval.max) && false) {
                     lhs[i] = func_to_update_args[i];
                     // Replace other occurence of rvar in lhs
                     for (int j = 0; j < (int)lhs.size(); j++) {
@@ -1862,7 +1864,7 @@ void print_func(const Func &func, const PrintFuncOptions &options) {
                     Internal::debug(0) << " " << Internal::simplify(e);
                 }
                 Internal::debug(0) << "\n";
-                //rdom = Internal::extract_rdom(Internal::simplify(func.update_value(update_id)));
+                rdom = Internal::extract_rdom(Internal::simplify(func.update_value(update_id)));
             } else {
                 Internal::debug(0) << "    " << func.name() << "(";
                 if (func.args().size() > 0) {
@@ -1881,7 +1883,7 @@ void print_func(const Func &func, const PrintFuncOptions &options) {
                     Internal::debug(0) << " " << Internal::simplify(e);
                 }
                 Internal::debug(0) << "\n";
-                //rdom = Internal::extract_rdom(Internal::simplify(func.value()));
+                rdom = Internal::extract_rdom(Internal::simplify(func.value()));
             }
 
             if (rdom.defined()) {
@@ -2634,6 +2636,34 @@ void test_sparse_update() {
     CMP(__LINE__, d_input(2), 0.0f);
 }
 
+void test_histogram() {
+    Var x("x");
+    Buffer<int> input(4, "input");
+    input(0) = 2; input(1) = 2; input(2) = 1; input(3) = 3;
+    Buffer<float> k(5, "k");
+    k(0) = 0.5f; k(1) = 1.f; k(2) = 1.5f; k(3) = 2.f; k(4) = 2.5f;
+    Func output("output");
+    output(x) = 0.f;
+    RDom r(input);
+    output(clamp(input(r), 0, 3)) += k(r);
+
+    Func loss("loss");
+    RDom rd(input);
+    loss() += output(rd.x) * cast<float>(rd.x + 1);
+    Derivative d = propagate_adjoints(loss);
+
+    // d_output(2) -> d_k(0)
+    // d_output(2) -> d_k(1)
+    // d_output(1) -> d_k(2)
+    // d_output(3) -> d_k(3)
+    Buffer<float> d_k = d(k).realize(5);
+    CMP(__LINE__, d_k(0), 3.0f);
+    CMP(__LINE__, d_k(1), 3.0f);
+    CMP(__LINE__, d_k(2), 2.0f);
+    CMP(__LINE__, d_k(3), 4.0f);
+    CMP(__LINE__, d_k(4), 0.0f);
+}
+
 void test_rdom_update() {
     Var x("x");
     Buffer<float> input(3);
@@ -3168,6 +3198,7 @@ void derivative_test() {
     test_linear_resampling_1d();
     test_linear_resampling_2d();
     test_sparse_update();
+    test_histogram();
     test_rdom_update();
     test_repeat_edge();
     test_constant_exterior();
