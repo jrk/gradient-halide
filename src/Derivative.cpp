@@ -168,6 +168,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
     //       The versioning trick assume the reduction domain is dense.
     //       A possible remedy is to create an extra index set which stores
     //       all visited reduction indices.
+    //       For now we'll just throw an error if we detect predicates.
     // Setup flags for member functions
     is_forward_canonicalizing_phase = true;
     for (int func_id = 0; func_id < (int)org_funcs.size(); func_id++) {
@@ -259,6 +260,12 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 Expr new_chkpts = 1;
                 for (const auto &it : rvars) {
                     const ReductionVariableInfo &info = it.second;
+                    if (info.domain.predicate().defined() &&
+                            !is_const(info.domain.predicate())) {
+                        user_error 
+                            << "Detect predicates when computing derivatives in non commutative or"
+                            << "non associative reduction domain. This is unsupported yet.";
+                    }
                     new_chkpts *= info.extent;
                 }
                 if (rvars.size() > 0) {
