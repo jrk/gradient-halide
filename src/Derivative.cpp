@@ -10,7 +10,7 @@
 #include "FindCalls.h"
 #include "RealizationOrder.h"
 #include "Error.h"
-#include "Associativity.h"
+#include "Solve.h"
 
 #include <iostream>
 #include <cmath>
@@ -74,16 +74,17 @@ private:
     Func current_func;
     // Current update of the function
     int current_update_id;
-    // Are we using a reduction domain for keeping track of intermediate values
-    bool current_has_intermediate_rdom;
-    // If a function is self referencing we accumulate the
-    // adjoints to this function.
-    // We propagate this temporary adjoint to proper place later
-    Func tmp_adjoint_func;
     // We compute the derivatives in several passes.
     // Sometimes we don't want to propagate through Halide function calls
-    bool is_forward_canonicalizing_phase;
+    bool is_forward_overwrite_detection_phase;
     bool is_self_referencing_phase;
+    // Is the current function update a non overwriting scan?
+    bool is_current_non_overwriting_scan;
+    // A temporary flag for checking the derivatives
+    // to self reference of a Halide function is 1 or not
+    // Used in forward overwrite detection phase
+    Tuple self_reference_adjoint = Tuple(Expr());
+    std::vector<std::vector<Expr>> self_reference_args;
 };
 
 void ReverseAccumulationVisitor::propagate_adjoints(
@@ -94,47 +95,39 @@ void ReverseAccumulationVisitor::propagate_adjoints(
     std::map<std::string, Function> env = find_transitive_calls(output.function());
     std::vector<std::string> order =
         realization_order({output.function()}, env).first;
-    std::vector<Func> org_funcs;
-    org_funcs.reserve(order.size());
+    std::vector<Func> funcs;
+    funcs.reserve(order.size());
     // Internal::debug(0) << "Sorted Func list:" << "\n";
     // for (const auto &func_name : order) {
     //     Internal::debug(0) << "  . " << func_name << "\n";
     // }
     for (const auto &func_name : order) {
         Func func(env[func_name]);
-        org_funcs.push_back(Func(env[func_name]));
+        funcs.push_back(Func(env[func_name]));
     }
-    internal_assert(org_funcs.size() > 0);
+    internal_assert(funcs.size() > 0);
 
-    std::vector<Func> funcs;
-    funcs.reserve(org_funcs.size());
-    std::vector<std::vector<Expr>> intermediate_version_number;
-    intermediate_version_number.reserve(org_funcs.size());
-    // Preprocess the forward functions and store them into funcs
-    //
-    // Reverse accumulation with self-update is a bit tricky.
-    // The following cases, where the derivatives depend on intermediate values,
-    // are troublesome for our adjoint propagation algorithm:
-    // 1. The derivatives depend on values of previous updates
-    // 2. The derivatives depend on values of current updates in a reduction domain
+    // If the derivatives depend on an in-place overwrite,
+    // and the self reference adjoint is not 0 or 1,
+    // throws an error to the users.
     // For example:
     //
     // f(x) = g(x)
     // f(x) = f(x) * f(x)
+    // f'(x) depends on first f(x)
     //
     // f(x) = 0
     // f(x) = 2 * f(x) + g(r.x)
+    // g'(r.x) depends on intermediate f'(x)
     //
-    // f(x) = g(x)
-    // f(r.x) = f(r.x) * f(r.x) + g(r.x)
-    // f(x) = f(x) * f(x)
+    // This is fine because the self reference adjoint is 1:
+    // f(x) = f(x) + g(r.x)
+    // (when it's 1 all instances of f(x) have the same adjoint)
     //
-    // The issue is that the self reference to f(x) makes propagation to g(x)
-    // receives the wrong adjoints.
-    // Our solution is to declare different intermediate versions of f.
-    // If we need one more version of f, we add an extra dimension to f,
-    // and the intermediate values is stored in the extra dimension.
-    // We rewrite the three cases above to the following:
+    // The issue is that the self reference to f makes propagation to g
+    // using the wrong adjoints.
+    //
+    // The user should rewrite the above updates to the following.
     //
     // f_(x, 0) = g(x)
     // f_(x, 1) = f_(x, 0) * f_(x, 0)
@@ -144,235 +137,258 @@ void ReverseAccumulationVisitor::propagate_adjoints(
     // f_(x, r.x + 1) = 2 * f_(x, r.x) + g(r.x)
     // f(x) = f_(x, r.x.max() + 1)
     //
-    // f_(x, 0) = g(x)
-    // f_(r.x, r.x + 1) = f_(r.x, r.x) * f_(r.x, r.x) + g(r.x)
-    // f_(x, r.x.max() + 2) = f_(x, r.x.max() + 1) * f_(x, r.x.max() + 1)
-    // f(x) = f_(x, r.x.max() + 2)
-    //
-    // The corresponding adjoints are then:
-    //
-    // d_f_(x, 1) += d_f(x)
-    // d_f_(x, 0) += 2 * d_f_(x, 1) * f_(x, 0)
-    // d_g(x) += d_f_(x, 0)
-    //
-    // d_f_(x, r.x + 1) += d_f(x)
-    // d_f_(x, r.x) += 2 * d_f_(x, r.x + 1)
-    // d_g(r.x) += d_f_(x, r.x + 1)
-    //
-    // d_f_(x, r.x + 1) += d_f(x)
-    // d_f_(x, r.x) += 2 * d_f_(x, r.x + 1) * f(x, r.x)
-    // d_g(r.x) += d_f(x, r.x + 1)
-    // d_g(x) += d_f(x, 0)
-    //
-    // TODO: This does not work for reduction domains with predicates yet.
-    //       The versioning trick assume the reduction domain is dense.
-    //       A possible remedy is to create an extra index set which stores
-    //       all visited reduction indices.
-    //       For now we'll just throw an error if we detect predicates.
-    // Setup flags for member functions
-    is_forward_canonicalizing_phase = true;
-    for (int func_id = 0; func_id < (int)org_funcs.size(); func_id++) {
-        const Func &func = org_funcs[func_id];
-        // Number of versions we need to declare for func
-        Expr num_checkpoints = 1;
-        std::vector<Expr> num_checkpoints_list;
-        num_checkpoints_list.reserve(func.num_update_definitions());
-        // +1 for the initial undef of the new function
-        std::vector<Expr> version_number(
-            func.num_update_definitions() + 1, Expr());
+    // We can do the rewrite for the users automatically, but it requires
+    // generating the indirect reference f_, making scheduling these
+    // functions extremely difficult.
+    is_forward_overwrite_detection_phase = true;
+    std::set<FuncKey> non_overwriting_scans;
+    for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
+        const Func &func = funcs[func_id];
+        current_func = func;
+        // Precompute the left hand side intervals for each update
+        // We use this to determine if there's overlaps between the updates
+        std::vector<Box> boxes;
+        boxes.reserve(func.num_update_definitions());
         for (int update_id = 0;
                 update_id < func.num_update_definitions(); update_id++) {
-            // Check case 2 first: is there a non-commutative reduction variable?
-            const std::vector<Expr> &update_args = func.update_args(update_id);
-            Tuple rhs_tuple = func.update_values(update_id);
-            AssociativeOp associative_op =
-                prove_associativity(func.name(),
-                    update_args, rhs_tuple.as_vector());
-            bool is_commutative = associative_op.commutative();
-            if (associative_op.xs.size() == 0 ||
-                    (associative_op.xs.size() == 1 && associative_op.xs[0].var == "")) {
-                // Unary operation is also fine
-                is_commutative = true;
-            }
-            bool is_associative = associative_op.associative();
-
-            bool has_self_reference = false;
-            if (!is_commutative || !is_associative) {
-                // Check case 1: if the derivatives reference to 
-                // previous self in an update
-                // Take the derivative at expression level, the results are
-                // stored in expr_adjoints
-                std::vector<Expr> expr_list;
-                Tuple rhs_tuple =
-                    update_id < 0 ? func.values() : func.update_values(update_id);
-                std::vector<const BaseExprNode *> output_exprs;
-                const std::vector<Expr> &rhs_tuple_vector = rhs_tuple.as_vector();
-                for (const auto &expr : rhs_tuple_vector) {
-                    std::vector<Expr> value_expr_list = sort_expressions(expr);
-                    expr_list.insert(expr_list.end(),
-                        value_expr_list.begin(), value_expr_list.end());
-                    output_exprs.push_back((const BaseExprNode *)expr_list.back().get());
-                }
-
-                // TODO: replace let_var_mapping with Scope
-                // Gather let variables
-                let_var_mapping.clear();
-                let_variables.clear();
-                for (auto it = expr_list.begin(); it != expr_list.end(); it++) {
-                    Expr expr = *it;
-                    if (expr.get()->node_type == IRNodeType::Let) {
-                        const Let *op = expr.as<Let>();
-                        // Assume Let variables are unique
-                        assert(let_var_mapping.find(op->name) == let_var_mapping.end());
-                        let_var_mapping[op->name] = op->value;
-                        let_variables.push_back(op->name);
+            const std::vector<Expr> &args = func.update_args(update_id);
+            std::vector<Interval> intervals;
+            intervals.reserve(args.size());
+            for (int arg_id = 0; arg_id < (int)args.size(); arg_id++) {
+                Scope<Interval> scope;
+                ReductionDomain rdom = extract_rdom(args[arg_id]);
+                if (rdom.defined()) {
+                    const std::vector<ReductionVariable> &rvars = rdom.domain();
+                    for (const auto &r : rvars) {
+                        Expr r_max = simplify(r.min + r.extent + 1);
+                        scope.push(r.var, Interval(r.min, r_max));
                     }
                 }
+                Interval interval = bounds_of_expr_in_scope(args[arg_id], scope);
+                intervals.push_back(interval);
+            }
+            boxes.push_back(Box(intervals));
+        }
+        for (int update_id = 0;
+                update_id < func.num_update_definitions(); update_id++) {
+            // We check for two criteria:
+            // 1. We check if the derivatives
+            //    depend on previous update, and if that particular
+            //    value has been overwritten.
+            // 2. For updates of f with reduction variables,
+            //    unless the derivatives to self reference is 1 or 0,
+            //    we make sure overwritten f' is not used by others.
+            //    We conservatively detect this by distinguish two cases:
+            //    a. If f' is always never being overwritten for all instances of
+            //       the reduction variables
+            //    b. Or if f' is never used by others except itself.
+            //
+            // A few examples:
+            // 
+            // f(x) = f(x) + g(r.x) // good, the self update derivative is 1
+            //
+            // f(x) = 2 * f(x) // good, although the self update derivative is 2,
+            //                    there's no reduction variables
+            //
+            // f(x) = 2 * f(x) + g(r.x) // bad, f'(x) will be used for updating
+            //                             g(r.x) but will be overwritten
+            //
+            // f(x) = f(x) * f(x) // bad, derivative of f(x) depends on previous value
+            //                       which has been overwritten
+            //
+            // f(x, 0) = ...
+            // f(x, 1) = f(x, 0) * f(x, 0) // good, although the derivative depends on
+            //                          // previous value, the updates do not overlap
+            //
+            // f(x, r.x + 1) = 2 * f(x, r.x) + g(r.x) // good,
+            //                                      // f' is never overwritten
+            //
+            // f(x, y) = g(x)
+            // f(x, r.x + 1) = f(x, r.x) * f(x, r.x); // bad, the derivatives
+            //                                           depend on previous updates
+            //
+            // f(x, y, 0) = g(x)
+            // f(x, r.x + 1, 1) = f(x, r.x, 0) * f(x, r.x, 0); // good
+            //
+            // f(x, r.x + 1, r.y + 1) = 2 * f(x, r.x, r.y) + g(r.x) // good
+            //
+            // f(x, r.x + 1, r.x + r.y + 1) = 2 * f(x, r.x, r.y) + g(r.x) // bad
 
-                // Set the output adjoint to 1
-                // We're not really propagating adjoints, just checking if there's
-                // self references
-                for (int i = 0; i < (int)output_exprs.size(); i++) {
-                    expr_adjoints[output_exprs[i]] = 1.f;
+            std::vector<Expr> zeros;
+            Tuple rhs_tuple = func.values();
+            zeros.reserve(rhs_tuple.size());
+            for (int i = 0; i < (int)rhs_tuple.size(); i++) {
+                zeros.push_back(make_const(rhs_tuple[i].type(), 0.0));
+            }
+            self_reference_adjoint = Tuple(zeros);
+            self_reference_args.clear();
+            // Checking 1. here:
+            // Take the derivative at expression level, the results are
+            // stored in expr_adjoints
+            std::vector<Expr> expr_list;
+            Tuple update_tuple = func.update_values(update_id);
+            std::vector<const BaseExprNode *> output_exprs;
+            const std::vector<Expr> &update_tuple_vector = update_tuple.as_vector();
+            for (const auto &expr : update_tuple_vector) {
+                std::vector<Expr> value_expr_list = sort_expressions(expr);
+                expr_list.insert(expr_list.end(),
+                    value_expr_list.begin(), value_expr_list.end());
+                output_exprs.push_back((const BaseExprNode *)expr_list.back().get());
+            }
+
+            // TODO: replace let_var_mapping with Scope
+            // Gather let variables
+            let_var_mapping.clear();
+            let_variables.clear();
+            for (auto it = expr_list.begin(); it != expr_list.end(); it++) {
+                Expr expr = *it;
+                if (expr.get()->node_type == IRNodeType::Let) {
+                    const Let *op = expr.as<Let>();
+                    // Assume Let variables are unique
+                    assert(let_var_mapping.find(op->name) == let_var_mapping.end());
+                    let_var_mapping[op->name] = op->value;
+                    let_variables.push_back(op->name);
                 }
+            }
 
-                // Traverse the expressions in reverse order
-                for (auto it = expr_list.rbegin(); it != expr_list.rend(); it++) {
-                    it->accept(this);
+            // Set the output adjoint to 1
+            // We're not really propagating adjoints, just checking if there's
+            // self references
+            for (int i = 0; i < (int)output_exprs.size(); i++) {
+                expr_adjoints[output_exprs[i]] = 1.f;
+            }
+
+            // Traverse the expressions in reverse order
+            for (auto it = expr_list.rbegin(); it != expr_list.rend(); it++) {
+                it->accept(this);
+            }
+
+            auto error = [&]() {
+                user_error <<
+                    "Can't take the gradients of " << func.name() <<
+                    ", which depend on intermediate values. " <<
+                    "Use a scan (which saves intermediate results) instead.";
+            };
+
+            // For each adjoint expression depositing to a function or image,
+            // check if it references to the function
+            bool adjoints_used_by_others = false;
+            for (const auto &it : expr_adjoints) {
+                Expr target_expr(it.first);
+                bool is_target_func_or_buffer = false;
+                const Call *call_op = target_expr.as<Call>();
+                if (call_op != nullptr) {
+                    is_target_func_or_buffer =
+                        call_op->call_type == Call::Image ||
+                        call_op->call_type == Call::Halide;
                 }
+                Expr expr = it.second;
+                if (is_target_func_or_buffer &&
+                    is_calling_function(func.name(), expr, let_var_mapping)) {
+                    // Self reference might not be bad.
+                    // If we carefully avoid overwriting intermediate values,
+                    // we can still backprop.
+                    // First we check for the pure definition.
+                    // If the pure definition depends on any functions,
+                    // there is no hope since we will overwrite something
+                    Tuple rhs_tuple = func.values();
+                    for (int tuple_id = 0; tuple_id < (int)rhs_tuple.size();
+                            tuple_id++) {
+                        if (is_calling_function(rhs_tuple[tuple_id], let_var_mapping)) {
+                            error();
+                        }
+                    }
+                    // Now we check all previous updates, see if the left hand
+                    // side arguments overlap.
+                    Box current_box = boxes[update_id];
+                    for (int prev_update_id = 0; prev_update_id < update_id;
+                            prev_update_id++) {
+                        // Gather two boxes from current update and previous update
+                        Box prev_box = boxes[prev_update_id];
+                        internal_assert(current_box.size() == prev_box.size());
+                        // If any of the boxes overlap, we need to throw an error
+                        if (boxes_overlap(current_box, prev_box)) {
+                            error();
+                        }
+                    }
+                } 
 
-                // For each adjoint expression, check if it references to the function
-                for (const auto &it : expr_adjoints) {
-                    Expr expr = it.second;
-                    if (is_calling_function(func.name(), expr, let_var_mapping)) {
-                        has_self_reference = true;
+                if (is_target_func_or_buffer && call_op->name != func.name()) {
+                    adjoints_used_by_others = true;
+                }
+            }
+            expr_adjoints.clear();
+
+            // Checking 2. here:
+            bool all_zero_or_one_self_adjoint = true;
+            for (int i = 0; i < (int)self_reference_adjoint.size(); i++) {
+                if (!is_const(self_reference_adjoint[i], 0) &&
+                        !is_const(self_reference_adjoint[i], 1)) {
+                    all_zero_or_one_self_adjoint = false;
+                    break;
+                }
+            }
+            bool has_reduction_var = func.rvars(update_id).size() > 0;
+            if (!all_zero_or_one_self_adjoint && has_reduction_var) {
+                // a. is there any instance of reduction variable such that
+                // the self reference update overwrites itself?
+                // Or, equivalently, for all possible values of the reduction
+                // variables, does the self reference update always
+                // reads from/writes to different locations?
+                // First we determine the ranges of RDoms for 
+                // and_condition_over_domain
+                Scope<Interval> varying;
+                // Loop over lhs & rhs to grab a reduction domain
+                ReductionDomain r;
+                const std::vector<Expr> &update_args = func.update_args(update_id);
+                for (const Expr &expr : update_args) {
+                    r = extract_rdom(expr);
+                    if (r.defined()) {
                         break;
                     }
                 }
-                expr_adjoints.clear();
-            }
-
-            if (has_self_reference || !is_commutative || !is_associative) {
-                // Count the number of versions we need to store
-                // Gather reduction domain
-                std::map<std::string, ReductionVariableInfo> rvars =
-                    gather_rvariables(func.update_values(update_id));
-                Expr new_chkpts = 1;
-                for (const auto &it : rvars) {
-                    const ReductionVariableInfo &info = it.second;
-                    if (info.domain.predicate().defined() &&
-                            !is_const(info.domain.predicate())) {
-                        user_error 
-                            << "Detect predicates when computing derivatives in non commutative or"
-                            << "non associative reduction domain. This is unsupported yet.";
+                if (!r.defined()) {
+                    for (int tuple_id = 0; tuple_id < (int)update_tuple.size();
+                            tuple_id++) {
+                        r = extract_rdom(update_tuple[tuple_id]);
+                        if (r.defined()) {
+                            break;
+                        }
                     }
-                    new_chkpts *= info.extent;
                 }
-                if (rvars.size() > 0) {
-                    version_number[update_id + 1] = num_checkpoints;
+                internal_assert(r.defined());
+                // Go over all self reference call arguments
+                bool is_not_overwritten = true;
+                for (const std::vector<Expr> &self_ref_args : self_reference_args) {
+                    internal_assert(self_ref_args.size() == update_args.size());
+                    Expr not_overwritten_cond = const_true();
+                    for (int arg_id = 0; arg_id < (int)self_ref_args.size(); arg_id++) {
+                        // Are the read from/write to arguments always different?
+                        not_overwritten_cond = simplify(not_overwritten_cond &&
+                            (self_ref_args[arg_id] == update_args[arg_id]));
+                    }
+                    not_overwritten_cond = and_condition_over_domain(
+                        not_overwritten_cond, varying);
+                    // Needs to be true for all self reference
+                    is_not_overwritten = is_not_overwritten &&
+                        (!can_prove(not_overwritten_cond));
                 }
-                new_chkpts = simplify(new_chkpts);
-                num_checkpoints_list.push_back(new_chkpts);
-                num_checkpoints = simplify(num_checkpoints + new_chkpts);
-            } else {
-                num_checkpoints_list.push_back(0);
-            }
-        }
-        if (is_const(num_checkpoints, 1)) {
-            funcs.push_back(func);
-            intermediate_version_number.push_back(
-                std::vector<Expr>(func.num_update_definitions(), Expr()));
-            continue;
-        }
-        // If we need more than one version of func, create a new function
-        // with an extra dimension
-        Func new_func(func.name() + "_chkpt");
-        std::vector<Expr> args;
-        args.reserve(func.args().size() + 1);
-        for (const Var &var : func.args()) {
-            args.push_back(var);
-        }
-        Var v("ver"); // version
-        args.push_back(v);
-        // Initialize with undef
-        if (func.outputs() == 1) {
-            new_func(args) = undef(func.value().type());
-        } else {
-            std::vector<Expr> undefs;
-            undefs.reserve(func.values().size());
-            const std::vector<Expr> &values = func.values().as_vector();
-            for (const Expr &e : values) {
-                undefs.push_back(undef(e.type()));
-            }
-        }
-        // f_(x, 0) = f(x)
-        args.back() = 0;
-        if (func.outputs() == 1) {
-            new_func(args) = func.value();
-        } else {
-            new_func(args) = func.values();
-        }
-        Expr current_chkpt = 0;
-        for (int update_id = 0;
-                update_id < func.num_update_definitions(); update_id++) {
-            // Update checkpoint position
-            Expr new_chkpt =
-                simplify(current_chkpt + num_checkpoints_list[update_id]);
-            Expr rhs_extra_arg;
-            if (is_const(num_checkpoints_list[update_id], 0) ||
-                    is_const(num_checkpoints_list[update_id], 1)) {
-                args.back() = new_chkpt;
-                rhs_extra_arg = current_chkpt;
-            } else {
-                // Loop over the versions of rdoms
-                // f(x, r.x + 1) = f(x, r.x)
-                // First we need to linearize the reduction domain
-                std::map<std::string, ReductionVariableInfo> rvars_info =
-                    gather_rvariables(func.update_values(update_id));
-                std::vector<RVar> rvars = func.rvars(update_id);
-                Expr index = current_chkpt;
-                Expr stride = 1;
-                for (int i = 0; i < (int)rvars.size(); i++) {
-                    auto it = rvars_info.find(rvars[i].name());
-                    internal_assert(it != rvars_info.end());
-                    const ReductionVariableInfo &info = it->second;
-                    RVar r(info.domain, info.index);
-                    index += stride * (r - info.min);
-                    stride *= info.extent;
+
+                // Even if the derivative is overwritten, as long as
+                // we don't use it in this update we are good.
+                // Otherwise we throw an error
+                if (!is_not_overwritten && adjoints_used_by_others) {
+                    error();
                 }
-                args.back() = simplify(index + 1);
-                rhs_extra_arg = index;
+
+                if (is_not_overwritten) {
+                    // This is a non overwriting scan, let's remember it
+                    non_overwriting_scans.insert(FuncKey{func.name(), update_id});
+                }
             }
-            std::vector<Expr> update_values =
-                func.update_values(update_id).as_vector();
-            for (Expr &expr : update_values) {
-                // Replace the call to original function with the new one
-                expr = replace_call_add_argument(
-                    func.name(), new_func, expr, rhs_extra_arg);
-            }
-            if (func.outputs() == 1) {
-                new_func(args) = update_values[0];
-            } else {
-                new_func(args) = Tuple(update_values);
-            }
-            current_chkpt = new_chkpt;
         }
-        // f(x) = f_(x, n)
-        func.function().remove_updates();
-        args.back() = current_chkpt;
-        for (int i = 0; i < func.outputs(); i++) {
-            func.function().definition().values()[i] = 
-                Call::make(new_func.function(), args, i);
-        }
-        // Push both functions into list
-        funcs.push_back(new_func);
-        funcs.push_back(func);
-        intermediate_version_number.push_back(version_number);
-        intermediate_version_number.push_back(
-            std::vector<Expr>(func.num_update_definitions(), Expr()));
     }
-    assert(funcs.size() == intermediate_version_number.size());
-    is_forward_canonicalizing_phase = false;
+    is_forward_overwrite_detection_phase = false;
 
     // Bounds inference
     func_bounds = inference_bounds(output, output_bounds);
@@ -469,12 +485,14 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             current_update_id = update_id;
             FuncKey func_key{func.name(), update_id};
             internal_assert(func_bounds.find(func.name()) != func_bounds.end());
-            current_has_intermediate_rdom = false;
+            // The propagation of adjoints to self reference goes to
+            // current update instead of previous if it's a non overwriting scan
+            is_current_non_overwriting_scan = false;
             if (update_id >= 0) {
-                internal_assert((int)intermediate_version_number[func_id].size() ==
-                    func.num_update_definitions());
-                current_has_intermediate_rdom =
-                    intermediate_version_number[func_id][update_id].defined();
+                auto it = non_overwriting_scans.find(func_key);
+                if (it != non_overwriting_scans.end()) {
+                    is_current_non_overwriting_scan = true;
+                }
             }
 
             // Initialize the next adjoint function by 
@@ -526,7 +544,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                     prev_adjoint_func(update_args) = Tuple(init);
                 }
             };        
-            if (update_id >= 0 && !current_has_intermediate_rdom) {
+            if (update_id >= 0 && !is_current_non_overwriting_scan) {
                 // Delay the masking if we're keeping track of intermediate values
                 // Since in this case we are propagating to current update
                 // instead of previous update.
@@ -594,12 +612,11 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                     it->accept(this);
                 }
             }
-            if (current_has_intermediate_rdom) {
-                // Now, if we use a RDom for keeping track
-                // of intermediate values, the adjoints 
-                // go for current update.
-                // We want to propagate to previous adjoint
-                // with the first element of the RDom.
+            if (is_current_non_overwriting_scan) {
+                // Now, if we detect a non-overwriting scan operation,
+                // the update of adjoints
+                // goes to the current function.
+                // We let the previous adjoint the same as the current one
 
                 FuncKey prev_func_key{func_key.first, func_key.second - 1};
                 // Recreate a new adjoint for previous update
@@ -609,18 +626,9 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 for (const auto &arg : adjoint_func.args()) {
                     args.push_back(arg);
                 }
-                std::vector<Expr> undefs;
-                undefs.reserve(adjoint_func.outputs());
-                std::vector<Expr> values = adjoint_func.values().as_vector();
-                for (const auto &val : values) {
-                    undefs.push_back(undef(val.type()));
-                }
-                prev_adjoint(args) = Tuple(undefs);
-                args.back() =
-                    simplify(intermediate_version_number[func_id][update_id] - 1);
                 std::vector<Expr> calls;
-                calls.reserve(values.size());
-                for (int i = 0; i < (int)values.size(); i++) {
+                calls.reserve(rhs_tuple.size());
+                for (int i = 0; i < (int)rhs_tuple.size(); i++) {
                     calls.push_back(Call::make(
                         adjoint_funcs[func_key].function(), args, i));
                 }
@@ -887,9 +895,25 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
     } else if (op->call_type == Call::Halide ||
                op->call_type == Call::Image) { // Halide function call or Halid buffer
-        if (is_forward_canonicalizing_phase) {
+        // Add Let expressions
+        adjoint = add_let_expression(adjoint, let_var_mapping, let_variables);
+        std::vector<Expr> lhs = op->args;
+        for (int i = 0; i < (int)lhs.size(); i++) {
+            lhs[i] = add_let_expression(lhs[i], let_var_mapping, let_variables);
+        }
+        Expr adjoint_before_canonicalize = adjoint;
+        std::vector<Expr> lhs_before_canonicalize = lhs;
+
+        if (is_forward_overwrite_detection_phase) {
             // Don't need to propagate through function in this phase, we're just
             // checking local derivatives
+            // However, we'll accumulate the derivatives to self reference
+            // for checking if the self update is harmful for gradients
+            if (op->func.same_as(current_func.function().get_contents())) {
+                self_reference_adjoint[op->value_index] = 
+                    simplify(self_reference_adjoint[op->value_index] + adjoint);
+                self_reference_args.push_back(op->args);
+            }
             return;
         }
         if (is_self_referencing_phase) {
@@ -904,14 +928,6 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 return;
             }
         }
-        // Add Let expressions
-        adjoint = add_let_expression(adjoint, let_var_mapping, let_variables);
-        std::vector<Expr> lhs = op->args;
-        for (int i = 0; i < (int)lhs.size(); i++) {
-            lhs[i] = add_let_expression(lhs[i], let_var_mapping, let_variables);
-        }
-        Expr adjoint_before_canonicalize = adjoint;
-        std::vector<Expr> lhs_before_canonicalize = lhs;
 
         // We create different functions for the initial condition and each update
         // When update i uses value from update i-1, we accumulate the
@@ -937,7 +953,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             func_key = func.name() != current_func.name() ?
                        FuncKey{func.name(), func.updates().size() - 1} :
                        FuncKey{func.name(), current_update_id - 1};
-            if (current_has_intermediate_rdom && is_self_referencing_phase) {
+            if (is_current_non_overwriting_scan && is_self_referencing_phase) {
                 func_key = FuncKey{func.name(), current_update_id};
             }
         } else {
@@ -1290,9 +1306,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 gather_rvariables(lhs_arg);
             org_rvar_maps.insert(maps.begin(), maps.end());
         }
-        // If the update is not commutative, we need to flip the 
+        // If the update is a non-commutative or non-associative, we need to flip the 
         // original set of reduction variable
-        if (current_has_intermediate_rdom) {
+        if (is_current_non_overwriting_scan) {
             // For each lhs
             for (auto &lhs_arg : lhs) {
                 // For each original rvar
@@ -2329,30 +2345,26 @@ void test_update() {
 }
 
 void test_nonlinear_update() {
-    Var x("x");
+    Var x("x"), y("y");
     Buffer<float> input(3);
     input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
     Func clamped("clamped");
     Expr clamped_x = Halide::clamp(x, 0, input.width() - 1);
     clamped(x) = input(clamped_x);
     Func update("update");
-    update(x) = clamped(x);
-    update(x) = update(x) * update(x) + clamped(x + 1);
+    update(x, y) = 0.f;
+    update(x, 0) = clamped(x);
+    update(x, 1) = update(x, 0) * update(x, 0) + clamped(x + 1);
     // update(x) = clamp(x)^2 + clamp(x + 1)
     RDom r(0, 3);
     Func loss("loss");
-    loss() += update(r.x);
+    loss() += update(r.x, 1);
     Derivative d = propagate_adjoints(loss);
     Buffer<float> loss_buf = loss.realize();
     // loss = update(0) + update(1) + update(2)
     //      = 1^2 + 2 + 2^2 + 3 + 3^2 + 3 = 1 + 2 + 4 + 3 + 9 + 3 = 22
     CMP(__LINE__, loss_buf(0), 22.f);
 
-    // d loss / d update = 1
-    Buffer<float> d_update_buf = d(update).realize(3);
-    CMP(__LINE__, d_update_buf(0), 1.f);
-    CMP(__LINE__, d_update_buf(1), 1.f);
-    CMP(__LINE__, d_update_buf(2), 1.f);
     Func d_clamped = d(clamped);
     // d_clamp(x) = 2 * clamp(x) * d_update(x) + d_update(x - 1)
     Buffer<float> d_clamped_buf = d_clamped.realize(3);
@@ -2405,19 +2417,64 @@ void test_rdom_conv() {
     CMP(__LINE__, d_kernel(1), 72.f * kernel(0) + 90.f * kernel(1));
 }
 
+void test_horner_polynomial() {
+    Var x("x"), y("y");
+    Buffer<float> coeffs(8);
+    for (int i = 0; i < 8; i++) {
+        coeffs(i) = (i + 1.f);
+    }
+    RDom r(coeffs);
+    Func polynomial("polynomial");
+    Expr fx = x / cast<float>(1023);
+    // Horner's method
+    polynomial(x, y) = 0.f;
+    polynomial(x, coeffs.dim(0).max() - r) =
+        polynomial(x, coeffs.dim(0).max() - r + 1) * fx + coeffs(r);
+
+    RDom rd(0, 1024);
+    Func loss("loss");
+    loss() += polynomial(rd, 0) / 1024.f;
+    Derivative d = propagate_adjoints(loss);
+
+    // poly(7) = coeff(0)
+    // poly(6) = poly(7) * x + coeff(1)
+    // poly(5) = poly(6) * x + coeff(2)
+    // ...
+    // poly(0) = poly(1) * x + coeff(0)
+    // The adjoint is
+    // d_coeffs(0) = \sum_x d_poly(x, 0)
+    // d_coeffs(1) = \sum_x d_poly(x, 1)
+    // ..
+    // and
+    // d_poly(x, 7) = \sum_x 1
+    // d_poly(x, 6) = \sum_x x
+    // d_poly(x, 5) = \sum_x x^2
+    // ...
+    Buffer<float> d_coeffs = d(coeffs).realize(8);
+    for (int i = 0; i < 8; i++) {
+        float d = 0.f;
+        for (int j = 0; j < 1024; j++) {
+            d += std::pow(j / 1023.f, (float)(7 - i));
+        }
+        d /= 1024.f;
+        CMP(__LINE__, d_coeffs(i), d);
+    }
+}
+
 void test_nonlinear_order_dependent_rdom() {
-    Var x("x");
+    Var x("x"), y("y");
     Buffer<float> in(2);
     for (int i = 0; i < 2; i++) {
         in(i) = (i + 2.f);
     }
     RDom r(in);
     Func f;
-    f(x) = in(x);
-    f(x) = f(x) * f(x) + in(r.x);
+    f(x, y) = 0.f;
+    f(x, 0) = in(x);
+    f(x, r.x + 1) = f(x, r.x) * f(x, r.x) + in(r.x);
 
     Func loss("loss");
-    loss() += f(r);
+    loss() += f(r, 2);
     Derivative d = propagate_adjoints(loss);
 
     // Manual backprop
@@ -2445,49 +2502,6 @@ void test_nonlinear_order_dependent_rdom() {
     Buffer<float> d_in = d(in).realize(2);
     CMP(__LINE__, d_in(0), din0);
     CMP(__LINE__, d_in(1), din1);
-}
-
-void test_order_dependent_rdom() {
-    Var x("x");
-    Buffer<float> coeffs(8);
-    for (int i = 0; i < 8; i++) {
-        coeffs(i) = (i + 1.f);
-    }
-    RDom r(coeffs);
-    Func polynomial("polynomial");
-    Expr fx = x / cast<float>(1023);
-    // Horner's method
-    polynomial(x) = 0.f;
-    polynomial(x) = polynomial(x) * fx + coeffs(coeffs.dim(0).max() - r);
-
-    RDom rd(0, 1024);
-    Func loss("loss");
-    loss() += polynomial(rd) / 1024.f;
-    Derivative d = propagate_adjoints(loss);
-
-    // poly(0) = coeff(n)
-    // poly(1) = poly(0) * x + coeff(n-1)
-    // poly(2) = poly(1) * x + coeff(n-2)
-    // ...
-    // poly(n) = poly(n-1) * x + coeff(0)
-    // The adjoint is
-    // d_coeffs(0) = \sum_x d_poly(x, n)
-    // d_coeffs(1) = \sum_x d_poly(x, n-1)
-    // ..
-    // and
-    // d_poly(x, n) = \sum_x 1
-    // d_poly(x, n-1) = \sum_x x
-    // d_poly(x, n-2) = \sum_x x^2
-    // ...
-    Buffer<float> d_coeffs = d(coeffs).realize(8);
-    for (int i = 0; i < 8; i++) {
-        float d = 0.f;
-        for (int j = 0; j < 1024; j++) {
-            d += std::pow(j / 1023.f, (float)i);
-        }
-        d /= 1024.f;
-        CMP(__LINE__, d_coeffs(i), d);
-    }
 }
 
 void test_1d_to_2d() {
@@ -3084,7 +3098,7 @@ void test_rdom_predicate() {
     }
     RDom r(0, 7, 0, 7);
     r.where((r.x - 3)*(r.x - 3) + (r.y - 3)*(r.y - 3) <= 10);
-    Func circle;
+    Func circle("circle");
     circle(x, y) = input(x, y);
     circle(r.x, r.y) *= 2.f;
 
@@ -3093,6 +3107,7 @@ void test_rdom_predicate() {
     loss() += circle(r_full.x, r_full.y);
     Derivative d = propagate_adjoints(loss);
     Func d_input = d(input);
+    print_func(d_input);
     Buffer<float> d_input_buf = d_input.realize(7, 7);
     for (int i = 0; i < 7; i++) {
         for (int j = 0; j < 7; j++) {
@@ -3192,7 +3207,7 @@ void derivative_test() {
     test_update();
     test_nonlinear_update();
     test_rdom_conv();
-    test_order_dependent_rdom();
+    test_horner_polynomial();
     test_nonlinear_order_dependent_rdom();
     test_1d_to_2d();
     test_linear_resampling_1d();

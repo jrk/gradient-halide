@@ -543,6 +543,15 @@ public:
         return found;
     }
 
+    bool find(const Expr &expr,
+              const std::map<std::string, Expr> &let_var_mapping_) {
+        func_name = "";
+        let_var_mapping = &let_var_mapping_;
+        found = false;
+        expr.accept(this);
+        return found;
+    }
+
     void visit(const Variable *var) {
         if (!found) {
             auto it = let_var_mapping->find(var->name);
@@ -553,9 +562,12 @@ public:
     }
 
     void visit(const Call *op) {
-        if (op->name == func_name) {
-            found = true;
-        } else {
+        if (op->call_type == Call::Image || op->call_type == Call::Halide) {
+            if (func_name == "" || op->name == func_name) {
+                found = true;
+            }
+        }
+        if (!found) {
             IRGraphVisitor::visit(op);
         }
     }
@@ -572,50 +584,13 @@ bool is_calling_function(
     return finder.find(func_name, expr, let_var_mapping);
 }
 
-struct CallReplacer : public IRMutator2 {
-public:
-    using IRMutator2::visit;
-    Expr replace(const std::string &func_name_,
-                 const Func &replace_func_,
-                 const Expr &expr,
-                 const Expr &extra_arg_) {
-        func_name = func_name_;
-        replace_func = replace_func_;
-        extra_arg = extra_arg_;
-        return mutate(expr);
-    }
-
-    Expr visit(const Call *op) {
-        if (op->name != func_name) {
-            return IRMutator2::visit(op);
-        }
-
-        std::vector<Expr> new_args(op->args.size());
-        // Mutate the args
-        for (size_t i = 0; i < op->args.size(); i++) {
-            const Expr &old_arg = op->args[i];
-            Expr new_arg = mutate(old_arg);
-            new_args[i] = std::move(new_arg);
-        }
-        new_args.push_back(extra_arg);
-
-        return Call::make(replace_func.function(), new_args,
-            op->value_index);
-    }
-
-    std::string func_name;
-    Func replace_func;
-    Expr extra_arg;
-};
-
-Expr replace_call_add_argument(
-        const std::string &func_name,
-        const Func &replace_func,
+bool is_calling_function(
         const Expr &expr,
-        const Expr &extra_arg) {
-    CallReplacer replacer;
-    return replacer.replace(func_name, replace_func, expr, extra_arg);
+        const std::map<std::string, Expr> &let_var_mapping) {
+    FunctionCallFinder finder;
+    return finder.find(expr, let_var_mapping);
 }
+
 
 } // namespace Internal
 } // namespace Halide

@@ -109,14 +109,11 @@ bool is_calling_function(
     const std::string &func_name, const Expr &expr,
     const std::map<std::string, Expr> &let_var_mapping);
 /**
- * Replace the call and add an extra argument
- * (e.g. f(x) -> g(x, y))
+ * Return true if expr depends on any function or buffer
  */
-Expr replace_call_add_argument(
-    const std::string &func_name,
-    const Func &replace_func,
+bool is_calling_function(
     const Expr &expr,
-    const Expr &extra_arg);
+    const std::map<std::string, Expr> &let_var_mapping);
 
 }
 }
