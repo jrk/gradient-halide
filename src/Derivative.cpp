@@ -1,25 +1,25 @@
 #include "Derivative.h"
 
-#include "DerivativeUtils.h"
 #include "BoundaryConditions.h"
-#include "Simplify.h"
-#include "Substitute.h"
+#include "DerivativeUtils.h"
+#include "Error.h"
+#include "FindCalls.h"
+#include "IREquality.h"
 #include "IRMutator.h"
 #include "IROperator.h"
-#include "IREquality.h"
-#include "FindCalls.h"
 #include "RealizationOrder.h"
-#include "Error.h"
+#include "Simplify.h"
 #include "Solve.h"
+#include "Substitute.h"
 
-#include <iostream>
 #include <cmath>
+#include <iostream>
 
 namespace std {
 inline Halide::float16_t fabs(Halide::float16_t x) {
     return x > Halide::float16_t(0) ? x : -x;
 }
-}
+}  // namespace std
 
 namespace Halide {
 namespace Internal {
@@ -88,13 +88,13 @@ private:
 };
 
 void ReverseAccumulationVisitor::propagate_adjoints(
-        const Func &output,
-        const Func &adjoint,
-        const std::vector<std::pair<Expr, Expr>> &output_bounds) {
+    const Func &output,
+    const Func &adjoint,
+    const std::vector<std::pair<Expr, Expr>> &output_bounds) {
     // Topologically sort the functions
     std::map<std::string, Function> env = find_transitive_calls(output.function());
     std::vector<std::string> order =
-        realization_order({output.function()}, env).first;
+        realization_order({ output.function() }, env).first;
     std::vector<Func> funcs;
     funcs.reserve(order.size());
     // Internal::debug(0) << "Sorted Func list:" << "\n";
@@ -142,7 +142,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
     // functions extremely difficult.
     is_forward_overwrite_detection_phase = true;
     std::set<FuncKey> non_overwriting_scans;
-    for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
+    for (int func_id = 0; func_id < (int) funcs.size(); func_id++) {
         const Func &func = funcs[func_id];
         current_func = func;
         // Precompute the left hand side intervals for each update
@@ -150,11 +150,11 @@ void ReverseAccumulationVisitor::propagate_adjoints(
         std::vector<Box> boxes;
         boxes.reserve(func.num_update_definitions());
         for (int update_id = 0;
-                update_id < func.num_update_definitions(); update_id++) {
+             update_id < func.num_update_definitions(); update_id++) {
             const std::vector<Expr> &args = func.update_args(update_id);
             std::vector<Interval> intervals;
             intervals.reserve(args.size());
-            for (int arg_id = 0; arg_id < (int)args.size(); arg_id++) {
+            for (int arg_id = 0; arg_id < (int) args.size(); arg_id++) {
                 Scope<Interval> scope;
                 ReductionDomain rdom = extract_rdom(args[arg_id]);
                 if (rdom.defined()) {
@@ -170,7 +170,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             boxes.push_back(Box(intervals));
         }
         for (int update_id = 0;
-                update_id < func.num_update_definitions(); update_id++) {
+             update_id < func.num_update_definitions(); update_id++) {
             // We check for two criteria:
             // 1. We check if the derivatives
             //    depend on previous update, and if that particular
@@ -184,7 +184,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             //    b. Or if f' is never used by others except itself.
             //
             // A few examples:
-            // 
+            //
             // f(x) = f(x) + g(r.x) // good, the self update derivative is 1
             //
             // f(x) = 2 * f(x) // good, although the self update derivative is 2,
@@ -217,7 +217,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             std::vector<Expr> zeros;
             Tuple rhs_tuple = func.values();
             zeros.reserve(rhs_tuple.size());
-            for (int i = 0; i < (int)rhs_tuple.size(); i++) {
+            for (int i = 0; i < (int) rhs_tuple.size(); i++) {
                 zeros.push_back(make_const(rhs_tuple[i].type(), 0.0));
             }
             self_reference_adjoint = Tuple(zeros);
@@ -232,8 +232,8 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             for (const auto &expr : update_tuple_vector) {
                 std::vector<Expr> value_expr_list = sort_expressions(expr);
                 expr_list.insert(expr_list.end(),
-                    value_expr_list.begin(), value_expr_list.end());
-                output_exprs.push_back((const BaseExprNode *)expr_list.back().get());
+                                 value_expr_list.begin(), value_expr_list.end());
+                output_exprs.push_back((const BaseExprNode *) expr_list.back().get());
             }
 
             // TODO: replace let_var_mapping with Scope
@@ -254,7 +254,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             // Set the output adjoint to 1
             // We're not really propagating adjoints, just checking if there's
             // self references
-            for (int i = 0; i < (int)output_exprs.size(); i++) {
+            for (int i = 0; i < (int) output_exprs.size(); i++) {
                 expr_adjoints[output_exprs[i]] = 1.f;
             }
 
@@ -264,10 +264,8 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             }
 
             auto error = [&]() {
-                user_error <<
-                    "Can't take the gradients of " << func.name() <<
-                    ", which depend on intermediate values. " <<
-                    "Use a scan (which saves intermediate results) instead.";
+                user_error << "Can't take the gradients of " << func.name() << ", which depend on intermediate values. "
+                           << "Use a scan (which saves intermediate results) instead.";
             };
 
             // For each adjoint expression depositing to a function or image,
@@ -292,8 +290,8 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                     // If the pure definition depends on any functions,
                     // there is no hope since we will overwrite something
                     Tuple rhs_tuple = func.values();
-                    for (int tuple_id = 0; tuple_id < (int)rhs_tuple.size();
-                            tuple_id++) {
+                    for (int tuple_id = 0; tuple_id < (int) rhs_tuple.size();
+                         tuple_id++) {
                         if (is_calling_function(rhs_tuple[tuple_id], let_var_mapping)) {
                             error();
                         }
@@ -302,7 +300,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                     // side arguments overlap.
                     Box current_box = boxes[update_id];
                     for (int prev_update_id = 0; prev_update_id < update_id;
-                            prev_update_id++) {
+                         prev_update_id++) {
                         // Gather two boxes from current update and previous update
                         Box prev_box = boxes[prev_update_id];
                         internal_assert(current_box.size() == prev_box.size());
@@ -311,7 +309,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                             error();
                         }
                     }
-                } 
+                }
 
                 if (is_target_func_or_buffer && call_op->name != func.name()) {
                     adjoints_used_by_others = true;
@@ -321,9 +319,9 @@ void ReverseAccumulationVisitor::propagate_adjoints(
 
             // Checking 2. here:
             bool all_zero_or_one_self_adjoint = true;
-            for (int i = 0; i < (int)self_reference_adjoint.size(); i++) {
+            for (int i = 0; i < (int) self_reference_adjoint.size(); i++) {
                 if (!is_const(self_reference_adjoint[i], 0) &&
-                        !is_const(self_reference_adjoint[i], 1)) {
+                    !is_const(self_reference_adjoint[i], 1)) {
                     all_zero_or_one_self_adjoint = false;
                     break;
                 }
@@ -335,7 +333,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 // Or, equivalently, for all possible values of the reduction
                 // variables, does the self reference update always
                 // reads from/writes to different locations?
-                // First we determine the ranges of RDoms for 
+                // First we determine the ranges of RDoms for
                 // and_condition_over_domain
                 Scope<Interval> varying;
                 // Loop over lhs & rhs to grab a reduction domain
@@ -348,8 +346,8 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                     }
                 }
                 if (!r.defined()) {
-                    for (int tuple_id = 0; tuple_id < (int)update_tuple.size();
-                            tuple_id++) {
+                    for (int tuple_id = 0; tuple_id < (int) update_tuple.size();
+                         tuple_id++) {
                         r = extract_rdom(update_tuple[tuple_id]);
                         if (r.defined()) {
                             break;
@@ -362,19 +360,19 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 for (const std::vector<Expr> &self_ref_args : self_reference_args) {
                     internal_assert(self_ref_args.size() == update_args.size());
                     Expr not_overwritten_cond = const_true();
-                    for (int arg_id = 0; arg_id < (int)self_ref_args.size(); arg_id++) {
+                    for (int arg_id = 0; arg_id < (int) self_ref_args.size(); arg_id++) {
                         // Are the read from/write to arguments always different?
                         not_overwritten_cond = simplify(not_overwritten_cond &&
-                            (self_ref_args[arg_id] == update_args[arg_id]));
+                                                        (self_ref_args[arg_id] == update_args[arg_id]));
                     }
                     not_overwritten_cond = and_condition_over_domain(
                         not_overwritten_cond, varying);
                     // Needs to be true for all self reference
                     is_not_overwritten = is_not_overwritten &&
-                        (!can_prove(not_overwritten_cond));
+                                         (!can_prove(not_overwritten_cond));
                 }
 
-                // Even if the derivative is overwritten, as long as
+                // b. Even if the derivative is overwritten, as long as
                 // we don't use it in this update we are good.
                 // Otherwise we throw an error
                 if (!is_not_overwritten && adjoints_used_by_others) {
@@ -383,7 +381,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
 
                 if (is_not_overwritten) {
                     // This is a non overwriting scan, let's remember it
-                    non_overwriting_scans.insert(FuncKey{func.name(), update_id});
+                    non_overwriting_scans.insert(FuncKey{ func.name(), update_id });
                 }
             }
         }
@@ -394,13 +392,13 @@ void ReverseAccumulationVisitor::propagate_adjoints(
     func_bounds = inference_bounds(output, output_bounds);
 
     // Create a stub for each function and each update to accumulate adjoints.
-    for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
+    for (int func_id = 0; func_id < (int) funcs.size(); func_id++) {
         const Func &func = funcs[func_id];
         for (int update_id = -1;
-                update_id < func.num_update_definitions(); update_id++) {
+             update_id < func.num_update_definitions(); update_id++) {
             Func adjoint_func(
                 func.name() + "_" + std::to_string(update_id + 1) + "_d_def__");
-            bool is_final_output = func_id == (int)funcs.size() - 1 &&
+            bool is_final_output = func_id == (int) funcs.size() - 1 &&
                                    update_id == func.num_update_definitions() - 1;
             std::vector<Var> args = func.args();
             for (auto &arg : args) {
@@ -417,20 +415,20 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                     adjoint_func(args) = make_const(func.values()[0].type(), 0.0);
                 } else {
                     std::vector<Expr> init(func.values().size());
-                    for (int i = 0; i < (int)init.size(); i++) {
+                    for (int i = 0; i < (int) init.size(); i++) {
                         init[i] = make_const(func.values()[i].type(), 0.0);
                     }
                     adjoint_func(args) = Tuple(init);
                 }
             }
-            FuncKey func_key{func.name(), update_id};
+            FuncKey func_key{ func.name(), update_id };
             assert(adjoint_funcs.find(func_key) == adjoint_funcs.end());
             adjoint_funcs[func_key] = adjoint_func;
         }
     }
     // Also create stubs for buffers referenced by the functions
     std::map<std::string, BufferInfo> called_buffers;
-    for (int func_id = 0; func_id < (int)funcs.size(); func_id++) {
+    for (int func_id = 0; func_id < (int) funcs.size(); func_id++) {
         const Func &func = funcs[func_id];
         std::map<std::string, BufferInfo> buffers = find_buffer_calls(func);
         called_buffers.insert(buffers.begin(), buffers.end());
@@ -442,10 +440,9 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             args.push_back(Var());
         }
         adjoint_func(args) = make_const(it.second.type, 0.0);
-        FuncKey func_key{it.first, -1};
+        FuncKey func_key{ it.first, -1 };
         if (adjoint_funcs.find(func_key) != adjoint_funcs.end()) {
-            user_error << "Naming conflict between buffer and function:" <<
-                it.first << "\n";
+            user_error << "Naming conflict between buffer and function:" << it.first << "\n";
         }
         adjoint_funcs[func_key] = adjoint_func;
     }
@@ -455,23 +452,23 @@ void ReverseAccumulationVisitor::propagate_adjoints(
         const Func &func = funcs[func_id];
         current_func = func;
 
-        FuncKey func_key{func.name(), func.num_update_definitions() - 1};
+        FuncKey func_key{ func.name(), func.num_update_definitions() - 1 };
         // Set up boundary condition for the last adjoint
         Func &adjoint_func = adjoint_funcs[func_key];
         const Box &bounds = func_bounds[func.name()];
 
         // Save a pointer to the unbounded def. Useful for scheduling
-        FuncKey unbounded_func_key{func.name() + "_unbounded", func_key.second};
+        FuncKey unbounded_func_key{ func.name() + "_unbounded", func_key.second };
         adjoint_funcs[unbounded_func_key] = adjoint_func;
 
         if (adjoint_func.values().size() == 1) {
             Type type = adjoint_func.values()[0].type();
             adjoint_func = BoundaryConditions::constant_exterior(
                 adjoint_func, make_const(type, 0.0), box_to_vector(bounds),
-                    adjoint_func.name() + "_ce");
+                adjoint_func.name() + "_ce");
         } else {
             std::vector<Expr> values(adjoint_func.values().size());
-            for (int i = 0; i < (int)values.size(); i++) {
+            for (int i = 0; i < (int) values.size(); i++) {
                 values[i] = make_const(adjoint_func.values()[i].type(), 0.0);
             }
             adjoint_func = BoundaryConditions::constant_exterior(
@@ -481,9 +478,9 @@ void ReverseAccumulationVisitor::propagate_adjoints(
 
         // Traverse from the last update to first
         for (int update_id = func.num_update_definitions() - 1;
-                update_id >= -1; update_id--) {
+             update_id >= -1; update_id--) {
             current_update_id = update_id;
-            FuncKey func_key{func.name(), update_id};
+            FuncKey func_key{ func.name(), update_id };
             internal_assert(func_bounds.find(func.name()) != func_bounds.end());
             // The propagation of adjoints to self reference goes to
             // current update instead of previous if it's a non overwriting scan
@@ -495,7 +492,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 }
             }
 
-            // Initialize the next adjoint function by 
+            // Initialize the next adjoint function by
             // propagating the adjoints to next update
             // Example:
             // f(x) = ...
@@ -505,8 +502,8 @@ void ReverseAccumulationVisitor::propagate_adjoints(
             // Need to propagate back to all x while masking 1
             // x -> next_args
             // 1 -> update_args
-            auto mask_previous_update = [&] () {
-                FuncKey prev_func_key{func.name(), update_id - 1};
+            auto mask_previous_update = [&]() {
+                FuncKey prev_func_key{ func.name(), update_id - 1 };
                 Func &prev_adjoint_func = adjoint_funcs[prev_func_key];
                 std::vector<Var> prev_args = prev_adjoint_func.args();
                 std::vector<Expr> update_args = func.update_args(update_id);
@@ -521,7 +518,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 // Check if prev_args are the same as update_args
                 // If they are the same simply set everything to zero
                 bool is_noop = true;
-                for (int i = 0 ; i < (int)prev_args.size(); i++) {
+                for (int i = 0; i < (int) prev_args.size(); i++) {
                     const Variable *update_var = update_args[i].as<Variable>();
                     if (update_var == nullptr || prev_args[i].name() != update_var->name) {
                         is_noop = false;
@@ -538,12 +535,12 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                     prev_adjoint_func(update_args) = make_const(type, 0.0);
                 } else {
                     std::vector<Expr> init(func.values().size());
-                    for (int i = 0; i < (int)init.size(); i++) {
+                    for (int i = 0; i < (int) init.size(); i++) {
                         init[i] = make_const(func.values()[i].type(), 0.0);
                     }
                     prev_adjoint_func(update_args) = Tuple(init);
                 }
-            };        
+            };
             if (update_id >= 0 && !is_current_non_overwriting_scan) {
                 // Delay the masking if we're keeping track of intermediate values
                 // Since in this case we are propagating to current update
@@ -562,7 +559,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 std::vector<Expr> value_expr_list = sort_expressions(expr);
                 expr_list.insert(
                     expr_list.end(), value_expr_list.begin(), value_expr_list.end());
-                output_exprs.push_back((const BaseExprNode *)expr_list.back().get());
+                output_exprs.push_back((const BaseExprNode *) expr_list.back().get());
             }
 
             // TODO: replace let_var_mapping with Scope
@@ -597,13 +594,13 @@ void ReverseAccumulationVisitor::propagate_adjoints(
 
             // We propagate in two phases, the first phase only propagates
             // to self references, the second phase propagates to the rest
-            { // First phase
+            {  // First phase
                 is_self_referencing_phase = true;
                 expr_adjoints.clear();
-                for (int i = 0; i < (int)output_exprs.size(); i++) {
+                for (int i = 0; i < (int) output_exprs.size(); i++) {
                     expr_adjoints[output_exprs[i]] =
                         Call::make(adjoint_funcs[func_key].function(),
-                            update_args, i);
+                                   update_args, i);
                 }
 
                 // Traverse the expressions in reverse order
@@ -618,7 +615,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 // goes to the current function.
                 // We let the previous adjoint the same as the current one
 
-                FuncKey prev_func_key{func_key.first, func_key.second - 1};
+                FuncKey prev_func_key{ func_key.first, func_key.second - 1 };
                 // Recreate a new adjoint for previous update
                 Func prev_adjoint;
                 std::vector<Expr> args;
@@ -628,7 +625,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 }
                 std::vector<Expr> calls;
                 calls.reserve(rhs_tuple.size());
-                for (int i = 0; i < (int)rhs_tuple.size(); i++) {
+                for (int i = 0; i < (int) rhs_tuple.size(); i++) {
                     calls.push_back(Call::make(
                         adjoint_funcs[func_key].function(), args, i));
                 }
@@ -636,13 +633,13 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 adjoint_funcs[prev_func_key] = prev_adjoint;
                 mask_previous_update();
             }
-            { // Second phase
+            {  // Second phase
                 is_self_referencing_phase = false;
                 expr_adjoints.clear();
-                for (int i = 0; i < (int)output_exprs.size(); i++) {
+                for (int i = 0; i < (int) output_exprs.size(); i++) {
                     expr_adjoints[output_exprs[i]] =
                         Call::make(adjoint_funcs[func_key].function(),
-                            update_args, i);
+                                   update_args, i);
                 }
 
                 // Traverse the expressions in reverse order
@@ -656,7 +653,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
 }
 
 void ReverseAccumulationVisitor::accumulate(const Expr &stub, const Expr &adjoint) {
-    const BaseExprNode *stub_ptr = (const BaseExprNode *)stub.get();
+    const BaseExprNode *stub_ptr = (const BaseExprNode *) stub.get();
     if (expr_adjoints.find(stub_ptr) == expr_adjoints.end()) {
         expr_adjoints[stub_ptr] = adjoint;
     } else {
@@ -724,7 +721,7 @@ void ReverseAccumulationVisitor::visit(const Div *op) {
     // d/da a / b = 1 / b
     accumulate(op->a, adjoint / op->b);
     // d/db a / b = - a / b^2
-    accumulate(op->b, - adjoint * op->a / (op->b * op->b));
+    accumulate(op->b, -adjoint * op->a / (op->b * op->b));
 }
 
 void ReverseAccumulationVisitor::visit(const Min *op) {
@@ -733,10 +730,10 @@ void ReverseAccumulationVisitor::visit(const Min *op) {
 
     // d/da min(a, b) = a <= b ? 1 : 0
     accumulate(op->a,
-        select(op->a <= op->b, adjoint, make_const(adjoint.type(), 0.0)));
+               select(op->a <= op->b, adjoint, make_const(adjoint.type(), 0.0)));
     // d/db min(a, b) = b <= a ? 1 : 0
     accumulate(op->b,
-        select(op->b <= op->a, adjoint, make_const(adjoint.type(), 0.0)));
+               select(op->b <= op->a, adjoint, make_const(adjoint.type(), 0.0)));
 }
 
 void ReverseAccumulationVisitor::visit(const Max *op) {
@@ -745,10 +742,10 @@ void ReverseAccumulationVisitor::visit(const Max *op) {
 
     // d/da max(a, b) = a >= b ? 1 : 0
     accumulate(op->a,
-        select(op->a >= op->b, adjoint, make_const(adjoint.type(), 0.0)));
+               select(op->a >= op->b, adjoint, make_const(adjoint.type(), 0.0)));
     // d/db max(a, b) = b >= a ? 1 : 0
     accumulate(op->b,
-        select(op->b >= op->a, adjoint, make_const(adjoint.type(), 0.0)));
+               select(op->b >= op->a, adjoint, make_const(adjoint.type(), 0.0)));
 }
 
 void ReverseAccumulationVisitor::visit(const Let *op) {
@@ -764,10 +761,10 @@ void ReverseAccumulationVisitor::visit(const Select *op) {
 
     // d/db select(a, b, c) = select(a, 1, 0)
     accumulate(op->true_value,
-        select(op->condition, adjoint, make_const(adjoint.type(), 0.0)));
+               select(op->condition, adjoint, make_const(adjoint.type(), 0.0)));
     // d/dc select(a, b, c) = select(a, 0, 1)
     accumulate(op->false_value,
-        select(op->condition, make_const(adjoint.type(), 0.0), adjoint));
+               select(op->condition, make_const(adjoint.type(), 0.0), adjoint));
 }
 
 void ReverseAccumulationVisitor::visit(const Call *op) {
@@ -790,11 +787,11 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             accumulate(op->args[0], adjoint / sqrt(one - op->args[0] * op->args[0]));
         } else if (check_opname(op->name, "cos")) {
             // d/dx cos(x) = -sin(x)
-            accumulate(op->args[0], - adjoint * sin(op->args[0]));
+            accumulate(op->args[0], -adjoint * sin(op->args[0]));
         } else if (check_opname(op->name, "acos")) {
             // d/dx acos(x) = - 1 / sqrt(1 - x^2)
             Expr one = make_const(op->type, 1.0);
-            accumulate(op->args[0], - adjoint / sqrt(one - op->args[0] * op->args[0]));
+            accumulate(op->args[0], -adjoint / sqrt(one - op->args[0] * op->args[0]));
         } else if (check_opname(op->name, "tan")) {
             // d/dx tan(x) = 1 / cos(x)^2
             Expr c = cos(op->args[0]);
@@ -823,7 +820,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             // d/dx acosh(x) = 1 / (sqrt(x - 1) sqrt(x + 1)))
             Expr one = make_const(op->type, 1.0);
             accumulate(op->args[0],
-                adjoint / (sqrt(op->args[0] - one) * sqrt(op->args[0] + one)));
+                       adjoint / (sqrt(op->args[0] - one) * sqrt(op->args[0] + one)));
         } else if (check_opname(op->name, "tanh")) {
             // d/dx tanh(x) = 1 / cosh(x)^2
             Expr c = cosh(op->args[0]);
@@ -848,9 +845,9 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         } else if (check_opname(op->name, "pow")) {
             Expr one = make_const(op->type, 1.0);
             accumulate(op->args[0],
-                adjoint * op->args[1] * pow(op->args[0], op->args[1] - one));
+                       adjoint * op->args[1] * pow(op->args[0], op->args[1] - one));
             accumulate(op->args[1],
-                adjoint * pow(op->args[0], op->args[1]) * log(op->args[0]));
+                       adjoint * pow(op->args[0], op->args[1]) * log(op->args[0]));
         } else if (check_opname(op->name, "fast_inverse")) {
             // d/dx 1/x = -1/x^2
             Expr inv_x = fast_inverse(op->args[0]);
@@ -860,18 +857,17 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             Expr inv_sqrt_x = fast_inverse_sqrt(op->args[0]);
             Expr neg_half = make_const(op->type, -0.5);
             accumulate(op->args[0],
-                neg_half * adjoint * inv_sqrt_x * inv_sqrt_x * inv_sqrt_x);
+                       neg_half * adjoint * inv_sqrt_x * inv_sqrt_x * inv_sqrt_x);
         } else if (op->name == "halide_print") {
             accumulate(op->args[0], make_const(op->type, 0.0));
         } else {
-            internal_error << "The derivative of " << op->name <<
-                " is not implemented.";
+            internal_error << "The derivative of " << op->name << " is not implemented.";
         }
     } else if (op->is_intrinsic()) {
         if (op->is_intrinsic(Call::abs)) {
             accumulate(op->args[0],
-                adjoint*select(op->args[0] > 0,
-                    make_const(op->type, 1.0), make_const(op->type, -1.0)));
+                       adjoint * select(op->args[0] > 0,
+                                        make_const(op->type, 1.0), make_const(op->type, -1.0)));
         } else if (op->is_intrinsic(Call::lerp)) {
             // z = x * (1 - w) + y * w
             // dz/dx = 1 - w
@@ -894,11 +890,11 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
         }
     } else if (op->call_type == Call::Halide ||
-               op->call_type == Call::Image) { // Halide function call or Halid buffer
+               op->call_type == Call::Image) {  // Halide function call or Halid buffer
         // Add Let expressions
         adjoint = add_let_expression(adjoint, let_var_mapping, let_variables);
         std::vector<Expr> lhs = op->args;
-        for (int i = 0; i < (int)lhs.size(); i++) {
+        for (int i = 0; i < (int) lhs.size(); i++) {
             lhs[i] = add_let_expression(lhs[i], let_var_mapping, let_variables);
         }
         Expr adjoint_before_canonicalize = adjoint;
@@ -910,7 +906,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             // However, we'll accumulate the derivatives to self reference
             // for checking if the self update is harmful for gradients
             if (op->func.same_as(current_func.function().get_contents())) {
-                self_reference_adjoint[op->value_index] = 
+                self_reference_adjoint[op->value_index] =
                     simplify(self_reference_adjoint[op->value_index] + adjoint);
                 self_reference_args.push_back(op->args);
             }
@@ -950,18 +946,16 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         FuncKey func_key;
         if (op->func.defined()) {
             Function func(op->func);
-            func_key = func.name() != current_func.name() ?
-                       FuncKey{func.name(), func.updates().size() - 1} :
-                       FuncKey{func.name(), current_update_id - 1};
+            func_key = func.name() != current_func.name() ? FuncKey{ func.name(), func.updates().size() - 1 } : FuncKey{ func.name(), current_update_id - 1 };
             if (is_current_non_overwriting_scan && is_self_referencing_phase) {
-                func_key = FuncKey{func.name(), current_update_id};
+                func_key = FuncKey{ func.name(), current_update_id };
             }
         } else {
-            func_key = FuncKey{op->name, -1};
+            func_key = FuncKey{ op->name, -1 };
         }
         assert(adjoint_funcs.find(func_key) != adjoint_funcs.end());
-        Func& func_to_update = adjoint_funcs[func_key];
-        assert(func_to_update.dimensions() == (int)lhs.size());
+        Func &func_to_update = adjoint_funcs[func_key];
+        assert(func_to_update.dimensions() == (int) lhs.size());
 
         bool debug_flag = false;
 
@@ -982,7 +976,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // current_args are the pure variables
         // current_update_args are the actual updates at left hand side
         Func current_adjoint_func =
-            adjoint_funcs[FuncKey{current_func.name(), current_update_id}];
+            adjoint_funcs[FuncKey{ current_func.name(), current_update_id }];
         std::vector<Var> current_args = current_adjoint_func.args();
         std::vector<Expr> current_update_args;
         if (current_update_id >= 0) {
@@ -1027,7 +1021,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // f'(x, y - 1, z + 1) += g'(x, y, z)
         // Goal: rewrite to
         //  ==> f'(x, y, z) += g'(x, y+1, z-1)
-        // (below we would call g and g' the "current function" and 
+        // (below we would call g and g' the "current function" and
         //  we call f and d_f the "function to update")
         //
         // We do this by set up a new set of variables new_args
@@ -1054,7 +1048,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // Prepare a set of new substitution variables for func_to_update
         std::vector<Var> new_args;
         new_args.reserve(func_to_update.args().size());
-        for (int arg_id = 0; arg_id < (int)func_to_update.args().size(); arg_id++) {
+        for (int arg_id = 0; arg_id < (int) func_to_update.args().size(); arg_id++) {
             new_args.push_back(Var("u" + std::to_string(arg_id) + "_"));
         }
 
@@ -1063,7 +1057,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         std::vector<bool> canonicalized(lhs.size(), false);
         std::set<std::string> canonicalized_vars;
         std::map<std::string, Var> lhs_substitute_map;
-        for (int arg_id = 0; arg_id < (int)lhs.size(); arg_id++) {
+        for (int arg_id = 0; arg_id < (int) lhs.size(); arg_id++) {
             // Gather all pure variables at op->args[arg_id],
             // substitute them with new_args
             // For now only support single pure variable
@@ -1103,7 +1097,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // When we update d_f, we the second n would be replaced by y
         // We need to make sure we also update the call argument to g
         // adjoint is automatically handles in the loop above
-        for (int i = 0; i < (int)lhs.size(); i++) {
+        for (int i = 0; i < (int) lhs.size(); i++) {
             for (const auto &it : lhs_substitute_map) {
                 lhs[i] = substitute(it.first, it.second, lhs[i]);
             }
@@ -1113,13 +1107,12 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // We replace the pure variables inside lhs with RDoms for general scattering
         std::vector<std::pair<Expr, Expr>> bounds;
         bounds.reserve(current_args.size());
-        for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
-            bounds.push_back({
-                current_bounds[arg_id].min,
-                current_bounds[arg_id].max - current_bounds[arg_id].min + 1});
+        for (int arg_id = 0; arg_id < (int) current_args.size(); arg_id++) {
+            bounds.push_back({ current_bounds[arg_id].min,
+                               current_bounds[arg_id].max - current_bounds[arg_id].min + 1 });
         }
         RDom r_bounds(bounds);
-        for (int lhs_id = 0; lhs_id < (int)lhs.size(); lhs_id++) {
+        for (int lhs_id = 0; lhs_id < (int) lhs.size(); lhs_id++) {
             if (!canonicalized[lhs_id]) {
                 Expr lhs_arg = lhs[lhs_id];
                 std::vector<std::string> variables =
@@ -1128,12 +1121,12 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 // For each variable found in lhs_arg, find the corresponding
                 // bound (by looping through all variables) and substitute
                 // with the bound reduction variable.
-                for (int var_id = 0; var_id < (int)variables.size(); var_id++) {
-                    for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
+                for (int var_id = 0; var_id < (int) variables.size(); var_id++) {
+                    for (int arg_id = 0; arg_id < (int) current_args.size(); arg_id++) {
                         if (current_args[arg_id].name() == variables[var_id] &&
-                                canonicalized_vars.find(
-                                    current_args[arg_id].name()) ==
-                                    canonicalized_vars.end()) {
+                            canonicalized_vars.find(
+                                current_args[arg_id].name()) ==
+                                canonicalized_vars.end()) {
                             lhs[lhs_id] = substitute(variables[var_id],
                                                      r_bounds[arg_id],
                                                      lhs[lhs_id]);
@@ -1158,7 +1151,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         std::vector<int> arg_id_to_substitute;
         bounds_subset.reserve(current_args.size());
         arg_id_to_substitute.reserve(current_args.size());
-        for (int arg_id = 0; arg_id < (int)current_args.size(); arg_id++) {
+        for (int arg_id = 0; arg_id < (int) current_args.size(); arg_id++) {
             if (has_variable(adjoint, current_args[arg_id].name())) {
                 const Interval &interval = current_bounds[arg_id];
                 bounds_subset.emplace_back(
@@ -1170,14 +1163,14 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // Create a new RDom to loop over all free variables
         if (arg_id_to_substitute.size() > 0) {
             RDom r(bounds_subset);
-            for (int i = 0; i < (int)arg_id_to_substitute.size(); i++) {
+            for (int i = 0; i < (int) arg_id_to_substitute.size(); i++) {
                 int arg_id = arg_id_to_substitute[i];
                 adjoint = substitute(current_args[arg_id].name(), r[i], adjoint);
             }
         }
 
         // General scattering simplification rules
-        // For each expression in lhs, 
+        // For each expression in lhs,
         // check if it is an expression of a single rvar and
         // spans the same interval of the function's bound
         // if so we can rewrite it back to pure variables
@@ -1192,17 +1185,17 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         // f(4 * r.x + r.y) = g(r.x) + h(4 * r.x + r.y)
         // => f(x) = g(x/4) + h(x)
         std::vector<Var> func_to_update_args = func_to_update.args();
-        for (int i = 0; i < (int)lhs.size(); i++) {
+        for (int i = 0; i < (int) lhs.size(); i++) {
             Expr lhs_arg = substitute_in_all_lets(lhs[i]);
             const Variable *var = lhs_arg.as<Variable>();
             const Add *add = lhs_arg.as<Add>();
             // f(r.x) = g(r.x)
             // => f(x) = g(x)
             if (var != nullptr && var->reduction_domain.defined() &&
-                    var->reduction_domain.split_predicate().size() == 0) {
+                var->reduction_domain.split_predicate().size() == 0) {
                 ReductionDomain rdom = var->reduction_domain;
                 int rvar_id = -1;
-                for (int rid = 0; rid < (int)rdom.domain().size(); rid++) {
+                for (int rid = 0; rid < (int) rdom.domain().size(); rid++) {
                     if (rdom.domain()[rid].var == var->name) {
                         rvar_id = rid;
                         break;
@@ -1219,10 +1212,11 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 Interval r_interval(simplify(rvar.min),
                                     simplify(rvar.min + rvar.extent - 1));
                 if (can_prove(r_interval.min <= t_interval.min &&
-                              r_interval.max >= t_interval.max) && false) {
+                              r_interval.max >= t_interval.max) &&
+                    false) {
                     lhs[i] = func_to_update_args[i];
                     // Replace other occurence of rvar in lhs
-                    for (int j = 0; j < (int)lhs.size(); j++) {
+                    for (int j = 0; j < (int) lhs.size(); j++) {
                         if (j != i) {
                             lhs[j] = simplify(substitute(
                                 rvar.var, func_to_update_args[i], lhs[j]));
@@ -1231,13 +1225,13 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                     adjoint = simplify(substitute(
                         rvar.var, func_to_update_args[i], adjoint));
                 }
-            // f(4 * r.x + r.y) = g(r.x) + h(4 * r.x + r.y)
-            // => f(x) = g(x/4) + h(x)
+                // f(4 * r.x + r.y) = g(r.x) + h(4 * r.x + r.y)
+                // => f(x) = g(x/4) + h(x)
             } else if (add != nullptr &&
-                       ((add->a.as<Mul>() != nullptr && 
-                            add->b.as<Variable>() != nullptr) ||
-                        (add->a.as<Variable>() != nullptr && 
-                            add->b.as<Mul>() != nullptr))) {
+                       ((add->a.as<Mul>() != nullptr &&
+                         add->b.as<Variable>() != nullptr) ||
+                        (add->a.as<Variable>() != nullptr &&
+                         add->b.as<Mul>() != nullptr))) {
                 // Find pattern s * r.x + r.y where r.y.min == 0 && r.y.extent == s
                 Expr a = add->a, b = add->b;
                 if (add->b.as<Mul>() != nullptr) {
@@ -1250,7 +1244,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 assert(mul != nullptr && b_var != nullptr);
                 Expr mul_a = mul->a, mul_b = mul->b;
                 if (mul_a.as<Variable>() != nullptr &&
-                        mul_a.as<Variable>()->reduction_domain.defined()) {
+                    mul_a.as<Variable>()->reduction_domain.defined()) {
                     std::swap(mul_a, mul_b);
                 }
                 const Variable *mul_b_var = mul_b.as<Variable>();
@@ -1263,7 +1257,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 }
 
                 int rvar_id = -1;
-                for (int rid = 0; rid < (int)b_rdom.domain().size(); rid++) {
+                for (int rid = 0; rid < (int) b_rdom.domain().size(); rid++) {
                     if (b_rdom.domain()[rid].var == b_var->name) {
                         rvar_id = rid;
                         break;
@@ -1306,7 +1300,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 gather_rvariables(lhs_arg);
             org_rvar_maps.insert(maps.begin(), maps.end());
         }
-        // If the update is a non-commutative or non-associative, we need to flip the 
+        // If the update is a non-commutative or non-associative, we need to flip the
         // original set of reduction variable
         if (is_current_non_overwriting_scan) {
             // For each lhs
@@ -1340,8 +1334,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
         }
 
         // Sort by index & domain
-        auto cmp_rv = [] (const ReductionVariableInfo &rv0,
-                          const ReductionVariableInfo &rv1) {
+        auto cmp_rv = [](const ReductionVariableInfo &rv0,
+                         const ReductionVariableInfo &rv1) {
             ReductionDomain::Compare cmp;
             if (cmp(rv0.domain, rv1.domain)) {
                 return true;
@@ -1387,20 +1381,21 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             }
             if (!is_const(rdom_predicate)) {
                 for (int arg_id = 0; arg_id <
-                        (int)func_to_update_args.size(); arg_id++) {
+                                     (int) func_to_update_args.size();
+                     arg_id++) {
                     // Substitute new_args back to original variables
                     rdom_predicate = substitute(new_args[arg_id].name(),
-                        func_to_update_args[arg_id], rdom_predicate);
+                                                func_to_update_args[arg_id], rdom_predicate);
                 }
                 merged_r.where(rdom_predicate);
             }
         }
 
         // Substitute new_args back to original variables
-        for (int arg_id = 0; arg_id < (int)func_to_update_args.size(); arg_id++) {
+        for (int arg_id = 0; arg_id < (int) func_to_update_args.size(); arg_id++) {
             for (auto &lhs_arg : lhs) {
                 lhs_arg = substitute(new_args[arg_id].name(),
-                    func_to_update_args[arg_id], lhs_arg);
+                                     func_to_update_args[arg_id], lhs_arg);
             }
             adjoint = substitute_rdom_predicate(
                 new_args[arg_id].name(), func_to_update_args[arg_id], adjoint);
@@ -1417,13 +1412,13 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             debug(0) << "adjoint after canonicalization:" << simplify(adjoint) << "\n";
         }
 
-        // Finally we update the function definitions, 
+        // Finally we update the function definitions,
         // possibly merge with previous updates
         auto can_merge = [&](Func &func_to_update,
                              const std::vector<Expr> &lhs) -> bool {
             if (func_to_update.num_update_definitions() == 0) {
                 // If lhs are not pure variables we can't merge to pure definition
-                for (int i = 0; i < (int)lhs.size(); i++) {
+                for (int i = 0; i < (int) lhs.size(); i++) {
                     if (!equal(lhs[i], func_to_update.args()[i])) {
                         return false;
                     }
@@ -1437,23 +1432,23 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 func_to_update.update_args(update_id);
             assert(prev_lhs.size() == lhs.size());
             // If previous update has different left hand side, don't merge
-            for (int i = 0; i < (int)prev_lhs.size(); i++) {
+            for (int i = 0; i < (int) prev_lhs.size(); i++) {
                 if (!equal(lhs[i], prev_lhs[i])) {
                     return false;
                 }
             }
-            // If previous update has a different set of reduction variables, 
+            // If previous update has a different set of reduction variables,
             // don't merge
             const std::vector<ReductionVariable> &rvars =
                 func_to_update.update(update_id).get_schedule().rvars();
             if (!merged_r.defined()) {
                 return rvars.size() == 0;
             }
-            if ((int)rvars.size() != merged_r.dimensions()) {
+            if ((int) rvars.size() != merged_r.dimensions()) {
                 return false;
             }
 
-            for (int i = 0; i < (int)rvars.size(); i++) {
+            for (int i = 0; i < (int) rvars.size(); i++) {
                 if (!equal(rvars[i].min, merged_r[i].min())) {
                     return false;
                 }
@@ -1473,10 +1468,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 func_to_update(lhs)[op->value_index] += adjoint;
             }
         } else {
-            Definition &def = func_to_update.num_update_definitions() == 0 ?
-                func_to_update.function().definition() :
-                func_to_update.function().update(
-                        func_to_update.num_update_definitions() - 1);
+            Definition &def = func_to_update.num_update_definitions() == 0 ? func_to_update.function().definition() : func_to_update.function().update(func_to_update.num_update_definitions() - 1);
             std::vector<Expr> &values = def.values();
             ReductionDomain rdom;
             for (const auto &val : values) {
@@ -1498,8 +1490,8 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
             } else {
                 const Add *add = values[op->value_index].as<Add>();
                 if (add != nullptr &&
-                        add->b.as<Call>() != nullptr &&
-                        add->b.as<Call>()->is_intrinsic(Call::undef)) {
+                    add->b.as<Call>() != nullptr &&
+                    add->b.as<Call>()->is_intrinsic(Call::undef)) {
                     // Sometimes the expression is an undef for the case of a tuple.
                     // Make sure we don't include the undefs
                     values[op->value_index] = simplify(add->a + adjoint);
@@ -1560,7 +1552,7 @@ Expr forward_accumulation(const Expr &expr,
         Expr body = forward_accumulation(op->body, tangents, scope);
         scope.pop(op->name);
         return Let::make(op->name, op->value,
-                Let::make(fwd_name, value, body));
+                         Let::make(fwd_name, value, body));
     } else if (const Variable *op = expr.as<Variable>()) {
         if (scope.contains(op->name)) {
             return scope.get(op->name);
@@ -1659,12 +1651,12 @@ Expr forward_accumulation(const Expr &expr,
                 Expr a = forward_accumulation(op->args[0], tangents, scope);
                 Expr b = forward_accumulation(op->args[1], tangents, scope);
                 return pow(op->args[0], op->args[1] - 1.f) *
-                    (op->args[1] * a +
-                     // Special hack: if g' == 0 then even if f == 0 the following term is 0
-                     // basically we want -Inf * 0 = 0
-                     select(b == 0.f,
-                         make_const(op->type, 0.0),
-                         op->args[0] * log(op->args[0]) * b));
+                       (op->args[1] * a +
+                        // Special hack: if g' == 0 then even if f == 0 the following term is 0
+                        // basically we want -Inf * 0 = 0
+                        select(b == 0.f,
+                               make_const(op->type, 0.0),
+                               op->args[0] * log(op->args[0]) * b));
             } else if (check_opname(op->name, "fast_inverse")) {
                 // d/dx f(x)^(-1) = -f' * f(x)^(-2)
                 Expr d = forward_accumulation(op->args[0], tangents, scope);
@@ -1679,8 +1671,7 @@ Expr forward_accumulation(const Expr &expr,
             } else if (op->name == "halide_print") {
                 return make_const(op->type, 0.0);
             } else {
-                internal_error << "The derivative of " << op->name <<
-                    " is not implemented.";
+                internal_error << "The derivative of " << op->name << " is not implemented.";
             }
         } else if (op->call_type == Call::Image || op->call_type == Call::Halide) {
             auto it = tangents.find(op->name);
@@ -1735,20 +1726,19 @@ Expr forward_accumulation(const Expr &expr,
     return forward_accumulation(expr, tangents, scope);
 }
 
-} // namespace Internal
-
+}  // namespace Internal
 
 Derivative propagate_adjoints(const Func &output,
                               const Func &adjoint,
                               const std::vector<std::pair<Expr, Expr>> &output_bounds) {
     user_assert(output.dimensions() == adjoint.dimensions())
-      << "output dimensions and adjoint dimensions must match\n";
-    user_assert((int)output_bounds.size() == adjoint.dimensions())
-      << "output_bounds and adjoint dimensions must match\n";
+        << "output dimensions and adjoint dimensions must match\n";
+    user_assert((int) output_bounds.size() == adjoint.dimensions())
+        << "output_bounds and adjoint dimensions must match\n";
 
     Internal::ReverseAccumulationVisitor visitor;
     visitor.propagate_adjoints(output, adjoint, output_bounds);
-    return Derivative{visitor.get_adjoint_funcs()};
+    return Derivative{ visitor.get_adjoint_funcs() };
 }
 
 Derivative propagate_adjoints(const Func &output,
@@ -1770,7 +1760,7 @@ Derivative propagate_adjoints(const Func &output) {
     std::vector<std::pair<Expr, Expr>> output_bounds;
     output_bounds.reserve(output.dimensions());
     for (int i = 0; i < output.dimensions(); i++) {
-        output_bounds.push_back({0, 0});
+        output_bounds.push_back({ 0, 0 });
     }
     return propagate_adjoints(output, adjoint, output_bounds);
 }
@@ -1781,7 +1771,7 @@ Func propagate_tangents(const Func &output,
     std::map<std::string, Internal::Function> env =
         Internal::find_transitive_calls(output.function());
     std::vector<std::string> order =
-        Internal::realization_order({output.function()}, env).first;
+        Internal::realization_order({ output.function() }, env).first;
     std::vector<Func> funcs;
     funcs.reserve(order.size());
     for (const auto &func_name : order) {
@@ -1825,7 +1815,7 @@ void print_func(const Func &func, const PrintFuncOptions &options) {
     // Topologically sort the functions
     std::map<std::string, Internal::Function> env =
         find_transitive_calls(func.function());
-    std::vector<std::string> order = realization_order({func.function()}, env).first;
+    std::vector<std::string> order = realization_order({ func.function() }, env).first;
     std::vector<Func> funcs;
     funcs.reserve(order.size());
     for (const auto &func_name : order) {
@@ -1835,15 +1825,15 @@ void print_func(const Func &func, const PrintFuncOptions &options) {
 
     int lowest_index = 0;
     if (options.depth >= 0) {
-        lowest_index = (int)funcs.size() - 1 - options.depth;
+        lowest_index = (int) funcs.size() - 1 - options.depth;
     }
 
-    for (int i = (int)funcs.size() - 1; i >= lowest_index; i--) {
+    for (int i = (int) funcs.size() - 1; i >= lowest_index; i--) {
         const char *ce = "constant_exterior";
         const char *re = "repeat_edge";
         if (options.ignore_bc && (funcs[i].name().substr(0, strlen(ce)) == std::string(ce) ||
-                funcs[i].name().substr(0, strlen(re)) == std::string(re) ||
-                funcs[i].name().find("_ce") != std::string::npos)) {
+                                  funcs[i].name().substr(0, strlen(re)) == std::string(re) ||
+                                  funcs[i].name().find("_ce") != std::string::npos)) {
             continue;
         }
         if (options.ignore_non_adjoints && funcs[i].name().find("_d_def__") == std::string::npos) {
@@ -1861,13 +1851,12 @@ void print_func(const Func &func, const PrintFuncOptions &options) {
                         e = substitute(it.first, it.second, e);
                     }
                     Internal::debug(0) << Internal::simplify(e);
-                    for (int i = 1; i < (int)func.update_args(update_id).size(); i++) {
+                    for (int i = 1; i < (int) func.update_args(update_id).size(); i++) {
                         Expr e = func.update_args(update_id)[i];
                         for (const auto &it : options.variables) {
                             e = substitute(it.first, it.second, e);
                         }
-                        Internal::debug(0) << ", " <<
-                            Internal::simplify(e);
+                        Internal::debug(0) << ", " << Internal::simplify(e);
                     }
                 }
                 Internal::debug(0) << ") =";
@@ -1885,7 +1874,7 @@ void print_func(const Func &func, const PrintFuncOptions &options) {
                 Internal::debug(0) << "    " << func.name() << "(";
                 if (func.args().size() > 0) {
                     Internal::debug(0) << func.args()[0];
-                    for (int i = 1; i < (int)func.args().size(); i++) {
+                    for (int i = 1; i < (int) func.args().size(); i++) {
                         Internal::debug(0) << ", " << Internal::simplify(func.args()[i]);
                     }
                 }
@@ -1904,10 +1893,8 @@ void print_func(const Func &func, const PrintFuncOptions &options) {
 
             if (rdom.defined()) {
                 Internal::debug(0) << "    RDom:";
-                for (int i = 0; i < (int)rdom.domain().size(); i++) {
-                    Internal::debug(0) << " (" <<
-                        Internal::simplify(rdom.domain()[i].min) << ", " <<
-                        Internal::simplify(rdom.domain()[i].extent) << ")";
+                for (int i = 0; i < (int) rdom.domain().size(); i++) {
+                    Internal::debug(0) << " (" << Internal::simplify(rdom.domain()[i].min) << ", " << Internal::simplify(rdom.domain()[i].extent) << ")";
                 }
                 Internal::debug(0) << "\n";
             }
@@ -1926,42 +1913,42 @@ void test_simple_bounds_inference() {
     Func input("input");
     input(x, y) = 0.0f;
     Func blur_x("blur_x");
-    blur_x(x, y) = input(x, y) + input(x+1, y) + input(x+2, y);
+    blur_x(x, y) = input(x, y) + input(x + 1, y) + input(x + 2, y);
     Func blur_y("blur_y");
-    blur_y(x, y) = blur_x(x, y) + blur_x(x, y+1) + blur_x(x, y+2);
+    blur_y(x, y) = blur_x(x, y) + blur_x(x, y + 1) + blur_x(x, y + 2);
 
-    RDom r(0, width-2, 0, height-2);
+    RDom r(0, width - 2, 0, height - 2);
     Func f_loss("f_loss");
     f_loss(x) += blur_y(r.x, r.y);
 
-    std::map<std::string, Box> bounds = inference_bounds(f_loss, {{0, 0}});
+    std::map<std::string, Box> bounds = inference_bounds(f_loss, { { 0, 0 } });
 
     internal_assert(equal(bounds[blur_y.name()][0].min, 0))
-        << "Expected 0 instead of " << bounds[blur_y.name()][0].min << "\n" ;
-    internal_assert(equal(bounds[blur_y.name()][0].max, width-3))
-        << "Expected " << width-3  << " instead of " << bounds[blur_y.name()][0].max << "\n" ;
+        << "Expected 0 instead of " << bounds[blur_y.name()][0].min << "\n";
+    internal_assert(equal(bounds[blur_y.name()][0].max, width - 3))
+        << "Expected " << width - 3 << " instead of " << bounds[blur_y.name()][0].max << "\n";
     internal_assert(equal(bounds[blur_y.name()][1].min, 0))
-        << "Expected 0 instead of " << bounds[blur_y.name()][1].min << "\n" ;
-    internal_assert(equal(bounds[blur_y.name()][1].max, height-3))
-        << "Expected " << height-3  << " instead of " << bounds[blur_y.name()][1].max << "\n" ;
+        << "Expected 0 instead of " << bounds[blur_y.name()][1].min << "\n";
+    internal_assert(equal(bounds[blur_y.name()][1].max, height - 3))
+        << "Expected " << height - 3 << " instead of " << bounds[blur_y.name()][1].max << "\n";
 
     internal_assert(equal(bounds[blur_x.name()][0].min, 0))
-        << "Expected 0 instead of " << bounds[blur_x.name()][0].min << "\n" ;
-    internal_assert(equal(bounds[blur_x.name()][0].max, width-3))
-        << "Expected " << width-3 << " instead of " << bounds[blur_x.name()][0].max << "\n" ;
+        << "Expected 0 instead of " << bounds[blur_x.name()][0].min << "\n";
+    internal_assert(equal(bounds[blur_x.name()][0].max, width - 3))
+        << "Expected " << width - 3 << " instead of " << bounds[blur_x.name()][0].max << "\n";
     internal_assert(equal(bounds[blur_x.name()][1].min, 0))
-        << "Expected 0 instead of " << bounds[blur_x.name()][1].min << "\n" ;
-    internal_assert(equal(bounds[blur_x.name()][1].max, height-1))
-        << "Expected " << height-1 << " instead of " << bounds[blur_x.name()][1].max << "\n" ;
+        << "Expected 0 instead of " << bounds[blur_x.name()][1].min << "\n";
+    internal_assert(equal(bounds[blur_x.name()][1].max, height - 1))
+        << "Expected " << height - 1 << " instead of " << bounds[blur_x.name()][1].max << "\n";
 
     internal_assert(equal(bounds[input.name()][0].min, 0))
-        << "Expected 0 instead of " << bounds[input.name()][0].min << "\n" ;
-    internal_assert(equal(bounds[input.name()][0].max, width-1))
-        << "Expected " << width-1 << " instead of " << bounds[input.name()][0].max << "\n" ;
+        << "Expected 0 instead of " << bounds[input.name()][0].min << "\n";
+    internal_assert(equal(bounds[input.name()][0].max, width - 1))
+        << "Expected " << width - 1 << " instead of " << bounds[input.name()][0].max << "\n";
     internal_assert(equal(bounds[input.name()][1].min, 0))
-        << "Expected 0 instead of " << bounds[input.name()][1].min << "\n" ;
-    internal_assert(equal(bounds[input.name()][1].max, height-1))
-        << "Expected " << height-1 << " instead of " << bounds[input.name()][1].max << "\n" ;
+        << "Expected 0 instead of " << bounds[input.name()][1].min << "\n";
+    internal_assert(equal(bounds[input.name()][1].max, height - 1))
+        << "Expected " << height - 1 << " instead of " << bounds[input.name()][1].max << "\n";
 }
 
 void test_simple_bounds_inference_update() {
@@ -1975,23 +1962,21 @@ void test_simple_bounds_inference_update() {
     Func f_loss("f_loss");
     f_loss(x) += blur(r.x);
 
-    std::map<std::string, Box> bounds = inference_bounds(f_loss, {{0, 0}});
+    std::map<std::string, Box> bounds = inference_bounds(f_loss, { { 0, 0 } });
 
     internal_assert(equal(bounds[blur.name()][0].min, 0))
-        << "Expected 0 instead of " << bounds[blur.name()][0].min << "\n" ;
+        << "Expected 0 instead of " << bounds[blur.name()][0].min << "\n";
     internal_assert(equal(bounds[blur.name()][0].max, 1))
-        << "Expected 1 instead of " << bounds[blur.name()][0].max << "\n" ;
+        << "Expected 1 instead of " << bounds[blur.name()][0].max << "\n";
     internal_assert(equal(bounds[input.name()][0].min, 0))
-        << "Expected 0 instead of " << bounds[input.name()][0].min << "\n" ;
+        << "Expected 0 instead of " << bounds[input.name()][0].min << "\n";
     internal_assert(equal(bounds[input.name()][0].max, 2))
-        << "Expected 2 instead of " << bounds[input.name()][0].max << "\n" ;
+        << "Expected 2 instead of " << bounds[input.name()][0].max << "\n";
 }
 
-template <typename T>
+template<typename T>
 inline void CMP(int line_number, T x, T target, T threshold = T(1e-6)) {
-    internal_assert(std::fabs((x) - (target)) < threshold) << \
-        "Line " << line_number << ": Expected " <<
-            (target) << " instead of " << (x) << "\n";    
+    internal_assert(std::fabs((x) - (target)) < threshold) << "Line " << line_number << ": Expected " << (target) << " instead of " << (x) << "\n";
 }
 
 inline void CMP(int line_number, float16_t x, float16_t target) {
@@ -2005,7 +1990,7 @@ inline void CMP(int line_number, float16_t x, float16_t target) {
 bool has_non_pure_update(const Func &func) {
     std::map<std::string, Function> env = find_transitive_calls(func.function());
     std::vector<std::string> order =
-        realization_order({func.function()}, env).first;
+        realization_order({ func.function() }, env).first;
     for (const auto &func_name : order) {
         Func func(env[func_name]);
         // For each update
@@ -2022,9 +2007,9 @@ bool has_non_pure_update(const Func &func) {
     return false;
 }
 
-template <typename T>
+template<typename T>
 void test_scalar() {
-    { // Test + - * / const
+    {  // Test + - * / const
         Func x("x");
         x() = Expr(T(5));
         Func y("y");
@@ -2036,7 +2021,7 @@ void test_scalar() {
         // dydx = 2x - 2 - 3 / x^2 = 12 - 3 / 25
         CMP(__LINE__, dydx(0), T(8.0 - 3.0 / 25.0));
     }
-    { // Test special functions
+    {  // Test special functions
         Func x("x");
         x() = Expr(T(0.5));
         Func y("y");
@@ -2101,7 +2086,7 @@ void test_scalar() {
               1.f / (std::sqrt(0.5f) * std::sqrt(2.5f)) +
               1.f / (1.f - 0.5f * 0.5f)));
     }
-    { // Test fast inv
+    {  // Test fast inv
         Func x("x");
         x() = 2.5f;
         Func y("y");
@@ -2109,9 +2094,9 @@ void test_scalar() {
         Derivative d = propagate_adjoints(y);
         Buffer<float> dydx = d(x).realize();
         // dy/dx = -1/x^2 - 1/(2*x^(3/2))
-        CMP(__LINE__, dydx(0), -1.f/(2.5f * 2.5f) - 1.f/(2.f*std::pow(2.5f, 3.f/2.f)), 1e-3f);
+        CMP(__LINE__, dydx(0), -1.f / (2.5f * 2.5f) - 1.f / (2.f * std::pow(2.5f, 3.f / 2.f)), 1e-3f);
     }
-    { // Test floor ceil round trunc
+    {  // Test floor ceil round trunc
         Func x("x");
         x() = Expr(T(2.5));
         Func y("y");
@@ -2120,7 +2105,7 @@ void test_scalar() {
         Buffer<T> dydx = d(x).realize();
         CMP(__LINE__, dydx(0), T(0));
     }
-    { // Test max min
+    {  // Test max min
         Func x("x");
         x() = Expr(T(2.5));
         Func y("y");
@@ -2132,7 +2117,7 @@ void test_scalar() {
         Buffer<T> dydx = d(x).realize();
         CMP(__LINE__, dydx(0), T(8));
     }
-    { // Test abs
+    {  // Test abs
         Func x("x");
         x() = Expr(T(-2.5));
         Func y("y");
@@ -2142,7 +2127,7 @@ void test_scalar() {
         // y = -2x - 3x = -5x, dy/dx = -5
         CMP(__LINE__, dydx(0), T(-5));
     }
-    { // Test select
+    {  // Test select
         Func x("x");
         x() = Expr(T(5));
         Func y("y");
@@ -2152,7 +2137,7 @@ void test_scalar() {
         Buffer<T> dydx = d(x).realize();
         CMP(__LINE__, dydx(0), T(9));
     }
-    { // Test lerp
+    {  // Test lerp
         Func x("x");
         x() = Expr(T(2));
         Func y("y");
@@ -2178,7 +2163,9 @@ void test_scalar() {
 void test_1d_box_no_clamp() {
     Var x("x");
     Buffer<float> input(3);
-    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
+    input(2) = 3.f;
     Func blur("blur");
     blur(x) = input(x) + input(x + 1);
     RDom r(0, 2);
@@ -2194,8 +2181,7 @@ void test_1d_box_no_clamp() {
     // d input(x) = d blur(x) + d blur(x - 1)
     Func d_input = d(input);
     // Every dependency of d_input should only use pure variables in lhs
-    internal_assert(!has_non_pure_update(d_input)) <<
-        "Function has non pure update\n";
+    internal_assert(!has_non_pure_update(d_input)) << "Function has non pure update\n";
     Buffer<float> d_input_buf = d_input.realize(3);
     CMP(__LINE__, d_input_buf(0), d_blur_buf(0));
     CMP(__LINE__, d_input_buf(1), d_blur_buf(0) + d_blur_buf(1));
@@ -2205,7 +2191,8 @@ void test_1d_box_no_clamp() {
 void test_1d_box() {
     Var x("x");
     Buffer<float> input(2);
-    input(0) = 1.f; input(1) = 2.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
     Func clamped("clamped");
     Expr clamped_x = Halide::clamp(x, 0, input.width() - 1);
     clamped(x) = input(clamped_x);
@@ -2225,8 +2212,7 @@ void test_1d_box() {
     // d clamped(x) = d blur(x) + d blur(x - 1)
     Func d_clamped = d(clamped);
     // Every dependency of d_clamped should only use pure variables in lhs
-    internal_assert(!has_non_pure_update(d_clamped)) <<
-        "Function has non pure update\n";
+    internal_assert(!has_non_pure_update(d_clamped)) << "Function has non pure update\n";
     Buffer<float> d_clamped_buf = d_clamped.realize(3);
     CMP(__LINE__, d_clamped_buf(0), d_blur_buf(0));
     CMP(__LINE__, d_clamped_buf(1), d_blur_buf(0) + d_blur_buf(1));
@@ -2246,8 +2232,8 @@ void test_2d_box() {
         }
     }
     Func clamped("clamped");
-    Expr clamped_x = Halide::clamp(x, 0, input.width()-1);
-    Expr clamped_y = Halide::clamp(y, 0, input.height()-1);
+    Expr clamped_x = Halide::clamp(x, 0, input.width() - 1);
+    Expr clamped_y = Halide::clamp(y, 0, input.height() - 1);
     clamped(x, y) = input(clamped_x, clamped_y);
     Func blur_x("blur_x");
     blur_x(x, y) = clamped(x, y) + clamped(x + 1, y) + clamped(x + 2, y);
@@ -2268,8 +2254,7 @@ void test_2d_box() {
             float target = 2 * blur_y_buf(x, y);
             float diff = fabs(d_blur_y_buf(x, y) - target);
             internal_assert(diff < eps)
-                << "Expected d_blur_y(" << x << ", " << y << ") to be " <<
-                    target << " instead of " << d_blur_y_buf(x, y) << "\n" ;
+                << "Expected d_blur_y(" << x << ", " << y << ") to be " << target << " instead of " << d_blur_y_buf(x, y) << "\n";
         }
     }
     // d loss / d blur_x = d blur_y(x, y) + d blur_y(x, y - 1) + d blur_y(x, y + 1)
@@ -2285,14 +2270,12 @@ void test_2d_box() {
             }
             float diff = fabs(d_blur_x_buf(x, y) - target);
             internal_assert(diff < eps)
-                << "Expected d_blur_x(" << x << ", " << y << ") to be " <<
-                target << " instead of " << d_blur_x_buf(x, y) << "\n" ;
+                << "Expected d_blur_x(" << x << ", " << y << ") to be " << target << " instead of " << d_blur_x_buf(x, y) << "\n";
         }
     }
     Func d_clamped = d(clamped);
     // Every dependency of d_clamped should only use pure variables in lhs
-    internal_assert(!has_non_pure_update(d_clamped)) <<
-        "Function has non pure update\n";
+    internal_assert(!has_non_pure_update(d_clamped)) << "Function has non pure update\n";
     Buffer<float> d_clamped_buf = d_clamped.realize(5, 5);
     // d loss / d clamped = d blur_x(x, y) + d blur_x(x - 1, y) + d blur_x(x - 2, y)
     for (int y = 0; y < 5; y++) {
@@ -2306,8 +2289,7 @@ void test_2d_box() {
             }
             float diff = fabs(d_clamped_buf(x, y) - target);
             internal_assert(diff < eps)
-                << "Expected d_clamped(" << x << ", " << y << ") to be " <<
-                target << " instead of " << d_clamped_buf(x, y) << "\n" ;
+                << "Expected d_clamped(" << x << ", " << y << ") to be " << target << " instead of " << d_clamped_buf(x, y) << "\n";
         }
     }
 }
@@ -2315,7 +2297,9 @@ void test_2d_box() {
 void test_update() {
     Var x("x");
     Buffer<float> input(3);
-    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
+    input(2) = 3.f;
     Func clamped("clamped");
     Expr clamped_x = Halide::clamp(x, 0, input.width() - 1);
     clamped(x) = input(clamped_x);
@@ -2336,8 +2320,7 @@ void test_update() {
     CMP(__LINE__, d_blur_buf(2), 2 * blur_buf(2));
     Func d_clamped = d(clamped);
     // Every dependency of d_clamped should only use pure variables in lhs
-    internal_assert(!has_non_pure_update(d_clamped)) <<
-        "Function has non pure update\n";
+    internal_assert(!has_non_pure_update(d_clamped)) << "Function has non pure update\n";
     Buffer<float> d_clamped_buf = d_clamped.realize(3);
     CMP(__LINE__, d_clamped_buf(0), d_blur_buf(0));
     CMP(__LINE__, d_clamped_buf(1), d_blur_buf(0) + d_blur_buf(1));
@@ -2347,7 +2330,9 @@ void test_update() {
 void test_nonlinear_update() {
     Var x("x"), y("y");
     Buffer<float> input(3);
-    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
+    input(2) = 3.f;
     Func clamped("clamped");
     Expr clamped_x = Halide::clamp(x, 0, input.width() - 1);
     clamped(x) = input(clamped_x);
@@ -2376,11 +2361,15 @@ void test_nonlinear_update() {
 void test_rdom_conv() {
     Var x("x");
     Buffer<float> input(4);
-    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f; input(3) = 4.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
+    input(2) = 3.f;
+    input(3) = 4.f;
     Func clamped("clamped");
     clamped(x) = input(Halide::clamp(x, 0, input.width() - 1));
     Buffer<float> kernel(2);
-    kernel(0) = 2.f; kernel(1) = 1.f;
+    kernel(0) = 2.f;
+    kernel(1) = 1.f;
     Func convolved("convolved");
     RDom support(0, 2);
     convolved(x) += clamped(x + support) * kernel(support);
@@ -2397,8 +2386,7 @@ void test_rdom_conv() {
     // d loss / d clamped = d_convolved convolve with flipped kernel
     Func d_clamped = d(clamped);
     // Every dependency of d_clamped should only use pure variables in lhs
-    internal_assert(!has_non_pure_update(d_clamped)) <<
-        "Function has non pure update\n";
+    internal_assert(!has_non_pure_update(d_clamped)) << "Function has non pure update\n";
     Buffer<float> d_clamped_buf = d_clamped.realize(4);
     for (int i = 0; i < 4; i++) {
         float target = d_convolved_buf(i) * kernel(0);
@@ -2454,7 +2442,7 @@ void test_horner_polynomial() {
     for (int i = 0; i < 8; i++) {
         float d = 0.f;
         for (int j = 0; j < 1024; j++) {
-            d += std::pow(j / 1023.f, (float)(7 - i));
+            d += std::pow(j / 1023.f, (float) (7 - i));
         }
         d /= 1024.f;
         CMP(__LINE__, d_coeffs(i), d);
@@ -2507,7 +2495,8 @@ void test_nonlinear_order_dependent_rdom() {
 void test_1d_to_2d() {
     Var x("x"), y("y");
     Buffer<float> input(2);
-    input(0) = 1.f; input(1) = 2.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
     Func output("output");
     output(x, y) = (x + 1.f) * input(y);
 
@@ -2527,8 +2516,7 @@ void test_1d_to_2d() {
 
     Func d_input = d(input);
     // Every dependency of d_input should only use pure variables in lhs
-    internal_assert(!has_non_pure_update(d_input)) <<
-        "Function has non pure update\n";
+    internal_assert(!has_non_pure_update(d_input)) << "Function has non pure update\n";
     Buffer<float> d_input_buf = d_input.realize(2);
     CMP(__LINE__, d_input_buf(0), 10.f);
     CMP(__LINE__, d_input_buf(1), 20.f);
@@ -2538,9 +2526,12 @@ void test_linear_resampling_1d() {
     // f(x) = i1(i0(x)) with linear resampling
     Var x("x");
     Buffer<float> input0(2);
-    input0(0) = 0.3f; input0(1) = 1.8f;
+    input0(0) = 0.3f;
+    input0(1) = 1.8f;
     Buffer<float> input1(3);
-    input1(0) = 1.0f; input1(1) = 2.0f; input1(2) = 4.0f;
+    input1(0) = 1.0f;
+    input1(1) = 2.0f;
+    input1(2) = 4.0f;
     Func clamped0("clamped0");
     clamped0(x) = input0(Halide::clamp(x, 0, input0.width() - 1));
     Func clamped1("clamped1");
@@ -2587,9 +2578,12 @@ void test_linear_resampling_2d() {
     // f(x, y) = i1(i0(x), y) with linear resampling
     Var x("x"), y("y");
     Buffer<float> input0(2, 1);
-    input0(0, 0) = 0.3f; input0(1, 0) = 1.8f;
+    input0(0, 0) = 0.3f;
+    input0(1, 0) = 1.8f;
     Buffer<float> input1(3, 1);
-    input1(0, 0) = 1.0f; input1(1, 0) = 2.0f; input1(2, 0) = 4.0f;
+    input1(0, 0) = 1.0f;
+    input1(1, 0) = 2.0f;
+    input1(2, 0) = 4.0f;
     Func clamped0("clamped0");
     Expr clamped_x0 = Halide::clamp(x, 0, input0.width() - 1);
     Expr clamped_y0 = Halide::clamp(y, 0, input0.height() - 1);
@@ -2628,7 +2622,9 @@ void test_linear_resampling_2d() {
 void test_sparse_update() {
     Var x("x");
     Buffer<float> input(3);
-    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
+    input(2) = 3.f;
     Func f_input("f_input");
     f_input(x) = input(x);
     Func output("output");
@@ -2653,9 +2649,16 @@ void test_sparse_update() {
 void test_histogram() {
     Var x("x");
     Buffer<int> input(4, "input");
-    input(0) = 2; input(1) = 2; input(2) = 1; input(3) = 3;
+    input(0) = 2;
+    input(1) = 2;
+    input(2) = 1;
+    input(3) = 3;
     Buffer<float> k(5, "k");
-    k(0) = 0.5f; k(1) = 1.f; k(2) = 1.5f; k(3) = 2.f; k(4) = 2.5f;
+    k(0) = 0.5f;
+    k(1) = 1.f;
+    k(2) = 1.5f;
+    k(3) = 2.f;
+    k(4) = 2.5f;
     Func output("output");
     output(x) = 0.f;
     RDom r(input);
@@ -2681,7 +2684,9 @@ void test_histogram() {
 void test_rdom_update() {
     Var x("x");
     Buffer<float> input(3);
-    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
+    input(2) = 3.f;
     Func output("output");
     RDom r0(1, 2), r1(3, 4);
     output(x) = input(x);
@@ -2702,7 +2707,8 @@ void test_rdom_update() {
 void test_repeat_edge() {
     Var x("x");
     Buffer<float> input(2);
-    input(0) = 1.f; input(1) = 2.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
     Func clamped = BoundaryConditions::repeat_edge(input);
     Func blur("blur");
     blur(x) = clamped(x) + clamped(x + 1);
@@ -2723,7 +2729,8 @@ void test_repeat_edge() {
 void test_constant_exterior() {
     Var x("x");
     Buffer<float> input(2);
-    input(0) = 1.f; input(1) = 2.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
     Func clamped = BoundaryConditions::constant_exterior(input, 0.f);
     Func blur("blur");
     blur(x) = clamped(x) + clamped(x + 1);
@@ -2744,7 +2751,8 @@ void test_constant_exterior() {
 void test_repeat_image() {
     Var x("x");
     Buffer<float> input(2);
-    input(0) = 1.f; input(1) = 2.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
     Func clamped = BoundaryConditions::repeat_image(input);
     Func blur("blur");
     blur(x) = clamped(x) + clamped(x + 1);
@@ -2765,7 +2773,8 @@ void test_repeat_image() {
 void test_mirror_image() {
     Var x("x");
     Buffer<float> input(2);
-    input(0) = 1.f; input(1) = 2.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
     Func clamped = BoundaryConditions::mirror_image(input);
     Func blur("blur");
     blur(x) = clamped(x) + clamped(x + 1);
@@ -2786,7 +2795,8 @@ void test_mirror_image() {
 void test_mirror_interior() {
     Var x("x");
     Buffer<float> input(2);
-    input(0) = 1.f; input(1) = 2.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
     Func clamped = BoundaryConditions::mirror_interior(input);
     Func blur("blur");
     blur(x) = clamped(x) + clamped(x + 1);
@@ -2860,7 +2870,7 @@ void test_second_order_conv() {
     Buffer<float> d_input_buf = d_input.realize(10);
     CMP(__LINE__, d_input_buf(0), d_conv_buf(0) + d_conv_buf(1));
     for (int i = 1; i < 8; i++) {
-        CMP(__LINE__, d_input_buf(i), d_conv_buf(i+1) + d_conv_buf(i) + d_conv_buf(i-1));
+        CMP(__LINE__, d_input_buf(i), d_conv_buf(i + 1) + d_conv_buf(i) + d_conv_buf(i - 1));
     }
     CMP(__LINE__, d_input_buf(8), d_conv_buf(7) + d_conv_buf(8));
     CMP(__LINE__, d_input_buf(9), d_conv_buf(8));
@@ -2883,7 +2893,8 @@ void test_second_order_conv() {
 void test_implicit_vars() {
     Var x("x");
     Buffer<float> input(2);
-    input(0) = 1.f; input(1) = 2.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
     Func copy("copy");
     copy(_) = input(_);
     RDom r(0, 2);
@@ -2893,15 +2904,13 @@ void test_implicit_vars() {
 
     Func d_input = d(input);
     // Every dependency of d_input should only use pure variables in lhs
-    internal_assert(!has_non_pure_update(d_input)) <<
-        "Function has non pure update\n";
+    internal_assert(!has_non_pure_update(d_input)) << "Function has non pure update\n";
     Buffer<float> d_input_buf = d_input.realize(2);
     CMP(__LINE__, d_input_buf(0), 1.f);
     CMP(__LINE__, d_input_buf(1), 1.f);
     Func d_copy = d(copy);
     // Every dependency of d_copy should only use pure variables in lhs
-    internal_assert(!has_non_pure_update(d_copy)) <<
-        "Function has non pure update\n";
+    internal_assert(!has_non_pure_update(d_copy)) << "Function has non pure update\n";
     Buffer<float> d_copy_buf = d_copy.realize(2);
     CMP(__LINE__, d_copy_buf(0), 1.f);
     CMP(__LINE__, d_copy_buf(1), 1.f);
@@ -2910,7 +2919,9 @@ void test_implicit_vars() {
 void test_tuple() {
     Var x("x");
     Buffer<float> input(3);
-    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
+    input(2) = 3.f;
     Func tuple("tuple");
     tuple(x) = Tuple(input(x), input(x + 1));
     tuple(x) += Tuple(1.f, 1.f);
@@ -2931,8 +2942,7 @@ void test_tuple() {
 
     Func d_tuple = d(tuple);
     // Every dependency of d_tuple should only use pure variables in lhs
-    internal_assert(!has_non_pure_update(d_tuple)) <<
-        "Function has non pure update\n";
+    internal_assert(!has_non_pure_update(d_tuple)) << "Function has non pure update\n";
     Realization d_tuple_buf = d_tuple.realize(2);
     Buffer<float> d_tuple_buf_0 = d_tuple_buf[0];
     Buffer<float> d_tuple_buf_1 = d_tuple_buf[1];
@@ -2943,8 +2953,7 @@ void test_tuple() {
 
     Func d_input = d(input);
     // Every dependency of d_input should only use pure variables in lhs
-    internal_assert(!has_non_pure_update(d_input)) <<
-        "Function has non pure update\n";
+    internal_assert(!has_non_pure_update(d_input)) << "Function has non pure update\n";
     Buffer<float> d_input_buf = d_input.realize(3);
     CMP(__LINE__, d_input_buf(0), 1.f);
     CMP(__LINE__, d_input_buf(1), 2.f);
@@ -2954,7 +2963,9 @@ void test_tuple() {
 void test_floor_ceil() {
     Var x("x");
     Buffer<float> input(3);
-    input(0) = 1.f; input(1) = 2.f; input(2) = 3.f;
+    input(0) = 1.f;
+    input(1) = 2.f;
+    input(2) = 3.f;
     Func floor_output("floor_output");
     floor_output(x) = input(cast<int>(floor(x / 4.f)));
     Func ceil_output("ceil_output");
@@ -2994,8 +3005,7 @@ void test_downsampling() {
     // output(1) = \sum input(5~8)
     Func d_input = d(input);
     // Every dependency of d_tuple should only use pure variables in lhs
-    internal_assert(!has_non_pure_update(d_input)) <<
-        "Function has non pure update\n";
+    internal_assert(!has_non_pure_update(d_input)) << "Function has non pure update\n";
     Buffer<float> d_input_buf = d_input.realize(10);
 
     for (int i = 0; i < 8; i++) {
@@ -3019,8 +3029,7 @@ void test_upsampling() {
     Derivative d = propagate_adjoints(loss);
     Func d_input = d(input);
     // Every dependency of d_tuple should only use pure variables in lhs
-    internal_assert(!has_non_pure_update(d_input)) <<
-        "Function has non pure update\n";
+    internal_assert(!has_non_pure_update(d_input)) << "Function has non pure update\n";
     Buffer<float> d_input_buf = d_input.realize(4);
 
     for (int i = 0; i < 4; i++) {
@@ -3097,7 +3106,7 @@ void test_rdom_predicate() {
         }
     }
     RDom r(0, 7, 0, 7);
-    r.where((r.x - 3)*(r.x - 3) + (r.y - 3)*(r.y - 3) <= 10);
+    r.where((r.x - 3) * (r.x - 3) + (r.y - 3) * (r.y - 3) <= 10);
     Func circle("circle");
     circle(x, y) = input(x, y);
     circle(r.x, r.y) *= 2.f;
@@ -3112,7 +3121,7 @@ void test_rdom_predicate() {
     for (int i = 0; i < 7; i++) {
         for (int j = 0; j < 7; j++) {
             bool in_circle =
-                (i - 3)*(i - 3) + (j - 3)*(j - 3) <= 10;
+                (i - 3) * (i - 3) + (j - 3) * (j - 3) <= 10;
             if (in_circle) {
                 CMP(__LINE__, d_input_buf(i, j), 2.f);
             } else {
@@ -3133,7 +3142,7 @@ void test_forward() {
     output(x) += input(x + r);
     Func d_input("d_input");
     d_input(x) = 1.f;
-    Func d_output = propagate_tangents(output, {{input.name(), d_input}});
+    Func d_output = propagate_tangents(output, { { input.name(), d_input } });
     // d_output(x) = \sum d_input(x + r)
     Buffer<float> d_output_buf = d_output.realize(5);
 
@@ -3180,13 +3189,13 @@ void test_reverse_forward() {
         CMP(__LINE__, d_input_buf(i), d_output_buf(i) + d_output_buf(i - 1));
     }
     CMP(__LINE__, d_input_buf(9), d_output_buf(8));
-    Func d2_output = propagate_tangents(d_output, {{input.name(), d_input}});
+    Func d2_output = propagate_tangents(d_output, { { input.name(), d_input } });
     Buffer<float> d2_output_buf = d2_output.realize(9);
     // d2_output(x) = 2 * (d_input(x) + d_input(x + 1))
     for (int i = 0; i < 9; i++) {
         CMP(__LINE__, d2_output_buf(i), 2.f * (d_input_buf(i) + d_input_buf(i + 1)));
     }
-    Func d2_input = propagate_tangents(d_input, {{input.name(), d_input}});
+    Func d2_input = propagate_tangents(d_input, { { input.name(), d_input } });
     Buffer<float> d2_input_buf = d2_input.realize(10);
     // d2_input(x) = d2_output(x) + d2_output(x - 1)
     CMP(__LINE__, d2_input_buf(0), d2_output_buf(0));
@@ -3235,5 +3244,5 @@ void derivative_test() {
     debug(0) << "Derivative test passed\n";
 }
 
-} // namespace Internal
-} // namespace Halide
+}  // namespace Internal
+}  // namespace Halide
