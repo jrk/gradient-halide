@@ -475,7 +475,7 @@ void ReverseAccumulationVisitor::propagate_adjoints(
                 adjoint_func = BoundaryConditions::constant_exterior(
                     adjoint_func, Tuple(values), box_to_vector(bounds),
                     adjoint_func.name() + "_ce");
-            }            
+            }
         };
         if (non_overwriting_scans.find(func_key) == non_overwriting_scans.end()) {
             add_boundary_condition(func_key);
@@ -921,7 +921,7 @@ void ReverseAccumulationVisitor::visit(const Call *op) {
                 self_reference_adjoint[op->value_index] =
                     simplify(self_reference_adjoint[op->value_index] + adjoint);
                 std::vector<Expr> args = op->args;
-                for (int i = 0; i < (int)args.size(); i++) {
+                for (int i = 0; i < (int) args.size(); i++) {
                     args[i] = add_let_expression(args[i], let_var_mapping, let_variables);
                 }
                 self_reference_args.push_back(args);
