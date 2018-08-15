@@ -905,9 +905,10 @@ class SolveForInterval : public IRVisitor {
                         e = cast_a->value < lt->b;
                     } else {
                         fail();
-                        return;
                     }
-                    cached_solve(e);
+                    if (e.defined()) {
+                        cached_solve(e);
+                    }
                 } else {
                     fail();
                 }
@@ -949,9 +950,10 @@ class SolveForInterval : public IRVisitor {
                         e = cast_a->value > gt->b;
                     } else {
                         fail();
-                        return;
                     }
-                    cached_solve(e);
+                    if (e.defined()) {
+                        cached_solve(e);
+                    }
                 } else {
                     fail();
                 }
@@ -1071,9 +1073,10 @@ class SolveForInterval : public IRVisitor {
                     e = cast_a->value <= le->b;
                 } else {
                     fail();
-                    return;
                 }
-                cached_solve(e);
+                if (!e.defined()) {
+                    cached_solve(e);
+                }
             } else {
                 fail();
             }
@@ -1162,7 +1165,9 @@ class SolveForInterval : public IRVisitor {
                     // what can this be?
                     fail();
                 }
-                cached_solve(e);
+                if (!e.defined()) {
+                    cached_solve(e);
+                }
             } else {
                 fail();
             }
