@@ -6,10 +6,19 @@ Image Processing and Deep Learning in Halide"](https://people.csail.mit.edu/tzum
 
 For build instruction see the original repository (https://github.com/halide/Halide).
 
-For examples on how to use the extensions see the tests in
+For examples on how to use the gradient extensions see the tests in
 [test/correctness/autodiff.cpp](test/correctness/autodiff.cpp),
 a simple polynomial function fitting example in [test/correctness/fit_function.cpp](test/correctness/fit_function.cpp),
 and a more involved lens optimization application in [apps/derivatives/lens.cpp](apps/derivatives/lens.cpp).
+
+For the implementation see [src/Derivative.h](src/Derivative.h),
+[src/Derivative.cpp](src/Derivative.cpp),
+[src/DerivativeUtils.h](src/DerivativeUtils.h),
+[src/DerivativeUtils.cpp](src/DerivativeUtils.cpp).
+
+We also implemented a new autoscheduler which takes a set of output Halide functions
+and automatically schedules all the dependencies. See [src/SimpleAutoSchedule.h] and
+the tests in [src/SimpleAutoSchedule.cpp].
 
 A proper tutorial and the source code for applications demonstrated in the paper
 will come soon.
