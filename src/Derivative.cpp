@@ -2439,7 +2439,6 @@ void test_horner_polynomial() {
     Func loss("loss");
     loss() += polynomial(rd, 0) / 1024.f;
     Derivative d = propagate_adjoints(loss);
-    print_func(d(coeffs));
 
     // poly(7) = coeff(0)
     // poly(6) = poly(7) * x + coeff(1)

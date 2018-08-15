@@ -1074,7 +1074,7 @@ class SolveForInterval : public IRVisitor {
                 } else {
                     fail();
                 }
-                if (!e.defined()) {
+                if (e.defined()) {
                     cached_solve(e);
                 }
             } else {
@@ -1165,7 +1165,7 @@ class SolveForInterval : public IRVisitor {
                     // what can this be?
                     fail();
                 }
-                if (!e.defined()) {
+                if (e.defined()) {
                     cached_solve(e);
                 }
             } else {
