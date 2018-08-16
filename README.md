@@ -17,8 +17,8 @@ For the implementation see [src/Derivative.h](src/Derivative.h),
 [src/DerivativeUtils.cpp](src/DerivativeUtils.cpp).
 
 We also implemented a new autoscheduler which takes a set of output Halide functions
-and automatically schedules all the dependencies. See [src/SimpleAutoSchedule.h] and
-the tests in [src/SimpleAutoSchedule.cpp].
+and automatically schedules all the dependencies. See [src/SimpleAutoSchedule.h](src/SimpleAutoSchedule.h) and
+the tests in [src/SimpleAutoSchedule.cpp](src/SimpleAutoSchedule.cpp).
 
 A proper tutorial and the source code for applications demonstrated in the paper
 will come soon.
