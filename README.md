@@ -25,5 +25,5 @@ the tests in [src/SimpleAutoSchedule.cpp](src/SimpleAutoSchedule.cpp).
 A proper tutorial and the source code for applications demonstrated in the paper
 will come soon.
 
-If you have any questions, issues, bug report, feel free to open an Github issue
+If you have any questions, issues, bug report, feel free to open a Github issue
 or email Tzu-Mao Li (tzumao@mit.edu).
