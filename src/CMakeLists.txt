@@ -285,6 +285,7 @@ set(HEADER_FILES
   CodeGen_Posix.h
   CodeGen_PowerPC.h
   CodeGen_PTX_Dev.h
+  CodeGen_PyTorch.h
   CodeGen_X86.h
   ConciseCasts.h
   CPlusPlusMangle.h
@@ -377,6 +378,7 @@ set(HEADER_FILES
   ScheduleFunctions.h
   Scope.h
   SelectGPUAPI.h
+  SimpleAutoSchedule.h
   Simplify.h
   SimplifySpecializations.h
   SkipStages.h
@@ -453,6 +455,7 @@ add_library(Halide ${HALIDE_LIBRARY_TYPE}
   CodeGen_OpenGLCompute_Dev.cpp
   CodeGen_PowerPC.cpp
   CodeGen_PTX_Dev.cpp
+  CodeGen_PyTorch.cpp
   CodeGen_Posix.cpp
   CodeGen_X86.cpp
   CPlusPlusMangle.cpp
@@ -534,6 +537,7 @@ add_library(Halide ${HALIDE_LIBRARY_TYPE}
   Schedule.cpp
   ScheduleFunctions.cpp
   SelectGPUAPI.cpp
+  SimpleAutoSchedule.cpp
   Simplify.cpp
   SimplifySpecializations.cpp
   SkipStages.cpp
