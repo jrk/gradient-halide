@@ -6,6 +6,8 @@ Image Processing and Deep Learning in Halide"](https://people.csail.mit.edu/tzum
 
 For build instruction see the original repository (https://github.com/halide/Halide).
 
+If you haven't used Halide before, it's probably a good idea to go through the [tutorials](http://halide-lang.org/tutorials/tutorial_introduction.html) first.
+
 For examples on how to use the gradient extensions see the tests in
 [test/correctness/autodiff.cpp](test/correctness/autodiff.cpp),
 a simple polynomial function fitting example in [test/correctness/fit_function.cpp](test/correctness/fit_function.cpp),
