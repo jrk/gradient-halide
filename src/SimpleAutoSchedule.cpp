@@ -910,7 +910,7 @@ void simple_autoschedule_test() {
         conv(x, y, z) = 0.f;
         conv(x, y, z) += buf(x + r.x, y + r.y, z) * k(r.x, r.y);
 
-        debug(0) << "[simple_autoschedule] Test 2D conv in 3D\n.";
+        debug(1) << "[simple_autoschedule] Test 2D conv in 3D\n.";
         simple_autoschedule(conv,
                             {}, // parameters map
                             {{0, 128 - 6},
