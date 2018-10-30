@@ -457,12 +457,6 @@ void Module::compile(const Outputs &output_files_arg) const {
           file, target(), Internal::CodeGen_PyTorch::PyTorchImplementation,
           output_files.c_header_name);
       cg.compile(*this);
-
-      std::ofstream file_header(output_files.pytorch_wrapper_name+".h");
-      Internal::CodeGen_PyTorch cg_header(
-          file_header, target(), Internal::CodeGen_PyTorch::PyTorchHeader,
-          output_files.c_header_name);
-      cg_header.compile(*this);
     }
 }
 
