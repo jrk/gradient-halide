@@ -126,48 +126,6 @@ string type_to_c_type(Type type, bool include_space, bool c_plus_plus = true) {
     return oss.str();
 }
 
-// string type_to_pytorch_tensor(Type type, bool isCuda) {
-//     ostringstream oss;
-//
-//     if (type.is_float()) {
-//         if (type.bits() == 32) {
-//           if(isCuda) {
-//             oss << "THCudaTensor";
-//           } else {
-//             oss << "THFloatTensor";
-//           }
-//         } else if (type.bits() == 64) {
-//           if(isCuda) {
-//             oss << "THCudaDoubleTensor";
-//           } else {
-//             oss << "THDoubleTensor";
-//           }
-//         } else {
-//             user_error << "Can't represent a float with this many bits in C: " << type << "\n";
-//         }
-//     } else if (type.is_int()) {
-//         if (type.bits() == 32) {
-//           if(isCuda) {
-//             oss << "THCudaIntTensor";
-//           } else {
-//             oss << "THIntTensor";
-//           }
-//         } else if (type.bits() == 64) {
-//           if(isCuda) {
-//             oss << "THCudaLongTensor";
-//           } else {
-//             oss << "THLongTensor";
-//           }
-//         } else {
-//             user_error << "Can't represent a float with this many bits in C: " << type << "\n";
-//         }
-//     } else {
-//       user_error << "Type " << type << " not handled by pytorch wrapper" << type << "\n";
-//     }
-//
-//     return oss.str();
-// }
-
 string type_to_pytorch_tensor(Type type, bool isCuda) {
     return "at::Tensor";
 }

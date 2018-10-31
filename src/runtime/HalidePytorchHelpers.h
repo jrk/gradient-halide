@@ -8,11 +8,9 @@
 #include <exception>
 
 #include <torch/extension.h>
+
 #include <HalideBuffer.h>
 #include <HalideRuntimeCuda.h>
-
-// #include "TH/TH.h"
-// #include "THC/THC.h"
 
 #define WEAK __attribute__((weak))
 
@@ -65,25 +63,45 @@ inline std::vector<int> getDims(const at::Tensor tensor) {
   return dims;
 }
 
-// inline Buffer<float> wrap(const at::Tensor &tensor) {
-//   // std::cout << "TType ID " << tensor.type_id() << "\n";
-//   // std::cout << "Scalar type " << tensor.scalar_type() << "\n";
-//   // std::cout << "device " << tensor.device() << "\n";
-//
-//   //get device for GPUs
-//
-//   float* pData  = tensor.data<float>();
-//   // TODO(mgharbi): const data in the buffer
-//   std::vector<int> dims = getDims(tensor);
-//   Buffer<float> buffer(pData, dims);
-//   return buffer;
-// }
 
 template<class scalar_t>
+inline void check_type(at::Tensor &tensor) {
+  AT_ERROR("Scalar type ", tensor.scalar_type(), " not handled by Halide's Pytorch wrapper");
+}
+
+
+#define HL_PT_DEFINE_TYPECHECK(ctype,ttype,_3) \
+  template<> \
+  inline void check_type<ctype>(at::Tensor &tensor) { \
+    AT_ASSERTM(tensor.scalar_type() == at::ScalarType::ttype, "scalar type do not match"); \
+    std::cout << "tensor has proper type " << tensor.scalar_type() << "\n"; \
+  }
+  AT_FORALL_SCALAR_TYPES_EXCEPT_HALF(HL_PT_DEFINE_TYPECHECK)
+#undef HL_PT_DEFINE_TYPECHECK
+
+
+  // TODO(mgharbi): const data in the buffer
+template<class scalar_t>
 inline Buffer<scalar_t> wrap(at::Tensor &tensor) {
+  check_type<scalar_t>(tensor);
   std::vector<int> dims = getDims(tensor);
   scalar_t* pData  = tensor.data<scalar_t>();
-  Buffer<scalar_t> buffer(pData, dims);
+  Buffer<scalar_t> buffer;
+
+  if(tensor.is_cuda()) {
+    buffer = Buffer<scalar_t>(dims);
+    // TODO: device interface no
+    // const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();
+    // int err = buffer.device_wrap_native(cuda_interface, (uint64_t)pData);
+    // if (err != 0) {
+    //   throw "halide_device_wrap failed";
+    // }
+    // buffer.set_device_dirty();
+    std::cout << "cuda not implemented in HL wrap\n";
+  } else {
+    buffer = Buffer<scalar_t>(pData, dims);
+  }
+
   return buffer;
 }
 
