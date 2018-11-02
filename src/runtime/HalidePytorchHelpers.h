@@ -127,14 +127,14 @@ inline Buffer<scalar_t> wrap(at::Tensor &tensor) {
 //   return buffer;
 // }
 
-// typedef struct UserContext {
-//   UserContext(int id, CUcontext *ctx, cudaStream_t* stream) :
-//     device_id(id), cuda_context(ctx), stream(stream) {};
-//
-//   int device_id;
-//   CUcontext *cuda_context;
-//   cudaStream_t *stream;
-// } UserContext;
+typedef struct UserContext {
+  UserContext(int id, CUcontext *ctx, cudaStream_t* stream) :
+    device_id(id), cuda_context(ctx), stream(stream) {};
+
+  int device_id;
+  CUcontext *cuda_context;
+  cudaStream_t *stream;
+} UserContext;
 
 } // namespace Pytorch
 } // namespace Halide
@@ -143,18 +143,19 @@ inline Buffer<scalar_t> wrap(at::Tensor &tensor) {
 // Replace Halide weakly-linked cuda handles
 extern "C" {
 
-// WEAK int halide_cuda_acquire_context(void *user_context, CUcontext *ctx, bool create = true) {
-//   if(user_context != NULL) {
-//     Halide::Pytorch::UserContext *user_ctx = (Halide::Pytorch::UserContext*) user_context;
-//     // std::cerr << "PyWrap get ctx " << *user_ctx->cuda_context << "\n";
-//     *ctx = *user_ctx->cuda_context;
-//   } else {
-//     // std::cerr << "no user context\n";
-//     *ctx = NULL;
-//   }
-//   return 0;
-// }
-//
+#include <cuda.h>
+WEAK int halide_cuda_acquire_context(void *user_context, CUcontext *ctx, bool create = true) {
+  if(user_context != NULL) {
+    Halide::Pytorch::UserContext *user_ctx = (Halide::Pytorch::UserContext*) user_context;
+    // std::cerr << "PyWrap get ctx " << *user_ctx->cuda_context << "\n";
+    *ctx = *user_ctx->cuda_context;
+  } else {
+    // std::cerr << "no user context\n";
+    *ctx = NULL;
+  }
+  return 0;
+}
+
 // WEAK int halide_cuda_get_stream(void *user_context, CUcontext ctx, CUstream *stream) {
 //   if(user_context != NULL) {
 //     Halide::Pytorch::UserContext *user_ctx = (Halide::Pytorch::UserContext*) user_context;

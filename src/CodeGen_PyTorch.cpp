@@ -181,7 +181,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
       continue;
     } else if (args[i].is_buffer()) {
       buffer_args.push_back(args[i]);
-      // if(args[i].is_input()) {
+      // if(args[i].is_input()) { // TODO
       //   stream << "const ";
       // }
       stream 
