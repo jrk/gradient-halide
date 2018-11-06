@@ -12,9 +12,21 @@
 #include <HalideBuffer.h>
 #include <HalideRuntimeCuda.h>
 
+// TODO: if cuda
+
+
+// #include <ATen/Config.h>
+// #if AT_CUDA_ENABLED()
+#include <cuda.h>
+#include <cuda_runtime.h>
+// #endif
+
 #define WEAK __attribute__((weak))
 
 // extern THCState *state;
+#define HLPT_CHECK_CONTIGUOUS(x) AT_ASSERTM(x.is_contiguous(), #x " must be contiguous")
+#define HLPT_CHECK_CUDA(x) AT_ASSERTM(x.type().is_cuda(), #x " must be a CUDA tensor")
+#define HLPT_CHECK_DEVICE(x) AT_ASSERTM(x.type().is_cuda(), #x " must be a CUDA tensor")
 
 using Halide::Runtime::Buffer;
 
@@ -58,7 +70,6 @@ inline std::vector<int> getDims(const at::Tensor tensor) {
   // PyTorch dim order is reverse of Halide
   for(int dim = 0; dim < ndims; ++dim) {
     dims[dim] = tensor.size(ndims-1-dim);
-    std::cout << "  size " << dims[dim] << "\n";
   }
   return dims;
 }
@@ -74,7 +85,6 @@ inline void check_type(at::Tensor &tensor) {
   template<> \
   inline void check_type<ctype>(at::Tensor &tensor) { \
     AT_ASSERTM(tensor.scalar_type() == at::ScalarType::ttype, "scalar type do not match"); \
-    std::cout << "tensor has proper type " << tensor.scalar_type() << "\n"; \
   }
   AT_FORALL_SCALAR_TYPES_EXCEPT_HALF(HL_PT_DEFINE_TYPECHECK)
 #undef HL_PT_DEFINE_TYPECHECK
@@ -88,44 +98,23 @@ inline Buffer<scalar_t> wrap(at::Tensor &tensor) {
   scalar_t* pData  = tensor.data<scalar_t>();
   Buffer<scalar_t> buffer;
 
+  // TODO(mgharbi): how to force Halide to put input/output on GPU?
   if(tensor.is_cuda()) {
+    std::cout << "cuda device\n";
     buffer = Buffer<scalar_t>(dims);
-    // TODO: device interface no
-    // const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();
-    // int err = buffer.device_wrap_native(cuda_interface, (uint64_t)pData);
-    // if (err != 0) {
-    //   throw "halide_device_wrap failed";
-    // }
-    // buffer.set_device_dirty();
-    std::cout << "cuda not implemented in HL wrap\n";
+    // // TODO: device interface no
+    const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();
+    int err = buffer.device_wrap_native(cuda_interface, (uint64_t)pData);
+    if (err != 0) {
+      throw "halide_device_wrap failed";
+    }
+    buffer.set_device_dirty();
   } else {
     buffer = Buffer<scalar_t>(pData, dims);
   }
 
   return buffer;
 }
-
-// template <typename T>
-// inline Buffer<T> wrap(THCudaTensor* tensor) {
-//   const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();
-//
-//   int ndims = get_ndims<T>(state, tensor);
-//   std::vector<int> dims(ndims, 0);
-//   for(int dim = 0; dim < ndims; ++dim) {
-//     dims[dim] = get_size<T>(state, tensor, ndims-1-dim);
-//   }
-//
-//   Buffer<T> buffer(dims);
-//
-//   T* pData  = get_torch_data<T>(state, tensor);
-//   int err = buffer.device_wrap_native(cuda_interface, (uint64_t)pData);
-//   if (err != 0) {
-//     throw "halide_device_wrap failed";
-//   }
-//   buffer.set_device_dirty();
-//
-//   return buffer;
-// }
 
 typedef struct UserContext {
   UserContext(int id, CUcontext *ctx, cudaStream_t* stream) :
@@ -143,41 +132,43 @@ typedef struct UserContext {
 // Replace Halide weakly-linked cuda handles
 extern "C" {
 
-#include <cuda.h>
+CUcontext WEAK context = NULL;
+
 WEAK int halide_cuda_acquire_context(void *user_context, CUcontext *ctx, bool create = true) {
+  // halide_assert(user_context, ctx != NULL);
   if(user_context != NULL) {
     Halide::Pytorch::UserContext *user_ctx = (Halide::Pytorch::UserContext*) user_context;
-    // std::cerr << "PyWrap get ctx " << *user_ctx->cuda_context << "\n";
+    std::cerr << "PyWrap acquire user ctx " << user_ctx << "\n";
     *ctx = *user_ctx->cuda_context;
   } else {
-    // std::cerr << "no user context\n";
+    std::cerr << "no user context, in halide acquire, cuda ctx is " << ctx << "\n";
     *ctx = NULL;
   }
   return 0;
 }
 
-// WEAK int halide_cuda_get_stream(void *user_context, CUcontext ctx, CUstream *stream) {
-//   if(user_context != NULL) {
-//     Halide::Pytorch::UserContext *user_ctx = (Halide::Pytorch::UserContext*) user_context;
-//     // std::cerr << "PyWrap's get stream " <<  *user_ctx->stream << "\n";
-//     *stream = *user_ctx->stream;
-//   } else {
-//     // printf("no user context, using default stream \n");
-//     *stream = 0;
-//   }
-//   return 0;
-// }
-//
-// WEAK int halide_get_gpu_device(void *user_context) {
-//   if(user_context != NULL) {
-//     Halide::Pytorch::UserContext *user_ctx = (Halide::Pytorch::UserContext*) user_context;
-//     // std::cerr << "PyWrap's get gpu device " <<  user_ctx->device_id << "\n";
-//     return user_ctx->device_id;
-//   } else {
-//     // std::cerr << "no user context, using default device \n";
-//     return 0;
-//   }
-// }
+WEAK int halide_cuda_get_stream(void *user_context, CUcontext ctx, CUstream *stream) {
+  if(user_context != NULL) {
+    Halide::Pytorch::UserContext *user_ctx = (Halide::Pytorch::UserContext*) user_context;
+    std::cerr << "PyWrap's get stream " <<  *user_ctx->stream << "\n";
+    *stream = *user_ctx->stream;
+  } else {
+    std::cerr << "no user context, using default stream\n";
+    *stream = 0;
+  }
+  return 0;
+}
+
+WEAK int halide_get_gpu_device(void *user_context) {
+  if(user_context != NULL) {
+    Halide::Pytorch::UserContext *user_ctx = (Halide::Pytorch::UserContext*) user_context;
+    std::cerr << "PyWrap's get gpu device " <<  user_ctx->device_id << "\n";
+    return user_ctx->device_id;
+  } else {
+    std::cerr << "no user context, using default device \n";
+    return 0;
+  }
+}
 
 }  // extern "C"
 
