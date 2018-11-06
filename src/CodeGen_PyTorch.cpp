@@ -138,7 +138,8 @@ CodeGen_PyTorch::CodeGen_PyTorch(ostream &s, Target t, OutputKind output_kind,
     IRPrinter(s), target(t), output_kind(output_kind), cpp_header(cpp_header)
 {
   stream << "#include <torch/extension.h>\n";
-  stream << "#include <ATen/cuda/CUDAContext.h>\n";  // TODO(mgharbi): find a shallower integration with torch cuda, handle no GPU case
+  // TODO(mgharbi): find a shallower integration with torch cuda, handle no GPU case
+  stream << "#include <ATen/cuda/CUDAContext.h>\n";  
   stream << "#include <HalideBuffer.h>\n";
   stream << "#include <HalidePytorchHelpers.h>\n\n";
   stream << "#include \"" << cpp_header << "\"\n\n";
@@ -229,17 +230,15 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
       << "HLPT_CHECK_CONTIGUOUS("
       << print_name(buffer_args[i].name) 
       << ");\n";
-    // TODO(mgharbi): check correct stream and device
-    // } 
-    // else {
-    //   do_indent();
-    //   stream << "if(device_id != " << type_to_pytorch_tensor(buffer_args[i].type, isCuda) << "_getDevice(state, "
-    //          << print_name(buffer_args[i].name) << ")) throw Halide::Pytorch::InvalidDeviceException();\n";
-    // }
+    if(isCuda) {
+      do_indent();
+      stream
+        << "HLPT_CHECK_DEVICE("
+        << print_name(buffer_args[i].name) 
+        << ", device_id);\n";
+    }
   }
   stream << "\n";
-
-  // TODO: check types are valid and match Halide pipeline
 
   do_indent();
   stream << "// Wrap tensors in Halide buffers\n";
@@ -317,6 +316,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
   // }
   // stream << "\n";
 
+  // TODO(mgharbi): this is not very well documented
   if (get_env_variable("FLUSH_MEMOIZE_CACHE") == "1") {
       do_indent();
       stream << "// Flush cache\n";
