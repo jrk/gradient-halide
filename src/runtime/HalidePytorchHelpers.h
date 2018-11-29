@@ -25,7 +25,6 @@ inline std::vector<int> getDims(const at::Tensor tensor) {
   // PyTorch dim order is reverse of Halide
   for(int dim = 0; dim < ndims; ++dim) {
     dims[dim] = tensor.size(ndims-1-dim);
-    std::cout << "  size " << dims[dim] << "\n";
   }
   return dims;
 }
@@ -41,7 +40,6 @@ inline void check_type(at::Tensor &tensor) {
   template<> \
   inline void check_type<ctype>(at::Tensor &tensor) { \
     AT_ASSERTM(tensor.scalar_type() == at::ScalarType::ttype, "scalar type do not match"); \
-    std::cout << "tensor has proper type " << tensor.scalar_type() << "\n"; \
   }
   AT_FORALL_SCALAR_TYPES_EXCEPT_HALF(HL_PT_DEFINE_TYPECHECK)
 #undef HL_PT_DEFINE_TYPECHECK
