@@ -452,7 +452,7 @@ void Module::compile(const Outputs &output_files_arg) const {
     }
     if (!output_files.pytorch_wrapper_name.empty()) {
       debug(1) << "Module.compile(): pytorch_wrapper_name " << output_files.pytorch_wrapper_name << "\n" ;
-      std::ofstream file(output_files.pytorch_wrapper_name+".cpp");
+      std::ofstream file(output_files.pytorch_wrapper_name+".h");
       Internal::CodeGen_PyTorch cg(
           file, target(), Internal::CodeGen_PyTorch::PyTorchImplementation,
           output_files.c_header_name);

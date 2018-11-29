@@ -137,9 +137,20 @@ CodeGen_PyTorch::CodeGen_PyTorch(ostream &s, Target t, OutputKind output_kind,
     std::string cpp_header) :
     IRPrinter(s), target(t), output_kind(output_kind), cpp_header(cpp_header)
 {
+  // TODO(mgharbi): header guard and header / implementation split
   stream << "#include <torch/extension.h>\n";
   stream << "#include <HalideBuffer.h>\n";
+
+  // Conditionally add CUDA features to the pytorch helper
+  if(target.has_feature(Target::CUDA)) {
+    #define HL_PT_CUDA
+  }
   stream << "#include <HalidePytorchHelpers.h>\n\n";
+  if(target.has_feature(Target::CUDA)) {
+    stream << "#include <HalidePytorchCudaHelpers.h>\n\n";
+    #undef HL_PT_CUDA
+  }
+
   stream << "#include \"" << cpp_header << "\"\n\n";
   stream << "using Halide::Runtime::Buffer;\n\n";
 }
@@ -289,6 +300,8 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
     if (i < args.size()-1) stream << ", ";
   }
   stream << ");\n";
+  do_indent();
+  stream << "AT_ASSERTM(err == 0, \"Halide code returned an error\\n\");\n";
   // do_indent();
   // stream << "if (err != 0) throw Halide::Pytorch::CudaRunException();\n";
   // stream << "\n";
@@ -347,15 +360,15 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
   indent -= 2;
   stream << "}\n\n";
 
-  // Pybind interface
-  do_indent();
-  stream << "PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {\n";
-  indent += 2;
-  do_indent();
-  stream << "m.def(\"" << simple_name << "\", &" << simple_name 
-         << "_th_, \"Pytorch wrapper of the Halide pipeline " << simple_name << "\");\n";
-  indent -= 2;
-  stream << "}\n";
+  // // Pybind interface
+  // do_indent();
+  // stream << "PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {\n";
+  // indent += 2;
+  // do_indent();
+  // stream << "m.def(\"" << simple_name << "\", &" << simple_name 
+  //        << "_th_, \"Pytorch wrapper of the Halide pipeline " << simple_name << "\");\n";
+  // indent -= 2;
+  // stream << "}\n";
 
   if (!namespaces.empty()) {
     stream << "\n";
