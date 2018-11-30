@@ -141,19 +141,19 @@ CodeGen_PyTorch::CodeGen_PyTorch(ostream &s, Target t, OutputKind output_kind,
   stream << "#include <torch/extension.h>\n";
   // TODO(mgharbi): find a shallower integration with torch cuda, handle no GPU case
   stream << "#include <ATen/cuda/CUDAContext.h>\n";  
-  stream << "#include <HalideBuffer.h>\n";
+  stream << "#include <HalideBuffer.h>\n\n";
 
   // Conditionally add CUDA features to the pytorch helper
   if(target.has_feature(Target::CUDA)) {
-    #define HL_PT_CUDA
+    stream << "#define HL_PT_CUDA\n";
   }
-  stream << "#include <HalidePytorchHelpers.h>\n\n";
+  stream << "#include <HalidePytorchHelpers.h>\n";
   if(target.has_feature(Target::CUDA)) {
-    stream << "#include <HalidePytorchCudaHelpers.h>\n\n";
-    #undef HL_PT_CUDA
+    stream << "#include <HalidePytorchCudaHelpers.h>\n";
+    stream << "#undef HL_PT_CUDA\n";
   }
 
-  stream << "#include \"" << cpp_header << "\"\n\n";
+  stream << "\n#include \"" << cpp_header << "\"\n\n";
   stream << "using Halide::Runtime::Buffer;\n\n";
 }
 
@@ -241,13 +241,13 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
       << "HLPT_CHECK_CONTIGUOUS("
       << print_name(buffer_args[i].name) 
       << ");\n";
-    if(isCuda) {
-      do_indent();
-      stream
-        << "HLPT_CHECK_DEVICE("
-        << print_name(buffer_args[i].name) 
-        << ", device_id);\n";
-    }
+    // if(isCuda) {
+    //   do_indent();
+    //   stream
+    //     << "HLPT_CHECK_DEVICE("
+    //     << print_name(buffer_args[i].name) 
+    //     << ", device_id);\n";
+    // }
   }
   stream << "\n";
 

@@ -11,13 +11,11 @@
 
 #include <HalideBuffer.h>
 
-// TODO: if cuda
-
-// #include <ATen/Config.h>
-// #if AT_CUDA_ENABLED()
+#ifdef HL_PT_CUDA
+#include <HalideRuntimeCuda.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
-// #endif
+#endif
 
 #define WEAK __attribute__((weak))
 
@@ -29,6 +27,8 @@
 
 namespace Halide {
 namespace Pytorch {
+
+using Halide::Runtime::Buffer;
 
 inline std::vector<int> getDims(const at::Tensor tensor) {
   int ndims = tensor.ndimension();
@@ -66,12 +66,15 @@ inline Buffer<scalar_t> wrap(at::Tensor &tensor) {
 
   // TODO(mgharbi): force Halide to put input/output on GPU?
   if(tensor.is_cuda()) {
-    std::cout << "cuda device\n";
+    #ifdef HL_PT_CUDA
     buffer = Buffer<scalar_t>(dims);
     const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();
     int err = buffer.device_wrap_native(cuda_interface, (uint64_t)pData);
     AT_ASSERTM(err==0,  "halide_device_wrap failed");
     buffer.set_device_dirty();
+    #else
+    AT_ERROR("Trying to feed a CUDA tensor to a CPU Op.")
+    #endif
   } else {
     buffer = Buffer<scalar_t>(pData, dims);
   }
