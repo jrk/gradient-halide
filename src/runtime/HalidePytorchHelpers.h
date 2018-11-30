@@ -1,19 +1,30 @@
 #ifndef HL_PYTORCH_WRAPPER_H
 #define HL_PYTORCH_WRAPPER_H
 
-#include <vector>
+#include <exception>
 #include <iostream>
 #include <string>
 #include <sstream>
-#include <exception>
+#include <vector>
 
 #include <torch/extension.h>
 
 #include <HalideBuffer.h>
 
+// TODO: if cuda
+
+// #include <ATen/Config.h>
+// #if AT_CUDA_ENABLED()
+#include <cuda.h>
+#include <cuda_runtime.h>
+// #endif
+
 #define WEAK __attribute__((weak))
 
-using Halide::Runtime::Buffer;
+// extern THCState *state;
+#define HLPT_CHECK_CONTIGUOUS(x) AT_ASSERTM(x.is_contiguous(), #x " must be contiguous")
+#define HLPT_CHECK_CUDA(x) AT_ASSERTM(x.type().is_cuda(), #x " must be a CUDA tensor")
+#define HLPT_CHECK_DEVICE(x, dev) AT_ASSERTM(x.is_cuda() && x.get_device() == dev, #x " must be a CUDA tensor")
 
 
 namespace Halide {
@@ -45,7 +56,7 @@ inline void check_type(at::Tensor &tensor) {
 #undef HL_PT_DEFINE_TYPECHECK
 
 
-// TODO(mgharbi): const data in the buffer
+// TODO(mgharbi): deal with const data in the buffer
 template<class scalar_t>
 inline Buffer<scalar_t> wrap(at::Tensor &tensor) {
   check_type<scalar_t>(tensor);
@@ -53,19 +64,15 @@ inline Buffer<scalar_t> wrap(at::Tensor &tensor) {
   scalar_t* pData  = tensor.data<scalar_t>();
   Buffer<scalar_t> buffer;
 
+  // TODO(mgharbi): force Halide to put input/output on GPU?
   if(tensor.is_cuda()) {
+    std::cout << "cuda device\n";
     buffer = Buffer<scalar_t>(dims);
-#ifdef HL_PT_CUDA
-    // TODO(mgharbi): device interface no
-    // const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();
-    // int err = buffer.device_wrap_native(cuda_interface, (uint64_t)pData);
-    // if (err != 0) {
-    //   throw "halide_device_wrap failed";
-    // }
-    // buffer.set_device_dirty();
-#else
-    std::cout << "Cuda was not available at compile time for the HL wrap.\n";
-#endif
+    // // TODO: device interface no
+    const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();
+    int err = buffer.device_wrap_native(cuda_interface, (uint64_t)pData);
+    AT_ASSERTM(err==0,  "halide_device_wrap failed");
+    buffer.set_device_dirty();
   } else {
     buffer = Buffer<scalar_t>(pData, dims);
   }

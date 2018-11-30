@@ -136,8 +136,9 @@ void simple_autoschedule(std::vector<Func> &outputs,
         debug(1) << "[simple_autoschedule] largest_dim:" << largest_dim << "\n";
 
         if (output_set.find(func.name()) == output_set.end()) {
-            // Always memoize the function if it's not output
-            func.memoize();
+            // TODO(mgharbi): this should distinguish between internal Funcs and Generator Output params, which
+            // break the memoization
+            // func.memoize();
         }
 
         func.compute_root();

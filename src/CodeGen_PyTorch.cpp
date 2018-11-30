@@ -139,6 +139,8 @@ CodeGen_PyTorch::CodeGen_PyTorch(ostream &s, Target t, OutputKind output_kind,
 {
   // TODO(mgharbi): header guard and header / implementation split
   stream << "#include <torch/extension.h>\n";
+  // TODO(mgharbi): find a shallower integration with torch cuda, handle no GPU case
+  stream << "#include <ATen/cuda/CUDAContext.h>\n";  
   stream << "#include <HalideBuffer.h>\n";
 
   // Conditionally add CUDA features to the pytorch helper
@@ -211,54 +213,43 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
   stream << ") {\n";
   indent += 2;
 
-  // do_indent();
-  // stream << "// Grab references to contiguous memory\n";
-  // for (size_t i = 0; i < buffer_args.size(); i++) {
-  //   // Get the device id of one of the buffers
-  //   if (isCuda) {
-  //     if (i == 0) {
-  //       do_indent();
-  //       stream << "int device_id = " << type_to_pytorch_tensor(buffer_args[i].type, isCuda) << "_getDevice(state, "
-  //       // stream << "int device_id = THCudaTensor_getDevice(state, "
-  //              << print_name(buffer_args[i].name) << ");\n";
-  //       do_indent();
-  //       stream << "CUcontext ctx = 0;\n";
-  //       do_indent();
-  //       stream << "CUresult res = cuCtxGetCurrent(&ctx);\n";
-  //       do_indent();
-  //       stream << "if(res != 0) throw Halide::Pytorch::CudaContextException();\n";
-  //       do_indent();
-  //       stream << "cudaStream_t stream = THCState_getCurrentStreamOnDevice(state, device_id);\n";
-  //       do_indent();
-  //       stream << "Halide::Pytorch::UserContext user_ctx(device_id, &ctx, &stream);\n";
-  //       do_indent();
-  //       stream << "void* __user_context = (void*) &user_ctx;\n\n";
-  //     } 
-  //     else {
-  //       do_indent();
-  //       stream << "if(device_id != " << type_to_pytorch_tensor(buffer_args[i].type, isCuda) << "_getDevice(state, "
-  //              << print_name(buffer_args[i].name) << ")) throw Halide::Pytorch::InvalidDeviceException();\n";
-  //     }
-  //   }
-  //
-  //   do_indent();
-  //   stream
-  //     << print_name(buffer_args[i].name) 
-  //     << " = "
-  //     << type_to_pytorch_tensor(buffer_args[i].type, isCuda)
-  //     << "_newContiguous(";
-  //   if(isCuda) {
-  //     stream << "state, ";
-  //   }
-  //
-  //   stream
-  //     << print_name(buffer_args[i].name) 
-  //     << ");\n"
-  //     ;
-  // }
-  // stream << "\n";
+  do_indent();
+  stream << "// Setup CUDA\n";
+  if (isCuda) {
+    do_indent();
+    stream << "int device_id = at::cuda::current_device();\n";
+    do_indent();
+    stream << "CUcontext ctx = 0;\n";
+    do_indent();
+    stream << "CUresult res = cuCtxGetCurrent(&ctx);\n";
+    do_indent();
+    // stream << "if(res != 0) throw Halide::Pytorch::CudaContextException();\n";
+    stream << "AT_ASSERTM(res == 0, \"Could not acquire CUDA context\");\n";
+    do_indent();
+    stream << "cudaStream_t stream = at::cuda::getCurrentCUDAStream(device_id);\n";
+    do_indent();
+    stream << "Halide::Pytorch::UserContext user_ctx(device_id, &ctx, &stream);\n";
+    do_indent();
+    stream << "void* __user_context = (void*) &user_ctx;\n\n";
+  }
 
-  // TODO: check types are valid and match Halide pipeline
+  do_indent();
+  stream << "// Check tensors have contiguous memory\n";
+  for (size_t i = 0; i < buffer_args.size(); i++) {
+    do_indent();
+    stream
+      << "HLPT_CHECK_CONTIGUOUS("
+      << print_name(buffer_args[i].name) 
+      << ");\n";
+    if(isCuda) {
+      do_indent();
+      stream
+        << "HLPT_CHECK_DEVICE("
+        << print_name(buffer_args[i].name) 
+        << ", device_id);\n";
+    }
+  }
+  stream << "\n";
 
   do_indent();
   stream << "// Wrap tensors in Halide buffers\n";
@@ -268,10 +259,6 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
 
     do_indent();
     string tp = type_to_c_type(buffer_args[i].type, false);
-    // stream << "AT_DISPATCH_ALL_TYPES(" << print_name(buffer_args[i].name) << ".type(), \""
-    //        << simple_name << "\", ([&] {\n";
-    // indent += 2;
-    // do_indent();
     stream
       << "Buffer<" << tp << "> "
       << print_name(buffer_args[i].name) 
@@ -279,14 +266,11 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
       << print_name(buffer_args[i].name) 
       << ");\n"
       ;
-    // indent -= 2;
-    // do_indent();
-    // stream << "}));\n";
   }
   stream << "\n";
 
   do_indent();
-  stream << "// Run code\n";
+  stream << "// Run Halide pipeline\n";
   do_indent();
   stream << "int err = " << simple_name << "(";
   for (size_t i = 0; i < args.size(); i++) {
@@ -301,29 +285,28 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
   }
   stream << ");\n";
   do_indent();
-  stream << "AT_ASSERTM(err == 0, \"Halide code returned an error\\n\");\n";
-  // do_indent();
-  // stream << "if (err != 0) throw Halide::Pytorch::CudaRunException();\n";
-  // stream << "\n";
+  stream << "AT_ASSERTM(err == 0, \"Halide call failed\");\n";
 
-  // if(isCuda) {
-  //   do_indent();
-  //   stream << "// Make sure data is on device\n";
-  //   do_indent();
-  //   stream << "const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();\n";
-  //   for (size_t i = 0; i < buffer_args.size(); i++) {
-  //     if (buffer_args[i].is_buffer()) {
-  //       do_indent();
-  //       stream 
-  //         << "if ("
-  //         << print_name(buffer_args[i].name) << "_buffer.host_dirty() )"
-  //         << " throw Halide::Pytorch::DeviceNotSynchronizedException(\""
-  //         << print_name(buffer_args[i].name)
-  //         << "\");\n";
-  //     }
-  //   }
-  //   stream << "\n";
-  // }
+  if(isCuda) {
+    do_indent();
+    stream << "// Make sure data is on device\n";
+    for (size_t i = 0; i < buffer_args.size(); i++) {
+      if (buffer_args[i].is_buffer()) {
+        do_indent();
+        stream 
+          << "AT_ASSERTM(!"
+          << print_name(buffer_args[i].name) << "_buffer.host_dirty(),"
+          << "\"device not synchronized for buffer "
+          << print_name(buffer_args[i].name)
+          <<"\");\n";
+        do_indent();
+        stream 
+          << print_name(buffer_args[i].name) << "_buffer"
+          << ".device_detach_native();\n";
+      }
+    }
+    stream << "\n";
+  }
 
   // do_indent();
   // stream << "// Free references\n";
@@ -344,15 +327,18 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
   // }
   // stream << "\n";
 
-  // if (get_env_variable("FLUSH_MEMOIZE_CACHE") == "1") {
-  //     do_indent();
-  //     // flush cache
-  //     if (isCuda) {
-  //         stream << "halide_memoization_cache_cleanup(__user_context);\n";
-  //     } else {
-  //         stream << "halide_memoization_cache_cleanup(NULL);\n";
-  //     }
-  // }
+  // TODO(mgharbi): this is not very well documented
+  if (get_env_variable("FLUSH_MEMOIZE_CACHE") == "1") {
+      do_indent();
+      stream << "// Flush cache\n";
+      if (isCuda) {
+          do_indent();
+          stream << "halide_memoization_cache_cleanup(__user_context);\n";
+      } else {
+          do_indent();
+          stream << "halide_memoization_cache_cleanup(NULL);\n";
+      }
+  }
 
   do_indent();
   stream << "return 0;\n";
