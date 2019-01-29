@@ -143,14 +143,14 @@ CodeGen_PyTorch::CodeGen_PyTorch(ostream &s, Target t, OutputKind output_kind,
   stream << "#include <HalideBuffer.h>\n\n";
 
   // Conditionally add CUDA features to the pytorch helper
-  if(target.has_feature(Target::CUDA)) {
-    stream << "#define HL_PT_CUDA\n";
-  }
+  // if(target.has_feature(Target::CUDA)) {
+  //   stream << "#define HL_PT_CUDA\n";
+  // }
   stream << "#include <HalidePytorchHelpers.h>\n";
   if(target.has_feature(Target::CUDA)) {
     stream << "#include <ATen/cuda/CUDAContext.h>\n";  
     stream << "#include <HalidePytorchCudaHelpers.h>\n";
-    stream << "#undef HL_PT_CUDA\n";
+    // stream << "#undef HL_PT_CUDA\n";
   }
 
   stream << "\n#include \"" << cpp_header << "\"\n\n";
@@ -298,6 +298,7 @@ void CodeGen_PyTorch::compile(const LoweredFunc &f, bool isCuda) {
           << print_name(buffer_args[i].name) << "_buffer.host_dirty(),"
           << "\"device not synchronized for buffer "
           << print_name(buffer_args[i].name)
+          << ", make sure all update stages are excplicitly computed on GPU."
           <<"\");\n";
         do_indent();
         stream 
