@@ -140,7 +140,6 @@ CodeGen_PyTorch::CodeGen_PyTorch(ostream &s, Target t, OutputKind output_kind,
   // TODO(mgharbi): header guard and header / implementation split
   stream << "#include <torch/extension.h>\n";
   // TODO(mgharbi): find a shallower integration with torch cuda, handle no GPU case
-  stream << "#include <ATen/cuda/CUDAContext.h>\n";  
   stream << "#include <HalideBuffer.h>\n\n";
 
   // Conditionally add CUDA features to the pytorch helper
@@ -149,6 +148,7 @@ CodeGen_PyTorch::CodeGen_PyTorch(ostream &s, Target t, OutputKind output_kind,
   }
   stream << "#include <HalidePytorchHelpers.h>\n";
   if(target.has_feature(Target::CUDA)) {
+    stream << "#include <ATen/cuda/CUDAContext.h>\n";  
     stream << "#include <HalidePytorchCudaHelpers.h>\n";
     stream << "#undef HL_PT_CUDA\n";
   }

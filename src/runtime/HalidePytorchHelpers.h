@@ -73,7 +73,7 @@ inline Buffer<scalar_t> wrap(at::Tensor &tensor) {
     AT_ASSERTM(err==0,  "halide_device_wrap failed");
     buffer.set_device_dirty();
     #else
-    AT_ERROR("Trying to feed a CUDA tensor to a CPU Op.")
+    AT_ERROR("Trying to feed a CUDA tensor to a CPU Op.");
     #endif
   } else {
     buffer = Buffer<scalar_t>(pData, dims);
