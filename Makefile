@@ -53,6 +53,7 @@ LLVM_SYSTEM_LIBS=$(shell ${LLVM_CONFIG} --system-libs --link-static | sed -e 's/
 LLVM_AS = $(LLVM_BINDIR)/llvm-as
 LLVM_NM = $(LLVM_BINDIR)/llvm-nm
 LLVM_CXX_FLAGS = -std=c++11  $(filter-out -O% -g -fomit-frame-pointer -pedantic -W% -W, $(shell $(LLVM_CONFIG) --cxxflags | sed -e 's/\\/\//g' -e 's/\([a-zA-Z]\):/\/\1/g;s/-D/ -D/g;s/-O/ -O/g'))
+# LLVM_CXX_FLAGS += -Qunused-arguments
 OPTIMIZE ?= -O3
 OPTIMIZE_FOR_BUILD_TIME ?= -O0
 
@@ -646,6 +647,7 @@ RUNTIME_CPP_COMPONENTS = \
   aarch64_cpu_features \
   alignment_128 \
   alignment_32 \
+  alignment_64 \
   android_clock \
   android_host_cpu_count \
   android_io \
@@ -753,7 +755,8 @@ RUNTIME_EXPORTED_INCLUDES = $(INCLUDE_DIR)/HalideRuntime.h \
                             $(INCLUDE_DIR)/HalideRuntimeMetal.h	\
                             $(INCLUDE_DIR)/HalideRuntimeQurt.h \
                             $(INCLUDE_DIR)/HalideBuffer.h \
-                            $(INCLUDE_DIR)/HalidePytorchHelpers.h
+                            $(INCLUDE_DIR)/HalidePytorchHelpers.h \
+                            $(INCLUDE_DIR)/HalidePytorchCudaHelpers.h
 
 INITIAL_MODULES = $(RUNTIME_CPP_COMPONENTS:%=$(BUILD_DIR)/initmod.%_32.o) \
                   $(RUNTIME_CPP_COMPONENTS:%=$(BUILD_DIR)/initmod.%_64.o) \
@@ -830,6 +833,11 @@ $(INCLUDE_DIR)/HalideBuffer.h: $(SRC_DIR)/runtime/HalideBuffer.h
 	cp $< $(INCLUDE_DIR)/
 
 $(INCLUDE_DIR)/HalidePytorchHelpers.h: $(SRC_DIR)/runtime/HalidePytorchHelpers.h
+	echo Copying $<
+	@mkdir -p $(@D)
+	cp $< $(INCLUDE_DIR)/
+
+$(INCLUDE_DIR)/HalidePytorchCudaHelpers.h: $(SRC_DIR)/runtime/HalidePytorchCudaHelpers.h
 	echo Copying $<
 	@mkdir -p $(@D)
 	cp $< $(INCLUDE_DIR)/
@@ -944,6 +952,7 @@ test_valgrind: $(CORRECTNESS_TESTS:$(ROOT_DIR)/test/correctness/%.cpp=valgrind_%
 test_avx512: $(CORRECTNESS_TESTS:$(ROOT_DIR)/test/correctness/%.cpp=avx512_%)
 test_opengl: $(OPENGL_TESTS:$(ROOT_DIR)/test/opengl/%.cpp=opengl_%)
 test_auto_schedule: $(AUTO_SCHEDULE_TESTS:$(ROOT_DIR)/test/auto_schedule/%.cpp=auto_schedule_%)
+test_autodiff: $(CORRECTNESS_TESTS:$(ROOT_DIR)/test/correctness/autodiff.cpp=quiet_correctness_autodiff) $(CORRECTNESS_TESTS:$(ROOT_DIR)/test/correctness/fit_function.cpp=quiet_correctness_fit_function)
 
 # There are three types of tests for generators:
 # 1) Externally-written aot-based tests
@@ -1691,6 +1700,10 @@ ifneq (,$(findstring clang version 7.0,$(CLANG_VERSION)))
 CLANG_OK=yes
 endif
 
+ifneq (,$(findstring clang version 7.1,$(CLANG_VERSION)))
+CLANG_OK=yes
+endif
+
 ifneq (,$(findstring clang version 8.0,$(CLANG_VERSION)))
 CLANG_OK=yes
 endif
@@ -1715,7 +1728,7 @@ $(BUILD_DIR)/clang_ok:
 	@exit 1
 endif
 
-ifneq (,$(findstring $(LLVM_VERSION_TIMES_10), 40 50 60 70 80))
+ifneq (,$(findstring $(LLVM_VERSION_TIMES_10), 40 50 60 70 71 80))
 LLVM_OK=yes
 endif
 

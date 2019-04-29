@@ -92,20 +92,20 @@ void simple_autoschedule(std::vector<Func> &outputs,
         output_set.insert(output.name());
     }
 
-    debug(0) << "[simple_autoschedule] order:\n";
+    debug(1) << "[simple_autoschedule] order:\n";
     for (auto it = order.begin(); it != order.end(); it++) {
-        debug(0) << *it << "\n";
+        debug(1) << *it << "\n";
     }
 
     // Traverse from the consumers to the producers
     for (auto it = order.rbegin(); it != order.rend(); it++) {
         Func func(env[*it]);
-        debug(0) << "[simple_autoschedule] processing function:" << *it << "\n";
+        debug(1) << "[simple_autoschedule] processing function:" << *it << "\n";
         // Get the bounds in integer constant by substitute all the parameters in.
         Box bounds = func_bounds[*it];
         std::vector<int> int_bounds;
         int_bounds.reserve(bounds.size());
-        debug(0) << "[simple_autoschedule] bounds:\n";
+        debug(1) << "[simple_autoschedule] bounds:\n";
         for (int i = 0; i < (int)bounds.size(); i++) {
             Interval interval = bounds[i];
             Expr extent = simplify(interval.max - interval.min + 1);
@@ -117,7 +117,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
             user_assert(extent_int != nullptr) << "extent:" << extent <<
                 " is not constant.\n";
             int_bounds.push_back(*extent_int);
-            debug(0) << (*extent_int) << "\n";
+            debug(1) << (*extent_int) << "\n";
         }
         std::vector<int> bounds_rank = sort_indices(int_bounds);
         // Find the largest two dimensions
@@ -127,23 +127,24 @@ void simple_autoschedule(std::vector<Func> &outputs,
             dim_width = std::min(bounds_rank[last_index], bounds_rank[last_index-1]);
             dim_height = std::max(bounds_rank[last_index], bounds_rank[last_index-1]);
         }
-        debug(0) << "[simple_autoschedule] dim_width:" << dim_width <<
+        debug(1) << "[simple_autoschedule] dim_width:" << dim_width <<
             ", dim_height:" << dim_height << "\n";
         int largest_dim = -1;
         if (int_bounds.size() >= 1) {
             largest_dim = bounds_rank.back();
         }
-        debug(0) << "[simple_autoschedule] largest_dim:" << largest_dim << "\n";
+        debug(1) << "[simple_autoschedule] largest_dim:" << largest_dim << "\n";
 
         if (output_set.find(func.name()) == output_set.end()) {
-            // Always memoize the function if it's not output
-            func.memoize();
+            // TODO(mgharbi): this should distinguish between internal Funcs and Generator Output params, which
+            // break the memoization
+            // func.memoize();
         }
 
         func.compute_root();
         // Initial definition is easy: everything is pure variables.
         // Just parallelize and vectorize if there are enough entries to launch threads.
-        debug(0) << "[simple_autoschedule] scheduling initial definition" << "\n";
+        debug(1) << "[simple_autoschedule] scheduling initial definition" << "\n";
         int tile_width =
             options.gpu ? options.gpu_tile_width : options.cpu_tile_width;
         int tile_height =
@@ -160,7 +161,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 int_bounds[dim_height] >= tile_height &&
                 (int_bounds[dim_width] / tile_width) *
                 (int_bounds[dim_height] / tile_height) >= min_threads) {
-            debug(0) << "[simple_autoschedule] Perform 2D tiling\n";
+            debug(1) << "[simple_autoschedule] Perform 2D tiling\n";
             // 2D tiling
             Var xo, yo, zo, xi, yi, zi;
             if (options.gpu) {
@@ -192,7 +193,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         has_extra_dimensions = false;
                     }
                 }
-                debug(0) << "[simple_autoschedule] has_extra_dimensions:" <<
+                debug(1) << "[simple_autoschedule] has_extra_dimensions:" <<
                     has_extra_dimensions << "\n";
                 if (!has_extra_dimensions) {
                     // No fused_vars
@@ -219,7 +220,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         int_bounds[largest_dim] >= (tile_width * tile_height) &&
                         (int_bounds[largest_dim] / (tile_width * tile_height)) >=
                         min_threads) {
-            debug(0) << "[simple_autoschedule] Perform 1D tiling\n";
+            debug(1) << "[simple_autoschedule] Perform 1D tiling\n";
             // Fallback to 1D tiling
             Var xo, yo, xi, yi;
             if (options.gpu) {
@@ -251,7 +252,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         has_extra_dimensions = false;
                     }
                 }
-                debug(0) << "[simple_autoschedule] has_extra_dimensions:" <<
+                debug(1) << "[simple_autoschedule] has_extra_dimensions:" <<
                     has_extra_dimensions << "\n";
                 if (!has_extra_dimensions) {
                     // No fused_vars
@@ -271,7 +272,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
             }
             tilable = true;
         } else if (options.gpu) {
-            debug(0) << "[simple_autoschedule] Not enough parallelism, still launch GPU tiles.\n";
+            debug(1) << "[simple_autoschedule] Not enough parallelism, still launch GPU tiles.\n";
             // Even if there's not enough parallelism it's still a good idea to launch
             // gpu tiles to avoid memory copy
             if (func.args().size() == 0) {
@@ -289,7 +290,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 func.gpu_tile(fused_var, block, thread, std::min(var_size, 32), TailStrategy::GuardWithIf);
             }
         } else {
-            debug(0) << "[simple_autoschedule] Not enough parallelism, serialize on CPU.\n";
+            debug(1) << "[simple_autoschedule] Not enough parallelism, serialize on CPU.\n";
         }
 
         // Scheduling the updates
@@ -297,7 +298,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 update_id < func.num_update_definitions(); update_id++) {
             std::vector<ReductionVariable> rvars =
                 func.update(update_id).get_schedule().rvars();
-            debug(0) << "[simple_autoschedule] Scheduling update " << update_id << ".\n";
+            debug(1) << "[simple_autoschedule] Scheduling update " << update_id << ".\n";
             // Compute the largest two dimensions of the reduction variables.
             int rdim_width = -1;
             int rdim_height = -1;
@@ -314,8 +315,8 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 const int64_t *extent_int = as_const_int(extent);
                 user_assert(extent_int != nullptr) << "extent:" <<
                     extent << " is not constant.\n";
-                debug(0) << "[simple_autoschedule] rvar_extents:\n";
-                debug(0) << "[simple_autoschedule] " << (*extent_int) << "\n";
+                debug(1) << "[simple_autoschedule] rvar_extents:\n";
+                debug(1) << "[simple_autoschedule] " << (*extent_int) << "\n";
                 rvar_extents.push_back(*extent_int);
                 for (int arg_id = 1; arg_id < (int)rvars.size(); arg_id++) {
                     Expr extent = rvars[arg_id].extent;
@@ -326,7 +327,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     const int64_t *extent_int = as_const_int(extent);
                     user_assert(extent_int != nullptr) << "extent:" <<
                         extent << " is not constant.\n";
-                    debug(0) << "[simple_autoschedule] " << (*extent_int) << "\n";
+                    debug(1) << "[simple_autoschedule] " << (*extent_int) << "\n";
                     rvar_extents.push_back(*extent_int);
                 }
                 std::vector<int> bounds_rank = sort_indices(rvar_extents);
@@ -348,7 +349,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         largest_rdim = bounds_rank.back();
                     }
                 }
-                debug(0) << "[simple_autoschedule] rdim_width:" <<
+                debug(1) << "[simple_autoschedule] rdim_width:" <<
                     rdim_width << ", rdim_height:" << rdim_height << "\n";
             }
             // Unroll known, small rvars
@@ -357,7 +358,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     Expr extent = rvars[rvar_id].extent;
                     const int64_t *extent_int = as_const_int(extent);
                     if (extent_int != nullptr && *extent_int <= options.unroll_rvar_size) {
-                        debug(0) << "[simple_autoschedule] unroll rvars[" << rvar_id << "]\n";
+                        debug(1) << "[simple_autoschedule] unroll rvars[" << rvar_id << "]\n";
                         func.update(update_id)
                             .unroll(RVar(rvars[rvar_id].var));
                     }
@@ -365,15 +366,15 @@ void simple_autoschedule(std::vector<Func> &outputs,
             }
             rvar_tilable = (rdim_width != -1 && rdim_height != -1) ||
                 largest_rdim != -1;
-            debug(0) << "[simple_autoschedule] rvar_tilable:" << rvar_tilable << "\n";
+            debug(1) << "[simple_autoschedule] rvar_tilable:" << rvar_tilable << "\n";
 
             // If the domain of the image is small and the reduction is large,
             // use rfactor
             // TODO: gracefully fallback if factorization is impossible
             if (!tilable && rvar_tilable) {
-                debug(0) << "[simple_autoschedule] Perform parallel reduction\n";
+                debug(1) << "[simple_autoschedule] Perform parallel reduction\n";
                 if (rdim_width != -1 && rdim_height != -1) {
-                    debug(0) << "[simple_autoschedule] 2D parallel reduction\n";
+                    debug(1) << "[simple_autoschedule] 2D parallel reduction\n";
                     // 2D tiling
                     if (options.gpu) {
                         // GPU
@@ -453,7 +454,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                               .vectorize(xi);
                     }
                 } else if (largest_rdim != -1) {
-                    debug(0) << "[simple_autoschedule] 1D parallel reduction\n";
+                    debug(1) << "[simple_autoschedule] 1D parallel reduction\n";
                     // 1D tiling
                     if (options.gpu) {
                         RVar rx(rvars[largest_rdim].var);
@@ -554,16 +555,16 @@ void simple_autoschedule(std::vector<Func> &outputs,
             if (bounds_rank.size() >= 1) {
                 largest_pdim = bounds_rank.back();
             }
-            debug(0) << "[simple_autoschedule] pdim_width:" << pdim_width << ", "
+            debug(1) << "[simple_autoschedule] pdim_width:" << pdim_width << ", "
                 << "pdim_height:" << pdim_height << "\n";
-            debug(0) << "[simple_autoschedule] largest_pdim:" << largest_pdim << "\n";
+            debug(1) << "[simple_autoschedule] largest_pdim:" << largest_pdim << "\n";
 
             if ((int)pure_arg_bounds.size() >= 2 &&
                      pure_arg_bounds[pdim_width] >= tile_width &&
                      pure_arg_bounds[pdim_height] >= tile_height &&
                     (pure_arg_bounds[pdim_width] / tile_width) *
                     (pure_arg_bounds[pdim_height] / tile_height) >= min_threads) {
-                debug(0) << "[simple_autoschedule] Perform 2D tiling\n";
+                debug(1) << "[simple_autoschedule] Perform 2D tiling\n";
                 Var xo, yo, zo, xi, yi, zi;
                 if (options.gpu) {
                     // GPU
@@ -610,7 +611,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                             pure_arg_bounds[largest_pdim] >= (tile_width * tile_height) &&
                             (pure_arg_bounds[largest_pdim] / (tile_width * tile_height)) >=
                             min_threads) {
-                debug(0) << "[simple_autoschedule] Perform 1D tiling\n";
+                debug(1) << "[simple_autoschedule] Perform 1D tiling\n";
                 Var xo, yo, xi, yi;
                 if (options.gpu) {
                     // GPU
@@ -653,7 +654,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                         .vectorize(xi, vectorize_width);
                 }
             } else if (!options.gpu && pure_args.size() > 0) {
-                debug(0) << "[simple_autoschedule] \n" << 
+                debug(1) << "[simple_autoschedule] \n" << 
                     "Merging pure variables and parallelize them.\n";
                 // On CPU, merge all pure variables and parallelize them
                 Var fused_var = pure_args[0];
@@ -664,7 +665,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                 func.update(update_id)
                     .parallel(fused_var);
             } else if (options.gpu) {
-                debug(0) << "[simple_autoschedule] Parallelizing reduction" <<
+                debug(1) << "[simple_autoschedule] Parallelizing reduction" <<
                     " using atomics.\n";
                 // If the reduction domain is large enough, parallelize the reduction domain
                 if (tilable && rvar_tilable) {
@@ -719,7 +720,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
                     }
                 }
             } else {
-                debug(0) << "[simple_autoschedule] Not enough parallelism, " <<
+                debug(1) << "[simple_autoschedule] Not enough parallelism, " <<
                     "serialize on CPU.\n";
             }
 
@@ -775,7 +776,7 @@ void simple_autoschedule(std::vector<Func> &outputs,
             };
 
             if (!options.gpu && is_parallelizable_reduction()) {
-                debug(0) << "[simple_autoschedule] Parallelize reduction without atomics on CPU\n";
+                debug(1) << "[simple_autoschedule] Parallelize reduction without atomics on CPU\n";
                 std::vector<RVar> rvar_args;
                 std::vector<int> rvar_arg_bounds;
                 for (int arg_id = 0; arg_id < (int)update_args.size(); arg_id++) {
@@ -856,7 +857,6 @@ void simple_autoschedule_test() {
         Func f2("f2");
         f2(x, y) = f1(x, y) * f1(x, y);
 
-        debug(0) << "[simple_autoschedule] Test pointwise\n.";
         simple_autoschedule(f2,
                             {}, // parameters map
                             {{0, 127},
@@ -874,7 +874,6 @@ void simple_autoschedule_test() {
         conv(x) = 0.f;
         conv(x) += buf(x + r) * k(r);
 
-        debug(0) << "[simple_autoschedule] Test 1D conv\n.";
         simple_autoschedule(conv,
                             {}, // parameters map
                             {{0, 16384 - 6}}, // output bounds
@@ -890,7 +889,6 @@ void simple_autoschedule_test() {
         conv(x, y) = 0.f;
         conv(x, y) += buf(x + r, y) * k(r);
 
-        debug(0) << "[simple_autoschedule] Test 1D conv in 2D\n.";
         simple_autoschedule(conv,
                             {}, // parameters map
                             {{0, 16384 - 6},
@@ -907,7 +905,6 @@ void simple_autoschedule_test() {
         conv(x, y) = 0.f;
         conv(x, y) += buf(x + r.x, y + r.y) * k(r.x, r.y);
 
-        debug(0) << "[simple_autoschedule] Test 2D conv\n.";
         simple_autoschedule(conv,
                             {}, // parameters map
                             {{0, 128 - 6},
@@ -924,7 +921,7 @@ void simple_autoschedule_test() {
         conv(x, y, z) = 0.f;
         conv(x, y, z) += buf(x + r.x, y + r.y, z) * k(r.x, r.y);
 
-        debug(0) << "[simple_autoschedule] Test 2D conv in 3D\n.";
+        debug(1) << "[simple_autoschedule] Test 2D conv in 3D\n.";
         simple_autoschedule(conv,
                             {}, // parameters map
                             {{0, 128 - 6},
@@ -941,8 +938,6 @@ void simple_autoschedule_test() {
         RDom r(buf);
         sum() += buf(r);
 
-        debug(0) << "[simple_autoschedule] Test 1D reduction\n.";
-
         simple_autoschedule(sum,
                             {}, // parameters map
                             {}, // output bounds
@@ -956,7 +951,6 @@ void simple_autoschedule_test() {
         RDom r(buf);
         sum() += buf(r.x, r.y);
 
-        debug(0) << "[simple_autoschedule] Test 2D reduction\n.";
         simple_autoschedule(sum,
                             {}, // parameters map
                             {}, // output bounds

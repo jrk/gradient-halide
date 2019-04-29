@@ -22,7 +22,7 @@ namespace Internal {
 class CodeGen_PyTorch : public IRPrinter{
 public:
     enum OutputKind {
-        PyTorchHeader,
+        // PyTorchHeader,
         PyTorchImplementation,
     };
 
@@ -53,9 +53,9 @@ protected:
     std::string cpp_header;
 
 
-    bool is_header() {
-        return output_kind == PyTorchHeader;
-    }
+    // bool is_header() {
+    //     return output_kind == PyTorchHeader;
+    // }
 
 };
 

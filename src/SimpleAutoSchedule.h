@@ -29,7 +29,9 @@ struct SimpleAutoscheduleOptions {
 };
 
 /**
- *  Given one or more Funcs, and an estimation of the values of the parameters and
+ *  Given one or more Funcs, 
+ *  and an estimation of the values of the variable parameters (e.g. bounds
+ *  of the inputs if you're compiling in a generator) and
  *  function bounds (in {min, max}), automatically schedule all the dependencies.
  */
 void simple_autoschedule(std::vector<Func> &outputs,

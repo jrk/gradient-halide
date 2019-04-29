@@ -40,6 +40,27 @@ struct Derivative {
         assert(it != adjoints.end());
         return it->second;
     }
+
+    /** Get the entire chain of new synthesized Funcs that compute the
+     * derivative of a given user-written Func for the purpose of
+     * scheduling. */
+    std::vector<Func> funcs(const Func &func) const {
+        std::vector<Func> result;
+        FuncKey k{ func.name(), -1 };
+        FuncKey k_unbounded = k;
+        k_unbounded.first += "_unbounded";
+        for (int i = func.num_update_definitions() - 1; i >= -1; i--) {
+            k.second = k_unbounded.second = i;
+            auto it = adjoints.find(k);
+            internal_assert(it != adjoints.end()) << "Could not find derivative of " << k.first << " " << k.second << "\n";
+            result.push_back(it->second);
+            it = adjoints.find(k_unbounded);
+            if (it != adjoints.end()) {
+                result.push_back(it->second);
+            }
+        }
+        return result;
+    }
 };
 
 /**
