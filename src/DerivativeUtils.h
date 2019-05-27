@@ -1,6 +1,8 @@
 #ifndef HALIDE_INTERNAL_DERIVATIVE_UTILS_H
 #define HALIDE_INTERNAL_DERIVATIVE_UTILS_H
 
+#include <set>
+
 #include "Bounds.h"
 #include "Derivative.h"
 #include "Expr.h"
@@ -11,20 +13,11 @@
 namespace Halide {
 namespace Internal {
 
-using FuncBounds = std::vector<std::pair<Expr, Expr>>;
-
-/**
- * Return true if expr depends on the variable
- */
-bool has_variable(const Expr &expr, const std::string &name);
-/**
- * Return true if expr has a Let operation defining the variable
- */
-bool has_let_defined(const Expr &expr, const std::string &name);
 /**
  * Remove all let definitions of expr
  */
 Expr remove_let_definitions(const Expr &expr);
+
 /**
  * Return a list of variables that expr depends on and are in the filter
  */
@@ -58,9 +51,9 @@ std::vector<Expr> sort_expressions(const Expr &expr);
  * Compute the bounds of funcs
  */
 std::map<std::string, Box> inference_bounds(const std::vector<Func> &funcs,
-                                            const std::vector<FuncBounds> &output_bounds);
+                                            const std::vector<Box> &output_bounds);
 std::map<std::string, Box> inference_bounds(const Func &func,
-                                            const FuncBounds &output_bounds);
+                                            const Box &output_bounds);
 /**
  * Convert Box to vector of (min, extent)
  */
@@ -79,7 +72,7 @@ std::vector<std::string> vars_to_strings(const std::vector<Var> &vars);
 ReductionDomain extract_rdom(const Expr &expr);
 /**
  * expr is new_var == f(var), solve for var == g(new_var)
- * if multiple new_var correponds to same var, introduce a RDom
+ * if multiple new_var corresponds to same var, introduce a RDom
  */
 std::pair<bool, Expr> solve_inverse(Expr expr,
                                     const std::string &new_var,
@@ -97,7 +90,7 @@ std::map<std::string, BufferInfo> find_buffer_calls(const Func &func);
  */
 std::set<std::string> find_implicit_variables(Expr expr);
 /**
- * Substitute the variable. Also replace all occurence in rdom.where() predicates.
+ * Substitute the variable. Also replace all occurrences in rdom.where() predicates.
  */
 Expr substitute_rdom_predicate(
     const std::string &name, const Expr &replacement, const Expr &expr);

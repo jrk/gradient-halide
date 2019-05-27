@@ -76,12 +76,12 @@ void simple_autoschedule(std::vector<Func> &outputs,
     }
 
     // Bounds inference using the given estimation
-    std::vector<FuncBounds> output_bounds_expr;
+    std::vector<Box> output_bounds_expr;
     for (const auto &bounds : output_bounds) {
-        FuncBounds func_bounds;
+        std::vector<Interval> func_bounds;
         for (const auto &bound : bounds) {
             func_bounds.push_back(
-                std::make_pair<Expr, Expr>(bound.first, bound.second));
+                Interval(bound.first, bound.first + bound.second - 1));
         }
         output_bounds_expr.push_back(func_bounds);
     }

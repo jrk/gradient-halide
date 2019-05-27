@@ -9,23 +9,23 @@
 #include "Func.h"
 #include "Module.h"
 
-#include <array>
-#include <set>
+#include <map>
+#include <string>
 #include <vector>
 
 namespace Halide {
-
-// function name & update_id, for initialization update_id == -1
-using FuncKey = std::pair<std::string, int>;
 
 /**
  *  Helper structure storing the adjoints Func.
  *  Use d(func) or d(buffer) to obtain the derivative Func.
  */
 struct Derivative {
+    // function name & update_id, for initialization update_id == -1
+    using FuncKey = std::pair<std::string, int>;
+
     std::map<FuncKey, Func> adjoints;
 
-    Func operator()(const Func &func, int update_id = -1, bool bounded = true) const {
+    Func get(const Func &func, int update_id = -1, bool bounded = true) const {
         std::string name = func.name();
         if (!bounded) {
             name += "_unbounded";
@@ -35,10 +35,18 @@ struct Derivative {
         return it->second;
     }
 
-    Func operator()(const Buffer<> &buffer) const {
+    Func operator()(const Func &func, int update_id = -1, bool bounded = true) const {
+        return get(func, update_id, bounded);
+    }
+
+    Func get(const Buffer<> &buffer) const {
         auto it = adjoints.find(FuncKey{ buffer.name(), -1 });
         assert(it != adjoints.end());
         return it->second;
+    }
+
+    Func operator()(const Buffer<> &buffer) const {
+        return get(buffer);
     }
 
     /** Get the entire chain of new synthesized Funcs that compute the
@@ -96,11 +104,6 @@ struct PrintFuncOptions {
     std::map<std::string, Expr> variables;
 };
 void print_func(const Func &func, const PrintFuncOptions &options = PrintFuncOptions());
-
-namespace Internal {
-
-void derivative_test();
-}
 
 }  // namespace Halide
 

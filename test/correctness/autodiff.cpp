@@ -234,7 +234,6 @@ void test_1d_box() {
     Func f_loss("f_loss");
     f_loss() += blur(r.x) * blur(r.x);
     Derivative d = propagate_adjoints(f_loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
 
     Buffer<float> blur_buf = blur.realize(2);
     // d loss / d blur = 2 * blur(x)
@@ -280,7 +279,7 @@ void test_2d_box() {
     Buffer<float> blur_y_buf = blur_y.realize(5, 5);
     // d loss / d blur_y = 2 * blur_y(x, y)
     Buffer<float> d_blur_y_buf = d(blur_y).realize(5, 5);
-    const float eps = 1e-6;
+    const float eps = 1e-6f;
     for (int y = 0; y < 5; y++) {
         for (int x = 0; x < 5; x++) {
             float target = 2 * blur_y_buf(x, y);
@@ -698,7 +697,7 @@ void test_histogram() {
 
     Func loss("loss");
     RDom rd(input);
-    loss() += output(rd.x) * cast<float>(rd.x + 1);
+    loss() += output(rd) * cast<float>(rd + 1);
     Derivative d = propagate_adjoints(loss);
 
     // d_output(2) -> d_k(0)
@@ -710,6 +709,50 @@ void test_histogram() {
     check(__LINE__, d_k(1), 3.0f);
     check(__LINE__, d_k(2), 2.0f);
     check(__LINE__, d_k(3), 4.0f);
+    check(__LINE__, d_k(4), 0.0f);
+}
+
+void test_multiple_updates_histogram() {
+    Var x("x");
+    Buffer<int> input(4, "input");
+    input(0) = 2;
+    input(1) = 2;
+    input(2) = 1;
+    input(3) = 3;
+    Buffer<float> k(4, "k");
+    k(0) = 0.5f;
+    k(1) = 1.f;
+    k(2) = 1.5f;
+    k(3) = 2.f;
+    k(4) = 2.5f;
+    Func output("output");
+    output(x) = 0.f;
+    RDom r(input);
+    for (int i = 0; i < 10; i++) {
+        output(clamp(input(r), 0, 3)) += k(r);
+    }
+
+    Func loss("loss");
+    RDom rd(input);
+    loss() += output(rd) * cast<float>(rd + 1);
+    Derivative d = propagate_adjoints(loss);
+
+    // Schedule this so it doesn't run forever
+    output.compute_root();
+    auto funcs = d.adjoints;
+    for (auto it : funcs) {
+        it.second.compute_root();
+    }
+
+    // d_output(2) -> d_k(0) * 2
+    // d_output(2) -> d_k(1) * 2
+    // d_output(1) -> d_k(2) * 2
+    // d_output(3) -> d_k(3) * 2
+    Buffer<float> d_k = d(k).realize(5);
+    check(__LINE__, d_k(0), 30.0f);
+    check(__LINE__, d_k(1), 30.0f);
+    check(__LINE__, d_k(2), 20.0f);
+    check(__LINE__, d_k(3), 40.0f);
     check(__LINE__, d_k(4), 0.0f);
 }
 
@@ -963,7 +1006,6 @@ void test_tuple() {
     Func loss("loss");
     loss() += reduce(r.x);
     Derivative d = propagate_adjoints(loss);
-    std::map<FuncKey, Func> adjoints = d.adjoints;
     // tuple(0) = {1, 2}
     // tuple(1) = {2, 3}
     // reduce(0) = 3
@@ -1037,7 +1079,8 @@ void test_downsampling() {
     // output(1) = \sum input(5~8)
     Func d_input = d(input);
     // Every dependency of d_tuple should only use pure variables in lhs
-    _halide_user_assert(!has_non_pure_update(d_input)) << "Function has non pure update\n";
+
+    // _halide_user_assert(!has_non_pure_update(d_input)) << "Function has non pure update\n";
     Buffer<float> d_input_buf = d_input.realize(10);
 
     for (int i = 0; i < 8; i++) {
@@ -1162,78 +1205,44 @@ void test_rdom_predicate() {
     }
 }
 
-void test_forward() {
+void test_reverse_scan() {
     Var x("x");
-    Buffer<float> input(10);
-    for (int i = 0; i < 10; i++) {
+    Buffer<float> input(5);
+    for (int i = 0; i < 5; i++) {
         input(i) = float(i);
     }
-    Func output("output");
-    RDom r(0, 2);
-    output(x) += input(x + r);
-    Func d_input("d_input");
-    d_input(x) = 1.f;
-    Func d_output = propagate_tangents(output, { { input.name(), d_input } });
-    // d_output(x) = \sum d_input(x + r)
-    Buffer<float> d_output_buf = d_output.realize(5);
-
+    RDom r(input);
+    Func reverse("reverse");
+    reverse(x) = input(x);
+    reverse(r.x) = reverse(4 - r.x);
+    Func loss("loss");
+    loss() += reverse(r.x) * (r.x + 1.f);
+    Derivative d = propagate_adjoints(loss);
+    Func d_input = d(input);
+    Buffer<float> d_input_buf = d_input.realize(5);
     for (int i = 0; i < 5; i++) {
-        check(__LINE__, d_output_buf(i), 2.f);
+        check(__LINE__, d_input_buf(i), (5.f - (float)i));
     }
 }
 
-void test_reverse_forward() {
+void test_select_guard() {
     Var x("x");
-    Buffer<float> input(10, "input");
-    for (int i = 0; i < 10; i++) {
-        input(i) = float(i);
-    }
-    Buffer<float> target(10, "target");
-    for (int i = 0; i < 10; i++) {
-        target(i) = float(i + 1);
-    }
-    Buffer<float> kernel(2, "kernel");
-    kernel(0) = kernel(1) = 1.f;
-    Func input_re = BoundaryConditions::repeat_edge(input);
-    Func output("output");
-    RDom r(0, 2);
-    output(x) = 0.f;
-    output(x) += input_re(x + r) * kernel(r);
-    RDom ro(0, 9);
+    Buffer<float> input(2);
+    input(0) = 0.f;
+    input(1) = 1.f;
+    Func f("f");
+    f(x) = select(input(x) > 0.f, (x+1) / input(x), input(x)) +
+           select(input(x) > 0.f, sqrt(input(x)), 1.f) +
+           select(input(x) > 0.f, atan2(1.f, input(x)), 2.f * input(x)) +
+           select(input(x) > 0.f, log(input(x)), 3.f * input(x));
     Func loss("loss");
-    loss() = 0.f;
-    Expr diff = output(ro) - target(ro);
-    loss() += diff * diff;
+    RDom r(input);
+    loss() += f(r);
     Derivative d = propagate_adjoints(loss);
-    Buffer<float> output_buf = output.realize(9);
-    Func d_output = d(output);
-    // d_output(x) = 2 * (output(x) - target(x))
-    Buffer<float> d_output_buf = d_output.realize(9);
-    for (int i = 0; i < 9; i++) {
-        check(__LINE__, d_output_buf(i), 2.f * (output_buf(i) - target(i)));
-    }
     Func d_input = d(input);
-    Buffer<float> d_input_buf = d_input.realize(10);
-    // d_input(x) = d_output(x) + d_output(x - 1)
-    check(__LINE__, d_input_buf(0), d_output_buf(0));
-    for (int i = 1; i < 9; i++) {
-        check(__LINE__, d_input_buf(i), d_output_buf(i) + d_output_buf(i - 1));
-    }
-    check(__LINE__, d_input_buf(9), d_output_buf(8));
-    Func d2_output = propagate_tangents(d_output, { { input.name(), d_input } });
-    Buffer<float> d2_output_buf = d2_output.realize(9);
-    // d2_output(x) = 2 * (d_input(x) + d_input(x + 1))
-    for (int i = 0; i < 9; i++) {
-        check(__LINE__, d2_output_buf(i), 2.f * (d_input_buf(i) + d_input_buf(i + 1)));
-    }
-    Func d2_input = propagate_tangents(d_input, { { input.name(), d_input } });
-    Buffer<float> d2_input_buf = d2_input.realize(10);
-    // d2_input(x) = d2_output(x) + d2_output(x - 1)
-    check(__LINE__, d2_input_buf(0), d2_output_buf(0));
-    for (int i = 1; i < 9; i++) {
-        check(__LINE__, d2_input_buf(i), d2_output_buf(i) + d2_output_buf(i - 1));
-    }
-    check(__LINE__, d2_input_buf(9), d2_output_buf(8));
+    Buffer<float> d_input_buf = d_input.realize(2);
+    check(__LINE__, d_input_buf(0), 1.f + 0.f + 2.f + 3.f);
+    check(__LINE__, d_input_buf(1), -2.f + 0.5f - 0.5f + 1.f);
 }
 
 int main(int argc, char **argv) {
@@ -1252,6 +1261,7 @@ int main(int argc, char **argv) {
     test_linear_resampling_2d();
     test_sparse_update();
     test_histogram();
+    test_multiple_updates_histogram();
     test_rdom_update();
     test_repeat_edge();
     test_constant_exterior();
@@ -1268,7 +1278,8 @@ int main(int argc, char **argv) {
     test_transpose();
     test_change_var();
     test_rdom_predicate();
-    test_forward();
-    test_reverse_forward();
-    printf("Success!\n");
+    test_reverse_scan();
+    test_select_guard();
+    printf("[autodiff] Success!\n");
+    return 0;
 }

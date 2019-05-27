@@ -41,7 +41,6 @@ int main(int argc, const char **argv) {
     associativity_test();
     generator_test();
     propagate_estimate_test();
-    derivative_test();
     simple_autoschedule_test();
 
     return 0;
