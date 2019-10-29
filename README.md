@@ -1,5 +1,5 @@
 This is an experimental branch of Halide (http://halide-lang.org) for making it
-able to compute gradients.
+able to compute gradients. All the functionality has been merged to the main repository.
 
 For a technical description see our paper, ["Differentiable Programming for
 Image Processing and Deep Learning in Halide"](https://people.csail.mit.edu/tzumao/gradient_halide/).
